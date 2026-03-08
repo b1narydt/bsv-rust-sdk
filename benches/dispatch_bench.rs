@@ -300,7 +300,7 @@ impl WalletInterface for NoOpWallet {
         _originator: Option<&str>,
     ) -> Result<GetVersionResult, WalletError> {
         Ok(GetVersionResult {
-            version: "0.1.1".into(),
+            version: "0.1.2".into(),
         })
     }
 }

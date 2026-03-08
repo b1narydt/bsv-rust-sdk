@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-03-08
+
+### Added
+- Certificate exchange support in AuthFetch and Peer -- enables authenticated certificate acquisition and proving over HTTP transport
+
+### Fixed
+- Normalize `content-type` header in AuthFetch request serialization to prevent case-sensitivity mismatches
+- Use `std::sync::Mutex` instead of `tokio::sync::Mutex` for `subscribe()` in HTTP transport, fixing potential deadlocks in sync contexts
+- Add `process_pending` call in AuthFetch to flush queued messages before sending requests
+
 ## [0.1.1] - 2026-03-08
 
 ### Changed

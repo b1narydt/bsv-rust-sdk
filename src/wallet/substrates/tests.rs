@@ -308,7 +308,7 @@ impl WalletInterface for MockWallet {
         _originator: Option<&str>,
     ) -> Result<GetVersionResult, WalletError> {
         Ok(GetVersionResult {
-            version: "0.1.1".to_string(),
+            version: "0.1.2".to_string(),
         })
     }
 }
@@ -399,7 +399,7 @@ async fn test_get_height_round_trip() {
 async fn test_get_version_round_trip() {
     let t = make_transceiver();
     let result = t.get_version(None).await.unwrap();
-    assert_eq!(result.version, "0.1.1");
+    assert_eq!(result.version, "0.1.2");
 }
 
 #[tokio::test]
@@ -654,7 +654,7 @@ async fn test_wallet_client_is_authenticated_delegates() {
 async fn test_wallet_client_get_version_delegates() {
     let client = make_client();
     let result = client.get_version(None).await.unwrap();
-    assert_eq!(result.version, "0.1.1");
+    assert_eq!(result.version, "0.1.2");
 }
 
 // ---------------------------------------------------------------------------
