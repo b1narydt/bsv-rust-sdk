@@ -336,9 +336,22 @@ fn serialize_request(
         write_varint_num(&mut buf, -1);
     }
 
-    // Headers -- sorted by key for consistent signing
-    let mut sorted_headers: Vec<(&String, &String)> = headers.iter().collect();
-    sorted_headers.sort_by_key(|(k, _)| k.to_lowercase());
+    // Headers -- normalize and sort by key for consistent signing.
+    // Content-type is normalized by stripping parameters (e.g. "; charset=utf-8")
+    // to match the TS SDK behavior in both AuthFetch and middleware.
+    let mut sorted_headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| {
+            let key = k.to_lowercase();
+            let value = if key == "content-type" {
+                v.split(';').next().unwrap_or("").trim().to_string()
+            } else {
+                v.clone()
+            };
+            (key, value)
+        })
+        .collect();
+    sorted_headers.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     write_varint_num(&mut buf, sorted_headers.len() as i64);
     for (key, value) in &sorted_headers {
