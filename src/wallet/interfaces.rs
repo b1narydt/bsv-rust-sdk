@@ -2,9 +2,11 @@
 //!
 //! Defines the contract that all wallet implementations must satisfy.
 //! Translated from Go SDK wallet/interfaces.go and TS SDK Wallet.interfaces.ts.
-//! Uses native async fn in traits (RPITIT, Rust 1.75+) -- NOT the async-trait crate.
+//! Uses #[async_trait] for object safety -- enables `dyn WalletInterface`.
 
 use std::collections::HashMap;
+
+use async_trait::async_trait;
 
 use crate::primitives::public_key::PublicKey;
 use crate::wallet::error::WalletError;
@@ -1682,14 +1684,13 @@ pub struct GetVersionResult {
 
 /// The core wallet interface with all 28 async methods.
 ///
-/// Uses native async fn in traits (RPITIT, Rust 1.75+) so this trait
-/// is NOT object-safe. Use generics (not dyn dispatch) when parameterizing
-/// over wallet implementations.
+/// Uses `#[async_trait]` for object safety -- supports both static dispatch
+/// (`W: WalletInterface`) and dynamic dispatch (`dyn WalletInterface`).
 ///
 /// Every method takes `originator: Option<&str>` as the last parameter,
 /// identifying the calling application domain.
-#[allow(async_fn_in_trait)]
-pub trait WalletInterface {
+#[async_trait]
+pub trait WalletInterface: Send + Sync {
     // -- Action methods --
 
     async fn create_action(

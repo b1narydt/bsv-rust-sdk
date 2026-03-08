@@ -88,35 +88,53 @@ impl HttpWalletJson {
 
 /// Helper macro that implements a WalletInterface method for HttpWalletJson.
 /// Each method serializes args to JSON, POSTs to the endpoint, and deserializes the result.
+/// Uses desugared async-trait form so it works inside #[async_trait] impl blocks.
 macro_rules! impl_json_method {
     // Method with args parameter
     ($method:ident, $args_type:ty, $result_type:ty, $endpoint:expr) => {
-        async fn $method(
-            &self,
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
             args: $args_type,
-            originator: Option<&str>,
-        ) -> Result<$result_type, WalletError> {
-            let json_bytes = serde_json::to_vec(&args)
-                .map_err(|e| WalletError::Internal(format!("JSON serialize failed: {}", e)))?;
-            let response = self.api($endpoint, &json_bytes, originator).await?;
-            let result: $result_type = serde_json::from_slice(&response)
-                .map_err(|e| WalletError::Internal(format!("JSON deserialize failed: {}", e)))?;
-            Ok(result)
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let json_bytes = serde_json::to_vec(&args)
+                    .map_err(|e| WalletError::Internal(format!("JSON serialize failed: {}", e)))?;
+                let response = self.api($endpoint, &json_bytes, originator).await?;
+                let result: $result_type = serde_json::from_slice(&response)
+                    .map_err(|e| WalletError::Internal(format!("JSON deserialize failed: {}", e)))?;
+                Ok(result)
+            })
         }
     };
     // Method without args parameter (auth/info methods)
     (no_args $method:ident, $result_type:ty, $endpoint:expr) => {
-        async fn $method(&self, originator: Option<&str>) -> Result<$result_type, WalletError> {
-            let json_bytes = b"{}";
-            let response = self.api($endpoint, json_bytes, originator).await?;
-            let result: $result_type = serde_json::from_slice(&response)
-                .map_err(|e| WalletError::Internal(format!("JSON deserialize failed: {}", e)))?;
-            Ok(result)
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let json_bytes = b"{}";
+                let response = self.api($endpoint, json_bytes, originator).await?;
+                let result: $result_type = serde_json::from_slice(&response)
+                    .map_err(|e| WalletError::Internal(format!("JSON deserialize failed: {}", e)))?;
+                Ok(result)
+            })
         }
     };
 }
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl WalletInterface for HttpWalletJson {
     // -- Action methods --
     impl_json_method!(

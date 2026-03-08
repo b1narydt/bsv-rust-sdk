@@ -198,24 +198,42 @@ mod tests {
     }
 
     /// Generates an unimplemented stub for a WalletInterface method.
+    /// Uses desugared async-trait form so it works inside #[async_trait] impl blocks.
     macro_rules! stub_method {
         ($name:ident, $args:ty, $ret:ty) => {
-            async fn $name(
-                &self,
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
                 _args: $args,
-                _originator: Option<&str>,
-            ) -> Result<$ret, WalletError> {
-                unimplemented!(concat!(stringify!($name), " not needed for nonce tests"))
+                _originator: Option<&'life1 str>,
+            ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$ret, WalletError>> + ::core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    unimplemented!(concat!(stringify!($name), " not needed for nonce tests"))
+                })
             }
         };
         ($name:ident, $ret:ty) => {
-            async fn $name(&self, _originator: Option<&str>) -> Result<$ret, WalletError> {
-                unimplemented!(concat!(stringify!($name), " not needed for nonce tests"))
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
+                _originator: Option<&'life1 str>,
+            ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$ret, WalletError>> + ::core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    unimplemented!(concat!(stringify!($name), " not needed for nonce tests"))
+                })
             }
         };
     }
 
-    #[allow(async_fn_in_trait)]
+    #[async_trait::async_trait]
     impl WalletInterface for TestWallet {
         stub_method!(create_action, CreateActionArgs, CreateActionResult);
         stub_method!(sign_action, SignActionArgs, SignActionResult);

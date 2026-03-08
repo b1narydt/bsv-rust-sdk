@@ -218,6 +218,7 @@ impl<W: WalletInterface> WalletWireProcessor<W> {
 
 /// WalletWireProcessor also implements WalletWire so it can serve as an
 /// in-memory transport for testing (transceiver -> processor -> wallet).
+#[async_trait::async_trait]
 impl<W: WalletInterface + Send + Sync> WalletWire for WalletWireProcessor<W> {
     async fn transmit_to_wallet(&self, message: &[u8]) -> Result<Vec<u8>, WalletError> {
         Ok(self.process(message).await)

@@ -45,29 +45,47 @@ impl<W: WalletWire> WalletWireTransceiver<W> {
 
 /// Macro to reduce boilerplate for the 28 method implementations.
 /// Pattern: serialize args -> transmit -> deserialize result.
+/// Uses desugared async-trait form so it works inside #[async_trait] impl blocks.
 macro_rules! impl_wire_method {
     // Methods with args
     ($method:ident, $call:ident, $args_type:ty, $result_type:ty,
      $serialize:path, $deserialize:path) => {
-        async fn $method(
-            &self,
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
             args: $args_type,
-            originator: Option<&str>,
-        ) -> Result<$result_type, WalletError> {
-            let data = $serialize(&args)?;
-            let resp = self
-                .transmit(WalletWireCall::$call, originator, data)
-                .await?;
-            $deserialize(&resp)
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let data = $serialize(&args)?;
+                let resp = self
+                    .transmit(WalletWireCall::$call, originator, data)
+                    .await?;
+                $deserialize(&resp)
+            })
         }
     };
     // Methods without args (only originator)
     (no_args $method:ident, $call:ident, $result_type:ty, $deserialize:path) => {
-        async fn $method(&self, originator: Option<&str>) -> Result<$result_type, WalletError> {
-            let resp = self
-                .transmit(WalletWireCall::$call, originator, Vec::new())
-                .await?;
-            $deserialize(&resp)
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let resp = self
+                    .transmit(WalletWireCall::$call, originator, Vec::new())
+                    .await?;
+                $deserialize(&resp)
+            })
         }
     };
 }
@@ -81,7 +99,7 @@ use crate::wallet::serializer::{
     reveal_specific_key_linkage, sign_action, verify_hmac, verify_signature,
 };
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl<W: WalletWire> WalletInterface for WalletWireTransceiver<W> {
     impl_wire_method!(
         create_action,

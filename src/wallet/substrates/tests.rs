@@ -16,7 +16,7 @@ use crate::wallet::types::*;
 
 struct MockWallet;
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl WalletInterface for MockWallet {
     async fn create_action(
         &self,

@@ -40,7 +40,7 @@ impl HttpWalletWire {
     }
 }
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl WalletWire for HttpWalletWire {
     async fn transmit_to_wallet(&self, message: &[u8]) -> Result<Vec<u8>, WalletError> {
         // Parse the request frame to get call code and originator

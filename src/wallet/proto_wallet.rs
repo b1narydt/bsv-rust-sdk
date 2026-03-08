@@ -406,7 +406,7 @@ impl ProtoWallet {
 // Matches TS SDK CompletedProtoWallet: crypto methods delegate to existing
 // ProtoWallet logic; all other methods return NotImplemented.
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl WalletInterface for ProtoWallet {
     // -- Action methods (not supported) --
 

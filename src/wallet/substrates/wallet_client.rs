@@ -26,27 +26,45 @@ impl<W: WalletWire> WalletClient<W> {
 }
 
 /// Macro to reduce boilerplate: validate args then delegate to transceiver.
+/// Uses desugared async-trait form so it works inside #[async_trait] impl blocks.
 macro_rules! impl_validated_method {
     // Methods with args
     ($method:ident, $args_type:ty, $result_type:ty, $validator:path) => {
-        async fn $method(
-            &self,
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
             args: $args_type,
-            originator: Option<&str>,
-        ) -> Result<$result_type, WalletError> {
-            $validator(&args)?;
-            self.transceiver.$method(args, originator).await
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                $validator(&args)?;
+                self.transceiver.$method(args, originator).await
+            })
         }
     };
     // Methods without args (no validation needed, just delegate)
     (no_args $method:ident, $result_type:ty) => {
-        async fn $method(&self, originator: Option<&str>) -> Result<$result_type, WalletError> {
-            self.transceiver.$method(originator).await
+        fn $method<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            originator: Option<&'life1 str>,
+        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$result_type, WalletError>> + ::core::marker::Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                self.transceiver.$method(originator).await
+            })
         }
     };
 }
 
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 impl<W: WalletWire> WalletInterface for WalletClient<W> {
     impl_validated_method!(
         create_action,
