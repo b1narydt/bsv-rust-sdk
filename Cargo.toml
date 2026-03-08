@@ -85,6 +85,10 @@ harness = false
 name = "wallet_client_action"
 required-features = ["network"]
 
+[[example]]
+name = "token_lifecycle"
+required-features = ["network"]
+
 [features]
 default = []
 network = ["dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util", "dep:serde", "dep:serde_json"]

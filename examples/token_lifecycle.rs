@@ -85,7 +85,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 basket: "event tickets".to_string(),
                 tags: Vec::new(),
                 tag_query_mode: None,
-                include: None,
+                include: Some(OutputInclude::EntireTransactions),
                 include_custom_instructions: None,
                 include_tags: None,
                 include_labels: None,
@@ -104,6 +104,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             i, output.outpoint, output.satoshis, output.spendable
         );
     }
+    if let Some(ref beef) = list_result.beef {
+        println!("  BEEF: {} bytes", beef.len());
+    }
     println!();
 
     // -----------------------------------------------------------------------
@@ -111,38 +114,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("Step 3: Redeeming an event ticket token...");
 
-    // List again with BEEF included so we can spend
-    let list_for_redeem = wallet
-        .list_outputs(
-            ListOutputsArgs {
-                basket: "event tickets".to_string(),
-                tags: Vec::new(),
-                tag_query_mode: None,
-                include: Some(OutputInclude::EntireTransactions),
-                include_custom_instructions: None,
-                include_tags: None,
-                include_labels: None,
-                limit: Some(1),
-                offset: None,
-                seek_permission: None,
-            },
-            None,
-        )
-        .await?;
-
-    if list_for_redeem.outputs.is_empty() {
+    if list_result.outputs.is_empty() {
         println!("  No tokens available to redeem.");
         return Ok(());
     }
 
-    let outpoint = &list_for_redeem.outputs[0].outpoint;
+    // Use the last output (most recently created token)
+    let last = list_result.outputs.last().unwrap();
+    let outpoint = &last.outpoint;
+    println!("  Redeeming outpoint: {}", outpoint);
+
     let op_true_script = Script::from_asm("OP_TRUE");
 
     let redeem_result = wallet
         .create_action(
             CreateActionArgs {
                 description: "redeem an event ticket".to_string(),
-                input_beef: list_for_redeem.beef,
+                input_beef: list_result.beef,
                 inputs: vec![CreateActionInput {
                     outpoint: outpoint.clone(),
                     input_description: "event ticket".to_string(),
