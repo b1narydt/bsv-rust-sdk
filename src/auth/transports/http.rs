@@ -134,10 +134,7 @@ impl SimplifiedHTTPTransport {
         match serde_json::from_str::<AuthMessage>(&response_text) {
             Ok(response_msg) => {
                 self.incoming_tx.send(response_msg).await.map_err(|e| {
-                    AuthError::TransportError(format!(
-                        "failed to enqueue incoming message: {}",
-                        e
-                    ))
+                    AuthError::TransportError(format!("failed to enqueue incoming message: {}", e))
                 })?;
             }
             Err(_) => {

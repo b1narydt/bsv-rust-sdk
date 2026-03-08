@@ -292,14 +292,12 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
         for (verifier_key, requested_certs) in requests {
             // Get verifiable certificates from our wallet
-            let verifier_pubkey = crate::primitives::public_key::PublicKey::from_string(&verifier_key)
-                .map_err(AuthError::from)?;
-            let verifiable_certs = get_verifiable_certificates(
-                &self.wallet,
-                &requested_certs,
-                &verifier_pubkey,
-            )
-            .await?;
+            let verifier_pubkey =
+                crate::primitives::public_key::PublicKey::from_string(&verifier_key)
+                    .map_err(AuthError::from)?;
+            let verifiable_certs =
+                get_verifiable_certificates(&self.wallet, &requested_certs, &verifier_pubkey)
+                    .await?;
 
             if !verifiable_certs.is_empty() {
                 // Convert VerifiableCertificate to Certificate for sending
