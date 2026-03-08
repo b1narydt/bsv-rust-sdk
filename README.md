@@ -113,7 +113,7 @@ Benchmarked against the TypeScript BSV SDK across 57 operations. The Rust SDK is
 | ECIES Electrum decrypt 32B | 0.03 | 0.07 | 0.5x | Degenerate small-payload key derivation overhead |
 | ECC Point.mul | 0.36 | 0.43 | 0.9x | Near parity |
 
-Full benchmark report: [`benchmarks/results/comparison-report.md`](../benchmarks/results/comparison-report.md)
+Full benchmark report: [`Rust-vs-TS-performance.md`](Rust-vs-TS-performance.md)
 
 ## Feature Flags
 
