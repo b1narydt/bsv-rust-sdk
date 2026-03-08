@@ -81,6 +81,10 @@ harness = false
 name = "ecies_bench"
 harness = false
 
+[[bench]]
+name = "dispatch_bench"
+harness = false
+
 [[example]]
 name = "wallet_client_action"
 required-features = ["network"]
