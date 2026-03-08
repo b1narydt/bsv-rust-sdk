@@ -280,9 +280,42 @@ impl<W: WalletInterface> Peer<W> {
         self.transport.send(general_msg).await
     }
 
+    /// Send a certificate response to a peer.
+    ///
+    /// Sends a CertificateResponse message containing the given certificates.
+    /// The peer must already have an authenticated session.
+    ///
+    /// Translated from TS SDK Peer.sendCertificateResponse().
+    pub async fn send_certificate_response(
+        &mut self,
+        identity_key: &str,
+        certificates: Vec<Certificate>,
+    ) -> Result<(), AuthError> {
+        let session = self.get_authenticated_session(identity_key).await?;
+        let identity_key_str = self.get_identity_public_key().await?;
+
+        let cert_response = AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::CertificateResponse,
+            identity_key: identity_key_str,
+            nonce: None,
+            your_nonce: Some(session.peer_nonce.clone()),
+            initial_nonce: Some(session.session_nonce.clone()),
+            certificates: Some(certificates),
+            requested_certificates: None,
+            payload: None,
+            signature: None,
+        };
+
+        self.transport.send(cert_response).await
+    }
+
     /// Get an authenticated session for the given identity key, initiating
     /// a handshake if necessary.
-    async fn get_authenticated_session(
+    ///
+    /// Public to allow AuthFetch to trigger handshake before sending
+    /// general messages (needed for certificate exchange ordering).
+    pub async fn get_authenticated_session(
         &mut self,
         identity_key: &str,
     ) -> Result<PeerSession, AuthError> {

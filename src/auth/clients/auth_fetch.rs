@@ -16,7 +16,8 @@ use crate::auth::error::AuthError;
 use crate::auth::peer::Peer;
 use crate::auth::transports::Transport;
 use crate::auth::types::RequestedCertificateSet;
-use crate::wallet::interfaces::WalletInterface;
+use crate::auth::utils::certificates::get_verifiable_certificates;
+use crate::wallet::interfaces::{Certificate, WalletInterface};
 
 // ---------------------------------------------------------------------------
 // AuthFetchResponse
@@ -43,6 +44,10 @@ struct AuthPeer<W: WalletInterface> {
     identity_key: Option<String>,
     #[allow(clippy::type_complexity)]
     general_rx: Arc<Mutex<mpsc::Receiver<(String, Vec<u8>)>>>,
+    /// Receiver for certificate requests from the server.
+    /// Taken from the Peer during creation; consumed to auto-respond with certs.
+    #[allow(clippy::type_complexity)]
+    cert_request_rx: Arc<Mutex<mpsc::Receiver<(String, RequestedCertificateSet)>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -122,13 +127,36 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // Get or create peer for this base URL
         self.ensure_peer(&base_url).await?;
 
+        // Trigger handshake first (if not already authenticated).
+        // This ensures the session is established BEFORE we send the general
+        // message, allowing certificate exchange to happen in between.
+        {
+            let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
+                AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
+            })?;
+            let mut peer = auth_peer.peer.lock().await;
+            let session = peer.get_authenticated_session("").await?;
+            // Store the server identity key learned during handshake
+            drop(peer);
+            if let Some(ap) = self.peers.get_mut(&base_url) {
+                ap.identity_key = Some(session.peer_identity_key.clone());
+            }
+        }
+
+        // Process any pending certificate requests from the server.
+        // During the handshake, the server may have sent requested_certificates
+        // in the initialResponse. The client must respond with matching
+        // certificates BEFORE sending the general message, so the server
+        // receives certs before processing the actual request.
+        self.process_certificate_requests(&base_url).await?;
+
         // Serialize the request payload
         let request_nonce = crate::primitives::random::random_bytes(32);
         let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body);
 
         let request_nonce_b64 = b64_encode(&request_nonce);
 
-        // Send the message via the peer
+        // Send the general message via the peer (session already established)
         let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
             AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
         })?;
@@ -138,17 +166,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
         {
             let mut peer = auth_peer.peer.lock().await;
-            if identity_key.is_empty() {
-                // For the first request, we may not know the server identity key.
-                // The peer handshake will determine it. We need to send to "unknown"
-                // and let the peer handle it. In practice, the Peer sends via its
-                // established session.
-                // For simplicity, we send with an empty identity key and
-                // rely on the peer to use its active session.
-                peer.send_message("", payload).await?;
-            } else {
-                peer.send_message(&identity_key, payload).await?;
-            }
+            peer.send_message(&identity_key, payload).await?;
         }
 
         // Process any pending incoming messages (the transport enqueues the
@@ -230,13 +248,73 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             AuthError::InvalidMessage("general message receiver already taken".to_string())
         })?;
 
+        // Take the certificate request receiver for auto-response
+        let cert_request_rx = peer.on_certificate_request().ok_or_else(|| {
+            AuthError::InvalidMessage("certificate request receiver already taken".to_string())
+        })?;
+
         let auth_peer = AuthPeer {
             peer: Arc::new(Mutex::new(peer)),
             identity_key: None,
             general_rx: Arc::new(Mutex::new(general_rx)),
+            cert_request_rx: Arc::new(Mutex::new(cert_request_rx)),
         };
 
         self.peers.insert(base_url.to_string(), auth_peer);
+        Ok(())
+    }
+
+    /// Process any pending certificate requests from the server.
+    ///
+    /// After handshake, the server may have requested certificates from the
+    /// client. This method checks for pending requests, retrieves matching
+    /// certificates from the wallet via get_verifiable_certificates, and
+    /// sends them back as a CertificateResponse.
+    ///
+    /// Mirrors TS SDK AuthFetch.listenForCertificatesRequested callback.
+    async fn process_certificate_requests(&mut self, base_url: &str) -> Result<(), AuthError> {
+        let auth_peer = match self.peers.get(base_url) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let cert_request_rx = auth_peer.cert_request_rx.clone();
+        let peer = auth_peer.peer.clone();
+
+        // Drain any pending certificate requests (non-blocking)
+        let mut requests = Vec::new();
+        {
+            let mut rx = cert_request_rx.lock().await;
+            while let Ok(req) = rx.try_recv() {
+                requests.push(req);
+            }
+        }
+
+        for (verifier_key, requested_certs) in requests {
+            // Get verifiable certificates from our wallet
+            let verifier_pubkey = crate::primitives::public_key::PublicKey::from_string(&verifier_key)
+                .map_err(AuthError::from)?;
+            let verifiable_certs = get_verifiable_certificates(
+                &self.wallet,
+                &requested_certs,
+                &verifier_pubkey,
+            )
+            .await?;
+
+            if !verifiable_certs.is_empty() {
+                // Convert VerifiableCertificate to Certificate for sending
+                let certs_to_send: Vec<Certificate> = verifiable_certs
+                    .into_iter()
+                    .map(|vc| vc.certificate)
+                    .collect();
+
+                let mut peer_guard = peer.lock().await;
+                peer_guard
+                    .send_certificate_response(&verifier_key, certs_to_send)
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 }

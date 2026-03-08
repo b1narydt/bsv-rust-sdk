@@ -119,16 +119,39 @@ impl SimplifiedHTTPTransport {
         })?;
 
         if response_text.is_empty() {
+            // For messages that don't expect a response body (e.g., CertificateResponse),
+            // an empty or non-parseable response is acceptable.
+            if message.message_type == MessageType::CertificateResponse
+                || message.message_type == MessageType::CertificateRequest
+            {
+                return Ok(());
+            }
             return Err(AuthError::TransportError("empty response body".to_string()));
         }
 
-        let response_msg: AuthMessage = serde_json::from_str(&response_text).map_err(|e| {
-            AuthError::SerializationError(format!("failed to deserialize auth response: {}", e))
-        })?;
-
-        self.incoming_tx.send(response_msg).await.map_err(|e| {
-            AuthError::TransportError(format!("failed to enqueue incoming message: {}", e))
-        })?;
+        // Try to parse as AuthMessage. For certificate messages, the server
+        // may return a simple JSON ack that isn't a valid AuthMessage.
+        match serde_json::from_str::<AuthMessage>(&response_text) {
+            Ok(response_msg) => {
+                self.incoming_tx.send(response_msg).await.map_err(|e| {
+                    AuthError::TransportError(format!(
+                        "failed to enqueue incoming message: {}",
+                        e
+                    ))
+                })?;
+            }
+            Err(_) => {
+                // Non-AuthMessage response is acceptable for certificate messages
+                if message.message_type != MessageType::CertificateResponse
+                    && message.message_type != MessageType::CertificateRequest
+                {
+                    return Err(AuthError::SerializationError(format!(
+                        "failed to deserialize auth response: {}",
+                        response_text
+                    )));
+                }
+            }
+        }
 
         Ok(())
     }
