@@ -48,7 +48,10 @@ pub async fn create_nonce<W: WalletInterface + ?Sized>(wallet: &W) -> Result<Str
 ///
 /// Decodes the base64 nonce, splits at byte 16 (random vs hmac),
 /// and verifies the HMAC using the wallet.
-pub async fn verify_nonce<W: WalletInterface + ?Sized>(wallet: &W, nonce: &str) -> Result<bool, AuthError> {
+pub async fn verify_nonce<W: WalletInterface + ?Sized>(
+    wallet: &W,
+    nonce: &str,
+) -> Result<bool, AuthError> {
     let decoded = base64_decode(nonce)?;
     if decoded.len() < 17 {
         return Err(AuthError::InvalidNonce(

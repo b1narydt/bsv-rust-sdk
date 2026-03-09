@@ -40,15 +40,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify the signature
-    let valid =
-        wallet.verify_signature_sync(message, &signature, &protocol, key_id, &counterparty, true)?;
+    let valid = wallet.verify_signature_sync(
+        message,
+        &signature,
+        &protocol,
+        key_id,
+        &counterparty,
+        true,
+    )?;
     println!("Verified:  {}", valid);
     assert!(valid, "Signature verification must succeed");
 
     // Tamper with the message and verify again
     let tampered = b"Hello, BSV SDK?";
-    let invalid =
-        wallet.verify_signature_sync(tampered, &signature, &protocol, key_id, &counterparty, true)?;
+    let invalid = wallet.verify_signature_sync(
+        tampered,
+        &signature,
+        &protocol,
+        key_id,
+        &counterparty,
+        true,
+    )?;
     println!("Tampered:  {} (expected false)", invalid);
     assert!(!invalid, "Tampered signature must fail verification");
 

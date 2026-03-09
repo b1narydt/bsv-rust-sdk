@@ -484,8 +484,13 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
 
     // Wrong counterparty
     let wrong_cp = counterparty_of(&cp_pub_hex);
-    let result =
-        counterparty_wallet.verify_hmac_sync(SAMPLE_DATA, &hmac, &protocol_2_tests(), "4", &wrong_cp);
+    let result = counterparty_wallet.verify_hmac_sync(
+        SAMPLE_DATA,
+        &hmac,
+        &protocol_2_tests(),
+        "4",
+        &wrong_cp,
+    );
     assert!(
         result.is_err() || !result.unwrap(),
         "HMAC should fail with wrong counterparty"

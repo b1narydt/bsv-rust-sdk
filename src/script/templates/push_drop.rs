@@ -161,9 +161,7 @@ impl PushDrop {
         let mut fields = Vec::with_capacity(drop_field_count);
         for chunk in &chunks[0..drop_field_count] {
             let data = chunk.data.as_ref().ok_or_else(|| {
-                ScriptError::InvalidScript(
-                    "PushDrop::decode: expected data push for field".into(),
-                )
+                ScriptError::InvalidScript("PushDrop::decode: expected data push for field".into())
             })?;
             fields.push(data.clone());
         }
@@ -282,7 +280,10 @@ mod tests {
         let lock_script = pd.lock().unwrap();
 
         let decoded = PushDrop::decode(&lock_script).unwrap();
-        assert_eq!(decoded.fields, fields, "decode should recover 2 fields (OP_2DROP)");
+        assert_eq!(
+            decoded.fields, fields,
+            "decode should recover 2 fields (OP_2DROP)"
+        );
     }
 
     #[test]
@@ -293,7 +294,10 @@ mod tests {
         let lock_script = pd.lock().unwrap();
 
         let decoded = PushDrop::decode(&lock_script).unwrap();
-        assert_eq!(decoded.fields, fields, "decode should recover 3 fields (OP_2DROP + OP_DROP)");
+        assert_eq!(
+            decoded.fields, fields,
+            "decode should recover 3 fields (OP_2DROP + OP_DROP)"
+        );
     }
 
     #[test]

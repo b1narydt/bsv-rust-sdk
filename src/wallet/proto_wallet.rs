@@ -968,7 +968,9 @@ mod tests {
         };
         let self_cp = self_counterparty();
 
-        let ct_uninit = wallet.encrypt_sync(b"test", &protocol, "def1", &uninit).unwrap();
+        let ct_uninit = wallet
+            .encrypt_sync(b"test", &protocol, "def1", &uninit)
+            .unwrap();
         // Both should decrypt with Self_ counterparty
         let decrypted = wallet
             .decrypt_sync(&ct_uninit, &protocol, "def1", &self_cp)

@@ -1170,17 +1170,29 @@ pub struct ListOutputsArgs {
     pub tag_query_mode: Option<QueryMode>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub include: Option<OutputInclude>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "BooleanDefaultFalse::is_none"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "BooleanDefaultFalse::is_none")
+    )]
     pub include_custom_instructions: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "BooleanDefaultFalse::is_none"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "BooleanDefaultFalse::is_none")
+    )]
     pub include_tags: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "BooleanDefaultFalse::is_none"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "BooleanDefaultFalse::is_none")
+    )]
     pub include_labels: BooleanDefaultFalse,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub limit: PositiveIntegerDefault10Max10000,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub offset: Option<PositiveIntegerOrZero>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "BooleanDefaultTrue::is_none"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "BooleanDefaultTrue::is_none")
+    )]
     pub seek_permission: BooleanDefaultTrue,
 }
 

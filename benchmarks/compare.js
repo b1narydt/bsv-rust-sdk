@@ -15,7 +15,7 @@ Options:
 function parseArgs (argv) {
   const args = {
     tsDir: 'benchmarks/results',
-    rustDir: 'rust-sdk/target/criterion',
+    rustDir: 'target/criterion',
     output: 'benchmarks/results/comparison-report.md'
   }
   for (let i = 2; i < argv.length; i++) {

@@ -12,7 +12,9 @@ use crate::services::ServicesError;
 use crate::wallet::interfaces::{
     CreateHmacArgs, DecryptArgs, EncryptArgs, ListOutputsArgs, OutputInclude,
 };
-use crate::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue, Counterparty, CounterpartyType};
+use crate::wallet::types::{
+    BooleanDefaultFalse, BooleanDefaultTrue, Counterparty, CounterpartyType,
+};
 use crate::wallet::WalletInterface;
 
 /// ContactsManager manages contacts with an in-memory cache and wallet-backed
