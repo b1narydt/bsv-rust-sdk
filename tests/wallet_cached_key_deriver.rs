@@ -63,7 +63,7 @@ fn anyone_counterparty() -> Counterparty {
 fn derive_public_key_should_cache_and_return_same_result() {
     let pk = root_key();
     let pk2 = root_key();
-    let mut ckd = CachedKeyDeriver::new(pk, None);
+    let ckd = CachedKeyDeriver::new(pk, None);
     let kd = KeyDeriver::new(pk2);
     let protocol = protocol_0("testprotocol");
     let cp = self_counterparty();
@@ -99,7 +99,7 @@ fn derive_public_key_should_cache_and_return_same_result() {
 
 #[test]
 fn derive_public_key_should_handle_different_parameters_correctly() {
-    let mut ckd = CachedKeyDeriver::new(root_key(), None);
+    let ckd = CachedKeyDeriver::new(root_key(), None);
 
     let protocol1 = protocol_0("protocol1test");
     let protocol2 = protocol_1("protocol2test");
@@ -126,7 +126,7 @@ fn derive_public_key_should_handle_different_parameters_correctly() {
 fn derive_private_key_should_cache_and_return_same_result() {
     let pk = root_key();
     let pk2 = root_key();
-    let mut ckd = CachedKeyDeriver::new(pk, None);
+    let ckd = CachedKeyDeriver::new(pk, None);
     let kd = KeyDeriver::new(pk2);
     let protocol = protocol_1("testprotocol");
     let cp = anyone_counterparty();
@@ -150,7 +150,7 @@ fn derive_private_key_should_cache_and_return_same_result() {
 
 #[test]
 fn derive_private_key_should_differentiate_cache_entries_based_on_parameters() {
-    let mut ckd = CachedKeyDeriver::new(root_key(), None);
+    let ckd = CachedKeyDeriver::new(root_key(), None);
     let protocol = protocol_1("testprotocol");
     let cp = anyone_counterparty();
 
@@ -172,7 +172,7 @@ fn derive_private_key_should_differentiate_cache_entries_based_on_parameters() {
 fn derive_symmetric_key_should_cache_and_return_same_result() {
     let pk = root_key();
     let pk2 = root_key();
-    let mut ckd = CachedKeyDeriver::new(pk, None);
+    let ckd = CachedKeyDeriver::new(pk, None);
     let kd = KeyDeriver::new(pk2);
     let protocol = protocol_2("testprotocol");
     let cp = self_counterparty();
@@ -198,7 +198,7 @@ fn derive_symmetric_key_should_cache_and_return_same_result() {
 fn derive_symmetric_key_should_handle_different_counterparties() {
     // Use a root key that is NOT PrivateKey(1), so self != anyone
     let pk = PrivateKey::from_hex("abcd").unwrap();
-    let mut ckd = CachedKeyDeriver::new(pk, None);
+    let ckd = CachedKeyDeriver::new(pk, None);
     let protocol = protocol_2("testprotocol");
 
     let result_self = ckd
@@ -221,7 +221,7 @@ fn derive_symmetric_key_should_handle_different_counterparties() {
 
 #[test]
 fn cache_eviction_should_clear_and_continue_working() {
-    let mut ckd = CachedKeyDeriver::new(root_key(), Some(3));
+    let ckd = CachedKeyDeriver::new(root_key(), Some(3));
     let protocol = protocol_0("testprotocol");
     let cp = self_counterparty();
 
@@ -269,7 +269,7 @@ fn cache_eviction_should_clear_and_continue_working() {
 
 #[test]
 fn cache_should_store_results_correctly_for_repeated_calls() {
-    let mut ckd = CachedKeyDeriver::new(root_key(), None);
+    let ckd = CachedKeyDeriver::new(root_key(), None);
     let protocol = protocol_0("testprotocol");
     let cp = self_counterparty();
 

@@ -1,10 +1,12 @@
 //! CachedKeyDeriver: Wrapper around KeyDeriver with HashMap memoization.
 //!
 //! Caches derived keys to improve performance for repeated derivations
-//! with the same parameters. Uses a simple HashMap with configurable
-//! maximum size.
+//! with the same parameters. Uses interior mutability (RwLock) so that
+//! derive methods take `&self`, enabling shared ownership via `Arc`
+//! without external locking.
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use crate::primitives::private_key::PrivateKey;
 use crate::primitives::public_key::PublicKey;
@@ -23,10 +25,11 @@ enum CachedValue {
 }
 
 /// CachedKeyDeriver wraps a KeyDeriver with a HashMap cache for
-/// derived key memoization.
+/// derived key memoization. Uses interior mutability so all derive
+/// methods take `&self`.
 pub struct CachedKeyDeriver {
     key_deriver: KeyDeriver,
-    cache: HashMap<String, CachedValue>,
+    cache: RwLock<HashMap<String, CachedValue>>,
     max_cache_size: usize,
 }
 
@@ -41,9 +44,17 @@ impl CachedKeyDeriver {
         };
         CachedKeyDeriver {
             key_deriver: KeyDeriver::new(private_key),
-            cache: HashMap::new(),
+            cache: RwLock::new(HashMap::new()),
             max_cache_size: size,
         }
+    }
+
+    /// Returns a reference to the root private key.
+    ///
+    /// Needed for BRC-29 key derivation and other operations that require
+    /// direct access to the root key material.
+    pub fn root_key(&self) -> &PrivateKey {
+        self.key_deriver.root_key()
     }
 
     /// Returns the identity public key (delegates directly, no caching).
@@ -58,7 +69,7 @@ impl CachedKeyDeriver {
 
     /// Derive a private key with caching.
     pub fn derive_private_key(
-        &mut self,
+        &self,
         protocol: &Protocol,
         key_id: &str,
         counterparty: &Counterparty,
@@ -66,8 +77,12 @@ impl CachedKeyDeriver {
         let cache_key =
             Self::make_cache_key("derivePrivateKey", protocol, key_id, counterparty, false);
 
-        if let Some(CachedValue::Private(pk)) = self.cache.get(&cache_key) {
-            return Ok(pk.clone());
+        // Check cache with read lock
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(CachedValue::Private(pk)) = cache.get(&cache_key) {
+                return Ok(pk.clone());
+            }
         }
 
         let result = self
@@ -79,7 +94,7 @@ impl CachedKeyDeriver {
 
     /// Derive a public key with caching.
     pub fn derive_public_key(
-        &mut self,
+        &self,
         protocol: &Protocol,
         key_id: &str,
         counterparty: &Counterparty,
@@ -88,8 +103,12 @@ impl CachedKeyDeriver {
         let cache_key =
             Self::make_cache_key("derivePublicKey", protocol, key_id, counterparty, for_self);
 
-        if let Some(CachedValue::Public(pk)) = self.cache.get(&cache_key) {
-            return Ok(pk.clone());
+        // Check cache with read lock
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(CachedValue::Public(pk)) = cache.get(&cache_key) {
+                return Ok(pk.clone());
+            }
         }
 
         let result =
@@ -101,7 +120,7 @@ impl CachedKeyDeriver {
 
     /// Derive a symmetric key with caching.
     pub fn derive_symmetric_key(
-        &mut self,
+        &self,
         protocol: &Protocol,
         key_id: &str,
         counterparty: &Counterparty,
@@ -109,8 +128,12 @@ impl CachedKeyDeriver {
         let cache_key =
             Self::make_cache_key("deriveSymmetricKey", protocol, key_id, counterparty, false);
 
-        if let Some(CachedValue::Symmetric(bytes)) = self.cache.get(&cache_key) {
-            return SymmetricKey::from_bytes(bytes).map_err(WalletError::from);
+        // Check cache with read lock
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(CachedValue::Symmetric(bytes)) = cache.get(&cache_key) {
+                return SymmetricKey::from_bytes(bytes).map_err(WalletError::from);
+            }
         }
 
         let result = self
@@ -121,6 +144,12 @@ impl CachedKeyDeriver {
         // Re-derive to return (bytes already cached)
         self.key_deriver
             .derive_symmetric_key(protocol, key_id, counterparty)
+    }
+
+    /// Returns the number of entries currently in the cache.
+    #[cfg(test)]
+    pub(crate) fn cache_len(&self) -> usize {
+        self.cache.read().unwrap().len()
     }
 
     /// Build a cache key string from the derivation parameters.
@@ -142,11 +171,12 @@ impl CachedKeyDeriver {
     }
 
     /// Insert a value into the cache, clearing all entries if max size exceeded.
-    fn cache_set(&mut self, key: String, value: CachedValue) {
-        if self.cache.len() >= self.max_cache_size {
-            self.cache.clear();
+    fn cache_set(&self, key: String, value: CachedValue) {
+        let mut cache = self.cache.write().unwrap();
+        if cache.len() >= self.max_cache_size {
+            cache.clear();
         }
-        self.cache.insert(key, value);
+        cache.insert(key, value);
     }
 }
 
@@ -161,7 +191,7 @@ mod tests {
         let priv_key2 = PrivateKey::from_hex("abcd").unwrap();
 
         let kd = KeyDeriver::new(priv_key);
-        let mut ckd = CachedKeyDeriver::new(priv_key2, None);
+        let ckd = CachedKeyDeriver::new(priv_key2, None);
 
         let protocol = Protocol {
             security_level: 2,
@@ -200,7 +230,7 @@ mod tests {
     #[test]
     fn test_cache_eviction() {
         let priv_key = PrivateKey::from_hex("abcd").unwrap();
-        let mut ckd = CachedKeyDeriver::new(priv_key, Some(2));
+        let ckd = CachedKeyDeriver::new(priv_key, Some(2));
 
         let protocol = Protocol {
             security_level: 0,
@@ -223,7 +253,7 @@ mod tests {
             .derive_private_key(&protocol, "3", &counterparty)
             .unwrap();
         // Cache should have 1 entry now
-        assert_eq!(ckd.cache.len(), 1);
+        assert_eq!(ckd.cache_len(), 1);
     }
 
     #[test]
@@ -233,5 +263,13 @@ mod tests {
         let kd = KeyDeriver::new(priv_key);
         let ckd = CachedKeyDeriver::new(priv_key2, None);
         assert_eq!(kd.identity_key_hex(), ckd.identity_key_hex());
+    }
+
+    #[test]
+    fn test_root_key_accessor() {
+        let priv_key = PrivateKey::from_hex("abcd").unwrap();
+        let expected_hex = priv_key.to_hex();
+        let ckd = CachedKeyDeriver::new(priv_key, None);
+        assert_eq!(ckd.root_key().to_hex(), expected_hex);
     }
 }

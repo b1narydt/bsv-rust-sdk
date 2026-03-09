@@ -529,6 +529,66 @@ impl Transaction {
         self.inputs[input_index].unlocking_script = Some(unlocking_script);
         Ok(())
     }
+
+    /// Sign all unsigned inputs using the same template.
+    ///
+    /// A convenience method that reduces the per-input signing loop. For each
+    /// input that has no `unlocking_script` yet, this resolves `source_satoshis`
+    /// and `source_locking_script` from the input's `source_transaction` and
+    /// signs with the given template and sighash scope.
+    ///
+    /// Inputs that already have an unlocking script are skipped.
+    ///
+    /// Each input must have its `source_transaction` set so that the source
+    /// output's satoshis and locking script can be resolved. If you need
+    /// different templates or scopes per input, use the single-input `sign()`.
+    pub fn sign_all_inputs(
+        &mut self,
+        template: &dyn ScriptTemplateUnlock,
+        scope: u32,
+    ) -> Result<(), TransactionError> {
+        let num_inputs = self.inputs.len();
+
+        for i in 0..num_inputs {
+            // Skip inputs that already have an unlocking script
+            if self.inputs[i].unlocking_script.is_some() {
+                continue;
+            }
+
+            // Resolve source satoshis and locking script from source_transaction
+            let (source_satoshis, source_locking_script) = {
+                let source_tx = self.inputs[i].source_transaction.as_ref().ok_or_else(|| {
+                    TransactionError::SigningFailed(format!(
+                        "input {}: source_transaction required for sign_all_inputs()",
+                        i
+                    ))
+                })?;
+                let out_idx = self.inputs[i].source_output_index as usize;
+                let output = source_tx.outputs.get(out_idx).ok_or_else(|| {
+                    TransactionError::SigningFailed(format!(
+                        "input {}: source transaction has no output at index {}",
+                        i, out_idx
+                    ))
+                })?;
+                let satoshis = output.satoshis.ok_or_else(|| {
+                    TransactionError::SigningFailed(format!(
+                        "input {}: source output {} has no satoshis",
+                        i, out_idx
+                    ))
+                })?;
+                (satoshis, output.locking_script.clone())
+            };
+
+            let preimage =
+                self.sighash_preimage(i, scope, source_satoshis, &source_locking_script)?;
+            let unlocking_script = template
+                .sign(&preimage)
+                .map_err(|e| TransactionError::SigningFailed(format!("input {}: {}", i, e)))?;
+            self.inputs[i].unlocking_script = Some(unlocking_script);
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Transaction {

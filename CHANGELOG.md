@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-09
+
+### Added
+- **`CachedKeyDeriver::root_key()` accessor** -- exposes a `&PrivateKey` reference to the root key, eliminating the need to store root key material separately for BRC-29 key derivation
+- **`KeyDeriver::root_key()` accessor** -- same root key accessor on the underlying deriver
+- **`Transaction::sign_all_inputs()` bulk signing** -- signs all unsigned inputs in one call by resolving source satoshis and locking scripts from each input's `source_transaction`, reducing the verbose per-input signing loop
+
+### Changed
+- **`CachedKeyDeriver` now uses interior mutability** -- internal cache changed from `HashMap` to `RwLock<HashMap>`, so all `derive_*` methods now take `&self` instead of `&mut self`. This allows `Arc<CachedKeyDeriver>` to be shared directly without wrapping in `Arc<Mutex<CachedKeyDeriver>>`
+
 ## [0.1.4] - 2026-03-09
 
 ### Added

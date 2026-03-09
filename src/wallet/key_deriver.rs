@@ -34,6 +34,11 @@ impl KeyDeriver {
         }
     }
 
+    /// Returns a reference to the root private key.
+    pub fn root_key(&self) -> &PrivateKey {
+        &self.root_key
+    }
+
     /// Returns the public key corresponding to the root private key.
     pub fn identity_key(&self) -> PublicKey {
         self.root_key.to_public_key()
