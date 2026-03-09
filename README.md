@@ -8,14 +8,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bsv-sdk = "0.1.3"
+bsv-sdk = "0.1.4"
 ```
 
 To enable async HTTP and WebSocket functionality (wallet services, overlay networks):
 
 ```toml
 [dependencies]
-bsv-sdk = { version = "0.1.3", features = ["network"] }
+bsv-sdk = { version = "0.1.4", features = ["network"] }
 ```
 
 ## Quick Start

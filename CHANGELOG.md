@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-03-09
+
+### Added
+- **BEEF merge and atomic serialization methods** matching TypeScript SDK:
+  - `Beef::merge_beef()` -- merge another Beef (bumps deduplicated by block height + root, transactions by txid)
+  - `Beef::merge_raw_tx()` -- merge a raw serialized transaction with optional bump index
+  - `Beef::to_binary_atomic()` -- serialize as Atomic BEEF (BRC-95) targeting a specific txid
+  - `Beef::merge_beef_from_binary()` -- convenience method to merge from raw bytes
+  - `Beef::merge_bump()` -- merge a MerklePath with deduplication and transaction bump assignment
+  - `Beef::find_txid()` -- look up a BeefTx by txid
+- 9 new unit tests for BEEF merge and atomic serialization
+
+### Fixed
+- Removed stale "Stub for Task 1" comment from beef.rs module documentation
+
 ## [0.1.3] - 2026-03-08
 
 ### Fixed
