@@ -101,7 +101,7 @@ impl ProtoWallet {
     /// (protocol, key_id, counterparty, for_self are ignored).
     /// Otherwise, derives a public key using the given parameters.
     /// If counterparty is Uninitialized, it defaults to Self_.
-    pub fn get_public_key(
+    pub fn get_public_key_sync(
         &self,
         protocol: &Protocol,
         key_id: &str,
@@ -128,7 +128,7 @@ impl ProtoWallet {
     ///
     /// Hashes data with SHA-256, then signs the hash with a derived private key.
     /// Returns the DER-encoded signature bytes.
-    pub fn create_signature(
+    pub fn create_signature_sync(
         &self,
         data: &[u8],
         protocol: &Protocol,
@@ -151,7 +151,7 @@ impl ProtoWallet {
     ///
     /// Hashes data with SHA-256, parses the DER signature, and verifies
     /// against the derived public key.
-    pub fn verify_signature(
+    pub fn verify_signature_sync(
         &self,
         data: &[u8],
         signature: &[u8],
@@ -175,7 +175,7 @@ impl ProtoWallet {
     ///
     /// Derives a symmetric key from the protocol, key ID, and counterparty,
     /// then encrypts the plaintext. Returns IV || ciphertext || auth tag.
-    pub fn encrypt(
+    pub fn encrypt_sync(
         &self,
         plaintext: &[u8],
         protocol: &Protocol,
@@ -193,7 +193,7 @@ impl ProtoWallet {
     ///
     /// Derives the same symmetric key used for encryption and decrypts.
     /// Expects format: IV(32) || ciphertext || auth tag(16).
-    pub fn decrypt(
+    pub fn decrypt_sync(
         &self,
         ciphertext: &[u8],
         protocol: &Protocol,
@@ -210,7 +210,7 @@ impl ProtoWallet {
     /// Create an HMAC-SHA256 over data using a derived symmetric key.
     ///
     /// Returns a 32-byte HMAC value.
-    pub fn create_hmac(
+    pub fn create_hmac_sync(
         &self,
         data: &[u8],
         protocol: &Protocol,
@@ -230,7 +230,7 @@ impl ProtoWallet {
     ///
     /// Computes the expected HMAC and compares it with the provided value
     /// using constant-time comparison.
-    pub fn verify_hmac(
+    pub fn verify_hmac_sync(
         &self,
         data: &[u8],
         hmac_value: &[u8],
@@ -238,7 +238,7 @@ impl ProtoWallet {
         key_id: &str,
         counterparty: &Counterparty,
     ) -> Result<bool, WalletError> {
-        let expected = self.create_hmac(data, protocol, key_id, counterparty)?;
+        let expected = self.create_hmac_sync(data, protocol, key_id, counterparty)?;
         // Constant-time comparison to prevent timing attacks
         Ok(constant_time_eq(&expected, hmac_value))
     }
@@ -248,7 +248,7 @@ impl ProtoWallet {
     /// Creates an encrypted revelation of the shared secret between this wallet
     /// and the counterparty, along with an encrypted HMAC proof. Both are
     /// encrypted for the verifier using the "counterparty linkage revelation" protocol.
-    pub fn reveal_counterparty_key_linkage(
+    pub fn reveal_counterparty_key_linkage_sync(
         &self,
         counterparty: &Counterparty,
         verifier: &PublicKey,
@@ -274,7 +274,7 @@ impl ProtoWallet {
         };
 
         // Encrypt the linkage bytes for the verifier
-        let encrypted_linkage = self.encrypt(
+        let encrypted_linkage = self.encrypt_sync(
             &linkage_bytes,
             &linkage_protocol,
             &revelation_time,
@@ -282,13 +282,13 @@ impl ProtoWallet {
         )?;
 
         // Create HMAC proof of the linkage and encrypt it for the verifier
-        let proof = self.create_hmac(
+        let proof = self.create_hmac_sync(
             &linkage_bytes,
             &linkage_protocol,
             &revelation_time,
             &verifier_counterparty,
         )?;
-        let encrypted_proof = self.encrypt(
+        let encrypted_proof = self.encrypt_sync(
             &proof,
             &linkage_protocol,
             &revelation_time,
@@ -319,7 +319,7 @@ impl ProtoWallet {
     ///
     /// Encrypts the specific secret and a proof byte for the verifier using a
     /// special "specific linkage revelation" protocol.
-    pub fn reveal_specific_key_linkage(
+    pub fn reveal_specific_key_linkage_sync(
         &self,
         counterparty: &Counterparty,
         verifier: &PublicKey,
@@ -349,11 +349,11 @@ impl ProtoWallet {
 
         // Encrypt the linkage for the verifier
         let encrypted_linkage =
-            self.encrypt(&linkage, &encrypt_protocol, key_id, &verifier_counterparty)?;
+            self.encrypt_sync(&linkage, &encrypt_protocol, key_id, &verifier_counterparty)?;
 
         // Encrypt proof type byte (0 = no proof) for the verifier
         let proof_bytes: [u8; 1] = [0];
-        let encrypted_proof = self.encrypt(
+        let encrypted_proof = self.encrypt_sync(
             &proof_bytes,
             &encrypt_protocol,
             key_id,
@@ -490,7 +490,7 @@ impl WalletInterface for ProtoWallet {
             public_key: None,
         });
         let for_self = args.for_self.unwrap_or(false);
-        let pk = self.get_public_key(
+        let pk = self.get_public_key_sync(
             &protocol,
             &key_id,
             &counterparty,
@@ -509,7 +509,7 @@ impl WalletInterface for ProtoWallet {
             counterparty_type: CounterpartyType::Other,
             public_key: Some(args.counterparty),
         };
-        let result = self.reveal_counterparty_key_linkage(&counterparty, &args.verifier)?;
+        let result = self.reveal_counterparty_key_linkage_sync(&counterparty, &args.verifier)?;
         Ok(RevealCounterpartyKeyLinkageResult {
             prover: result.prover,
             counterparty: result.counterparty,
@@ -525,7 +525,7 @@ impl WalletInterface for ProtoWallet {
         args: RevealSpecificKeyLinkageArgs,
         _originator: Option<&str>,
     ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
-        let result = self.reveal_specific_key_linkage(
+        let result = self.reveal_specific_key_linkage_sync(
             &args.counterparty,
             &args.verifier,
             &args.protocol_id,
@@ -548,7 +548,7 @@ impl WalletInterface for ProtoWallet {
         args: EncryptArgs,
         _originator: Option<&str>,
     ) -> Result<EncryptResult, WalletError> {
-        let ciphertext = self.encrypt(
+        let ciphertext = self.encrypt_sync(
             &args.plaintext,
             &args.protocol_id,
             &args.key_id,
@@ -562,7 +562,7 @@ impl WalletInterface for ProtoWallet {
         args: DecryptArgs,
         _originator: Option<&str>,
     ) -> Result<DecryptResult, WalletError> {
-        let plaintext = self.decrypt(
+        let plaintext = self.decrypt_sync(
             &args.ciphertext,
             &args.protocol_id,
             &args.key_id,
@@ -576,7 +576,7 @@ impl WalletInterface for ProtoWallet {
         args: CreateHmacArgs,
         _originator: Option<&str>,
     ) -> Result<CreateHmacResult, WalletError> {
-        let hmac = self.create_hmac(
+        let hmac = self.create_hmac_sync(
             &args.data,
             &args.protocol_id,
             &args.key_id,
@@ -590,7 +590,7 @@ impl WalletInterface for ProtoWallet {
         args: VerifyHmacArgs,
         _originator: Option<&str>,
     ) -> Result<VerifyHmacResult, WalletError> {
-        let valid = self.verify_hmac(
+        let valid = self.verify_hmac_sync(
             &args.data,
             &args.hmac,
             &args.protocol_id,
@@ -605,7 +605,7 @@ impl WalletInterface for ProtoWallet {
         args: CreateSignatureArgs,
         _originator: Option<&str>,
     ) -> Result<CreateSignatureResult, WalletError> {
-        let signature = self.create_signature(
+        let signature = self.create_signature_sync(
             &args.data,
             &args.protocol_id,
             &args.key_id,
@@ -620,7 +620,7 @@ impl WalletInterface for ProtoWallet {
         _originator: Option<&str>,
     ) -> Result<VerifySignatureResult, WalletError> {
         let for_self = args.for_self.unwrap_or(false);
-        let valid = self.verify_signature(
+        let valid = self.verify_signature_sync(
             &args.data,
             &args.signature,
             &args.protocol_id,
@@ -791,7 +791,7 @@ mod tests {
         let expected_pub = pk.to_public_key();
         let wallet = ProtoWallet::new(pk);
         let identity = wallet
-            .get_public_key(&test_protocol(), "1", &self_counterparty(), false, true)
+            .get_public_key_sync(&test_protocol(), "1", &self_counterparty(), false, true)
             .unwrap();
         assert_eq!(identity.to_der_hex(), expected_pub.to_der_hex());
     }
@@ -802,7 +802,7 @@ mod tests {
         let expected = pk.to_public_key().to_der_hex();
         let wallet = ProtoWallet::new(pk);
         let result = wallet
-            .get_public_key(&test_protocol(), "1", &self_counterparty(), false, true)
+            .get_public_key_sync(&test_protocol(), "1", &self_counterparty(), false, true)
             .unwrap();
         assert_eq!(result.to_der_hex(), expected);
     }
@@ -812,10 +812,10 @@ mod tests {
         let wallet = ProtoWallet::new(test_private_key());
         let protocol = test_protocol();
         let pub1 = wallet
-            .get_public_key(&protocol, "key1", &self_counterparty(), true, false)
+            .get_public_key_sync(&protocol, "key1", &self_counterparty(), true, false)
             .unwrap();
         let pub2 = wallet
-            .get_public_key(&protocol, "key2", &self_counterparty(), true, false)
+            .get_public_key_sync(&protocol, "key2", &self_counterparty(), true, false)
             .unwrap();
         // Different key IDs should produce different derived keys
         assert_ne!(pub1.to_der_hex(), pub2.to_der_hex());
@@ -829,12 +829,12 @@ mod tests {
         let data = b"hello world signature test";
 
         let sig = wallet
-            .create_signature(data, &protocol, "sig1", &counterparty)
+            .create_signature_sync(data, &protocol, "sig1", &counterparty)
             .unwrap();
         assert!(!sig.is_empty());
 
         let valid = wallet
-            .verify_signature(data, &sig, &protocol, "sig1", &counterparty, true)
+            .verify_signature_sync(data, &sig, &protocol, "sig1", &counterparty, true)
             .unwrap();
         assert!(valid, "signature should verify");
     }
@@ -846,10 +846,10 @@ mod tests {
         let counterparty = self_counterparty();
 
         let sig = wallet
-            .create_signature(b"correct data", &protocol, "sig2", &counterparty)
+            .create_signature_sync(b"correct data", &protocol, "sig2", &counterparty)
             .unwrap();
         let valid = wallet
-            .verify_signature(b"wrong data", &sig, &protocol, "sig2", &counterparty, true)
+            .verify_signature_sync(b"wrong data", &sig, &protocol, "sig2", &counterparty, true)
             .unwrap();
         assert!(!valid, "signature should not verify for wrong data");
     }
@@ -862,12 +862,12 @@ mod tests {
         let plaintext = b"secret message for encryption";
 
         let ciphertext = wallet
-            .encrypt(plaintext, &protocol, "enc1", &counterparty)
+            .encrypt_sync(plaintext, &protocol, "enc1", &counterparty)
             .unwrap();
         assert_ne!(ciphertext.as_slice(), plaintext);
 
         let decrypted = wallet
-            .decrypt(&ciphertext, &protocol, "enc1", &counterparty)
+            .decrypt_sync(&ciphertext, &protocol, "enc1", &counterparty)
             .unwrap();
         assert_eq!(decrypted, plaintext);
     }
@@ -879,10 +879,10 @@ mod tests {
         let counterparty = self_counterparty();
 
         let ciphertext = wallet
-            .encrypt(b"", &protocol, "enc2", &counterparty)
+            .encrypt_sync(b"", &protocol, "enc2", &counterparty)
             .unwrap();
         let decrypted = wallet
-            .decrypt(&ciphertext, &protocol, "enc2", &counterparty)
+            .decrypt_sync(&ciphertext, &protocol, "enc2", &counterparty)
             .unwrap();
         assert!(decrypted.is_empty());
     }
@@ -895,12 +895,12 @@ mod tests {
         let data = b"hmac test data";
 
         let hmac = wallet
-            .create_hmac(data, &protocol, "hmac1", &counterparty)
+            .create_hmac_sync(data, &protocol, "hmac1", &counterparty)
             .unwrap();
         assert_eq!(hmac.len(), 32);
 
         let valid = wallet
-            .verify_hmac(data, &hmac, &protocol, "hmac1", &counterparty)
+            .verify_hmac_sync(data, &hmac, &protocol, "hmac1", &counterparty)
             .unwrap();
         assert!(valid, "HMAC should verify");
     }
@@ -912,10 +912,10 @@ mod tests {
         let counterparty = self_counterparty();
 
         let hmac = wallet
-            .create_hmac(b"correct", &protocol, "hmac2", &counterparty)
+            .create_hmac_sync(b"correct", &protocol, "hmac2", &counterparty)
             .unwrap();
         let valid = wallet
-            .verify_hmac(b"wrong", &hmac, &protocol, "hmac2", &counterparty)
+            .verify_hmac_sync(b"wrong", &hmac, &protocol, "hmac2", &counterparty)
             .unwrap();
         assert!(!valid, "HMAC should not verify for wrong data");
     }
@@ -928,10 +928,10 @@ mod tests {
         let data = b"deterministic hmac";
 
         let hmac1 = wallet
-            .create_hmac(data, &protocol, "hmac3", &counterparty)
+            .create_hmac_sync(data, &protocol, "hmac3", &counterparty)
             .unwrap();
         let hmac2 = wallet
-            .create_hmac(data, &protocol, "hmac3", &counterparty)
+            .create_hmac_sync(data, &protocol, "hmac3", &counterparty)
             .unwrap();
         assert_eq!(hmac1, hmac2);
     }
@@ -950,10 +950,10 @@ mod tests {
         let plaintext = b"message from anyone";
 
         let ciphertext = anyone
-            .encrypt(plaintext, &protocol, "anon1", &counterparty)
+            .encrypt_sync(plaintext, &protocol, "anon1", &counterparty)
             .unwrap();
         let decrypted = anyone
-            .decrypt(&ciphertext, &protocol, "anon1", &counterparty)
+            .decrypt_sync(&ciphertext, &protocol, "anon1", &counterparty)
             .unwrap();
         assert_eq!(decrypted, plaintext);
     }
@@ -968,10 +968,10 @@ mod tests {
         };
         let self_cp = self_counterparty();
 
-        let ct_uninit = wallet.encrypt(b"test", &protocol, "def1", &uninit).unwrap();
+        let ct_uninit = wallet.encrypt_sync(b"test", &protocol, "def1", &uninit).unwrap();
         // Both should decrypt with Self_ counterparty
         let decrypted = wallet
-            .decrypt(&ct_uninit, &protocol, "def1", &self_cp)
+            .decrypt_sync(&ct_uninit, &protocol, "def1", &self_cp)
             .unwrap();
         assert_eq!(decrypted, b"test");
     }
@@ -992,7 +992,7 @@ mod tests {
 
         let protocol = test_protocol();
         let result = wallet_a
-            .reveal_specific_key_linkage(&counterparty, &verifier_pub, &protocol, "link1")
+            .reveal_specific_key_linkage_sync(&counterparty, &verifier_pub, &protocol, "link1")
             .unwrap();
 
         assert!(!result.encrypted_linkage.is_empty());
@@ -1016,7 +1016,7 @@ mod tests {
         };
 
         let result = wallet
-            .reveal_counterparty_key_linkage(&counterparty, &verifier_pub)
+            .reveal_counterparty_key_linkage_sync(&counterparty, &verifier_pub)
             .unwrap();
 
         assert!(!result.encrypted_linkage.is_empty());
@@ -1034,7 +1034,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Helper: call WalletInterface method through trait to verify dispatch.
-    async fn get_pub_key_via_trait<W: WalletInterface>(
+    async fn get_pub_key_via_trait<W: WalletInterface + ?Sized>(
         w: &W,
         args: GetPublicKeyArgs,
     ) -> Result<GetPublicKeyResult, WalletError> {
@@ -1088,7 +1088,7 @@ mod tests {
 
         // Should match the direct method call
         let direct = wallet
-            .get_public_key(
+            .get_public_key_sync(
                 &test_protocol(),
                 "derived1",
                 &self_counterparty(),

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-03-09
+
+### Added
+- **`PushDrop::decode()`** -- decodes a PushDrop script back into its component fields and locking key, with 4 unit tests
+- **`Transaction::from_beef()`** -- constructs a Transaction from BEEF binary data, resolving source transactions from the BEEF structure
+- **`Beef::into_transaction()`** -- extracts the subject transaction from a BEEF container as a fully-resolved Transaction
+- **`Beef::sort_txs()`** -- topologically sorts BEEF transactions so dependencies appear before dependents, with 4 unit tests
+- **`SerialNumber::from_string()`** -- parses a serial number from its string representation, with 5 unit tests
+- **`BeefParty::new()` iterator API** -- accepts any `IntoIterator<Item = Beef>` instead of requiring a pre-built `Vec`, with 3 unit tests
+
+### Changed
+- **`BooleanDefaultTrue` / `BooleanDefaultFalse` converted from type aliases to newtypes** -- now proper structs with `Default` (returning `true`/`false` respectively), `Deref<Target = bool>`, `From<bool>`, and serde support. Enables correct default semantics in wallet option types.
+- **`InternalizeOutput` converted from struct to enum** -- now `InternalizeOutput::Change` and `InternalizeOutput::NoChange` variants matching TypeScript SDK semantics
+- **`ProtoWallet` inherent methods renamed with `_sync` suffix** -- `get_public_key` -> `get_public_key_sync`, `encrypt` -> `encrypt_sync`, etc. (9 methods total). Eliminates name collision between inherent methods and `WalletInterface` trait methods, enabling correct trait dispatch.
+- **`WalletInterface` generic bounds relaxed with `?Sized`** -- added to certificate operations, identity client, contacts manager, and registry client generics, enabling `dyn WalletInterface` usage in more contexts
+- **`Default` derives added to `CreateActionOptions` and `SignActionOptions`** -- enables `..Default::default()` builder pattern
+- **`WalletError` now implements `From<String>`** -- enables `?` operator with string error sources
+
 ## [0.1.5] - 2026-03-09
 
 ### Added

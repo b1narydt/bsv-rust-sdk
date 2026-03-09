@@ -92,7 +92,7 @@ fn validates_the_brc3_compliance_vector() {
         counterparty_of("0294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a1");
 
     let valid = wallet
-        .verify_signature(&data, &signature, &protocol, "42", &counterparty, false)
+        .verify_signature_sync(&data, &signature, &protocol, "42", &counterparty, false)
         .unwrap();
     assert!(valid, "BRC-3 compliance vector should verify");
 }
@@ -120,7 +120,7 @@ fn validates_the_brc2_hmac_compliance_vector() {
         counterparty_of("0294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a1");
 
     let valid = wallet
-        .verify_hmac(&data, &hmac, &protocol, "42", &counterparty)
+        .verify_hmac_sync(&data, &hmac, &protocol, "42", &counterparty)
         .unwrap();
     assert!(valid, "BRC-2 HMAC compliance vector should verify");
 }
@@ -150,7 +150,7 @@ fn validates_the_brc2_encryption_compliance_vector() {
         counterparty_of("0294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a1");
 
     let plaintext = wallet
-        .decrypt(&ciphertext, &protocol, "42", &counterparty)
+        .decrypt_sync(&ciphertext, &protocol, "42", &counterparty)
         .unwrap();
     let plaintext_str = String::from_utf8(plaintext).unwrap();
     assert_eq!(
@@ -175,11 +175,11 @@ fn encrypts_messages_decryptable_by_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let ciphertext = user
-        .encrypt(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .encrypt_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     let plaintext = counterparty_wallet
-        .decrypt(&ciphertext, &protocol_2_tests(), "4", &cp_for_counterparty)
+        .decrypt_sync(&ciphertext, &protocol_2_tests(), "4", &cp_for_counterparty)
         .unwrap();
 
     assert_eq!(plaintext, SAMPLE_DATA);
@@ -202,7 +202,7 @@ fn fails_to_decrypt_with_wrong_protocol_key_or_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let ciphertext = user
-        .encrypt(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .encrypt_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     // Wrong protocol security level
@@ -212,7 +212,7 @@ fn fails_to_decrypt_with_wrong_protocol_key_or_counterparty() {
     };
     assert!(
         counterparty_wallet
-            .decrypt(&ciphertext, &wrong_protocol, "4", &cp_for_counterparty)
+            .decrypt_sync(&ciphertext, &wrong_protocol, "4", &cp_for_counterparty)
             .is_err(),
         "should fail with wrong protocol"
     );
@@ -220,7 +220,7 @@ fn fails_to_decrypt_with_wrong_protocol_key_or_counterparty() {
     // Wrong key ID
     assert!(
         counterparty_wallet
-            .decrypt(&ciphertext, &protocol_2_tests(), "5", &cp_for_counterparty)
+            .decrypt_sync(&ciphertext, &protocol_2_tests(), "5", &cp_for_counterparty)
             .is_err(),
         "should fail with wrong key ID"
     );
@@ -229,7 +229,7 @@ fn fails_to_decrypt_with_wrong_protocol_key_or_counterparty() {
     let wrong_cp = counterparty_of(&cp_pub_hex); // counterparty's own key instead of user's
     assert!(
         counterparty_wallet
-            .decrypt(&ciphertext, &protocol_2_tests(), "4", &wrong_cp)
+            .decrypt_sync(&ciphertext, &protocol_2_tests(), "4", &wrong_cp)
             .is_err(),
         "should fail with wrong counterparty"
     );
@@ -249,20 +249,20 @@ fn correctly_derives_keys_for_counterparty() {
 
     // Identity key
     let identity = user
-        .get_public_key(&protocol_2_tests(), "4", &self_counterparty(), false, true)
+        .get_public_key_sync(&protocol_2_tests(), "4", &self_counterparty(), false, true)
         .unwrap();
     assert_eq!(identity.to_der_hex(), user_pub_hex);
 
     // Derived for counterparty (user derives for counterparty)
     let cp_for_user = counterparty_of(&cp_pub_hex);
     let derived_for_cp = user
-        .get_public_key(&protocol_2_tests(), "4", &cp_for_user, false, false)
+        .get_public_key_sync(&protocol_2_tests(), "4", &cp_for_user, false, false)
         .unwrap();
 
     // Derived by counterparty (counterparty derives for self against user)
     let cp_for_cp = counterparty_of(&user_pub_hex);
     let derived_by_cp = counterparty_wallet
-        .get_public_key(&protocol_2_tests(), "4", &cp_for_cp, true, false)
+        .get_public_key_sync(&protocol_2_tests(), "4", &cp_for_cp, true, false)
         .unwrap();
 
     assert_eq!(
@@ -288,12 +288,12 @@ fn signs_messages_verifiable_by_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let signature = user
-        .create_signature(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
     assert!(!signature.is_empty());
 
     let valid = counterparty_wallet
-        .verify_signature(
+        .verify_signature_sync(
             SAMPLE_DATA,
             &signature,
             &protocol_2_tests(),
@@ -321,12 +321,12 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let signature = user
-        .create_signature(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     // Wrong data
     let wrong_data = &[0, 3, 1, 4, 1, 5, 9];
-    let result = counterparty_wallet.verify_signature(
+    let result = counterparty_wallet.verify_signature_sync(
         wrong_data,
         &signature,
         &protocol_2_tests(),
@@ -345,7 +345,7 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
         security_level: 2,
         protocol: "wrong".to_string(),
     };
-    let result = counterparty_wallet.verify_signature(
+    let result = counterparty_wallet.verify_signature_sync(
         SAMPLE_DATA,
         &signature,
         &wrong_protocol,
@@ -359,7 +359,7 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
     );
 
     // Wrong key ID
-    let result = counterparty_wallet.verify_signature(
+    let result = counterparty_wallet.verify_signature_sync(
         SAMPLE_DATA,
         &signature,
         &protocol_2_tests(),
@@ -374,7 +374,7 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
 
     // Wrong counterparty
     let wrong_cp = counterparty_of(&cp_pub_hex);
-    let result = counterparty_wallet.verify_signature(
+    let result = counterparty_wallet.verify_signature_sync(
         SAMPLE_DATA,
         &signature,
         &protocol_2_tests(),
@@ -404,12 +404,12 @@ fn computes_hmac_verifiable_by_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let hmac = user
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
     assert_eq!(hmac.len(), 32, "HMAC should be 32 bytes");
 
     let valid = counterparty_wallet
-        .verify_hmac(
+        .verify_hmac_sync(
             SAMPLE_DATA,
             &hmac,
             &protocol_2_tests(),
@@ -436,13 +436,13 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let hmac = user
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     // Wrong data
     let wrong_data = &[0, 3, 1, 4, 1, 5, 9];
     let valid = counterparty_wallet
-        .verify_hmac(
+        .verify_hmac_sync(
             wrong_data,
             &hmac,
             &protocol_2_tests(),
@@ -457,7 +457,7 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
         security_level: 2,
         protocol: "wrong".to_string(),
     };
-    let result = counterparty_wallet.verify_hmac(
+    let result = counterparty_wallet.verify_hmac_sync(
         SAMPLE_DATA,
         &hmac,
         &wrong_protocol,
@@ -470,7 +470,7 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
     );
 
     // Wrong key ID
-    let result = counterparty_wallet.verify_hmac(
+    let result = counterparty_wallet.verify_hmac_sync(
         SAMPLE_DATA,
         &hmac,
         &protocol_2_tests(),
@@ -485,7 +485,7 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
     // Wrong counterparty
     let wrong_cp = counterparty_of(&cp_pub_hex);
     let result =
-        counterparty_wallet.verify_hmac(SAMPLE_DATA, &hmac, &protocol_2_tests(), "4", &wrong_cp);
+        counterparty_wallet.verify_hmac_sync(SAMPLE_DATA, &hmac, &protocol_2_tests(), "4", &wrong_cp);
     assert!(
         result.is_err() || !result.unwrap(),
         "HMAC should fail with wrong counterparty"
@@ -502,7 +502,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // HMAC with no counterparty (defaults to self)
     let hmac = user
-        .create_hmac(
+        .create_hmac_sync(
             SAMPLE_DATA,
             &protocol_2_tests(),
             "4",
@@ -510,7 +510,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
         )
         .unwrap();
     let valid = user
-        .verify_hmac(
+        .verify_hmac_sync(
             SAMPLE_DATA,
             &hmac,
             &protocol_2_tests(),
@@ -522,7 +522,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Explicit self should also verify
     let valid_explicit = user
-        .verify_hmac(
+        .verify_hmac_sync(
             SAMPLE_DATA,
             &hmac,
             &protocol_2_tests(),
@@ -535,7 +535,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Signature with no counterparty (defaults to anyone)
     let anyone_sig = user
-        .create_signature(
+        .create_signature_sync(
             SAMPLE_DATA,
             &protocol_2_tests(),
             "4",
@@ -548,7 +548,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
     let user_pub_hex = user_key.to_public_key().to_der_hex();
     let cp_user = counterparty_of(&user_pub_hex);
     let valid_anyone = anyone_wallet
-        .verify_signature(
+        .verify_signature_sync(
             SAMPLE_DATA,
             &anyone_sig,
             &protocol_2_tests(),
@@ -564,10 +564,10 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Self signature
     let self_sig = user
-        .create_signature(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     let valid_self = user
-        .verify_signature(
+        .verify_signature_sync(
             SAMPLE_DATA,
             &self_sig,
             &protocol_2_tests(),
@@ -582,7 +582,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
     );
 
     let valid_explicit_self = user
-        .verify_signature(
+        .verify_signature_sync(
             SAMPLE_DATA,
             &self_sig,
             &protocol_2_tests(),
@@ -598,7 +598,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Get public key with no counterparty vs explicit self
     let pub_uninit = user
-        .get_public_key(
+        .get_public_key_sync(
             &protocol_2_tests(),
             "4",
             &uninit_counterparty(),
@@ -607,7 +607,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
         )
         .unwrap();
     let pub_self = user
-        .get_public_key(&protocol_2_tests(), "4", &self_counterparty(), false, false)
+        .get_public_key_sync(&protocol_2_tests(), "4", &self_counterparty(), false, false)
         .unwrap();
     assert_eq!(
         pub_uninit.to_der_hex(),
@@ -617,7 +617,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Encrypt/decrypt with no counterparty (defaults to self)
     let ciphertext = user
-        .encrypt(
+        .encrypt_sync(
             SAMPLE_DATA,
             &protocol_2_tests(),
             "4",
@@ -625,7 +625,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
         )
         .unwrap();
     let plaintext = user
-        .decrypt(
+        .decrypt_sync(
             &ciphertext,
             &protocol_2_tests(),
             "4",
@@ -633,7 +633,7 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
         )
         .unwrap();
     let plaintext_explicit_self = user
-        .decrypt(&ciphertext, &protocol_2_tests(), "4", &self_counterparty())
+        .decrypt_sync(&ciphertext, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     assert_eq!(plaintext, plaintext_explicit_self);
     assert_eq!(plaintext, SAMPLE_DATA);
@@ -659,7 +659,7 @@ fn validates_counterparty_key_linkage_revelation() {
     };
 
     let revelation = prover_wallet
-        .reveal_counterparty_key_linkage(&cp, &verifier_pub)
+        .reveal_counterparty_key_linkage_sync(&cp, &verifier_pub)
         .unwrap();
 
     // Verifier decrypts the linkage
@@ -669,7 +669,7 @@ fn validates_counterparty_key_linkage_revelation() {
         protocol: "counterparty linkage revelation".to_string(),
     };
     let linkage = verifier_wallet
-        .decrypt(
+        .decrypt_sync(
             &revelation.encrypted_linkage,
             &linkage_protocol,
             &revelation.revelation_time,
@@ -712,7 +712,7 @@ fn validates_specific_key_linkage_revelation() {
     let key_id = "test key id";
 
     let revelation = prover_wallet
-        .reveal_specific_key_linkage(&cp, &verifier_pub, &protocol, key_id)
+        .reveal_specific_key_linkage_sync(&cp, &verifier_pub, &protocol, key_id)
         .unwrap();
 
     // Verifier decrypts the linkage
@@ -725,7 +725,7 @@ fn validates_specific_key_linkage_revelation() {
         ),
     };
     let linkage = verifier_wallet
-        .decrypt(
+        .decrypt_sync(
             &revelation.encrypted_linkage,
             &encrypt_protocol,
             key_id,
@@ -767,7 +767,7 @@ fn fails_constant_time_hmac_validation_for_wrong_same_length_hmac() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let correct_hmac = user
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     // Create a wrong HMAC with same length
@@ -775,7 +775,7 @@ fn fails_constant_time_hmac_validation_for_wrong_same_length_hmac() {
     wrong[0] = (wrong[0].wrapping_add(1)) & 0xff;
 
     let valid = counterparty_wallet
-        .verify_hmac(
+        .verify_hmac_sync(
             SAMPLE_DATA,
             &wrong,
             &protocol_2_tests(),
@@ -805,11 +805,11 @@ fn validates_correct_hmac_using_constant_time_comparison() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let hmac = user
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
         .unwrap();
 
     let valid = counterparty_wallet
-        .verify_hmac(
+        .verify_hmac_sync(
             SAMPLE_DATA,
             &hmac,
             &protocol_2_tests(),
@@ -828,7 +828,7 @@ fn validates_correct_hmac_using_constant_time_comparison() {
 fn signature_creation_returns_non_empty_bytes() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
-        .create_signature(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     assert!(!sig.is_empty(), "signature should be non-empty");
 }
@@ -841,10 +841,10 @@ fn signature_creation_returns_non_empty_bytes() {
 fn signature_verification_succeeds_with_correct_params() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
-        .create_signature(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     let valid = wallet
-        .verify_signature(
+        .verify_signature_sync(
             SAMPLE_DATA,
             &sig,
             &protocol_2_tests(),
@@ -864,7 +864,7 @@ fn signature_verification_succeeds_with_correct_params() {
 fn signature_verification_fails_with_wrong_data() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
-        .create_signature(
+        .create_signature_sync(
             b"correct data",
             &protocol_2_tests(),
             "4",
@@ -872,7 +872,7 @@ fn signature_verification_fails_with_wrong_data() {
         )
         .unwrap();
     let valid = wallet
-        .verify_signature(
+        .verify_signature_sync(
             b"wrong data",
             &sig,
             &protocol_2_tests(),
@@ -892,10 +892,10 @@ fn signature_verification_fails_with_wrong_data() {
 fn hmac_is_deterministic() {
     let (_key, wallet) = make_wallet("aa");
     let hmac1 = wallet
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     let hmac2 = wallet
-        .create_hmac(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_hmac_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
         .unwrap();
     assert_eq!(hmac1, hmac2, "HMAC should be deterministic");
 }

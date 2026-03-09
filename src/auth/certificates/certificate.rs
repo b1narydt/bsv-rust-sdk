@@ -203,7 +203,7 @@ impl AuthCertificate {
     /// key is used as the signing key.
     ///
     /// Translated from TS SDK Certificate.prototype.sign().
-    pub async fn sign<W: WalletInterface>(
+    pub async fn sign<W: WalletInterface + ?Sized>(
         cert: &mut Certificate,
         wallet: &W,
     ) -> Result<(), AuthError> {
@@ -269,7 +269,7 @@ impl AuthCertificate {
     /// that the certifier actually signed this certificate.
     ///
     /// Translated from TS SDK Certificate.prototype.verify().
-    pub async fn verify<W: WalletInterface>(
+    pub async fn verify<W: WalletInterface + ?Sized>(
         cert: &Certificate,
         wallet: &W,
     ) -> Result<bool, AuthError> {
@@ -340,7 +340,7 @@ impl AuthCertificate {
     /// Returns (encrypted_fields, keyring) where encrypted_fields maps field names
     /// to base64-encoded encrypted values, and keyring maps field names to
     /// base64-encoded encrypted symmetric keys.
-    pub async fn encrypt_fields<W: WalletInterface>(
+    pub async fn encrypt_fields<W: WalletInterface + ?Sized>(
         fields: &HashMap<String, String>,
         serial_number: Option<&str>,
         counterparty: &PublicKey,
@@ -395,7 +395,7 @@ impl AuthCertificate {
     /// 2. Use the symmetric key to decrypt the field value
     ///
     /// The counterparty is the subject (the party who encrypted the fields).
-    pub async fn decrypt_fields<W: WalletInterface>(
+    pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
         encrypted_fields: &HashMap<String, String>,
         keyring: &HashMap<String, String>,
         serial_number: &str,

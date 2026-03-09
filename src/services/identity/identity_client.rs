@@ -23,7 +23,7 @@ use crate::wallet::WalletInterface;
 ///
 /// Generic over `W: WalletInterface` for wallet operations. Uses a
 /// `ContactsManager<W>` for cached contact lookups.
-pub struct IdentityClient<W: WalletInterface> {
+pub struct IdentityClient<W: WalletInterface + ?Sized> {
     /// Wallet reference for discovery and crypto operations.
     wallet: Arc<W>,
     /// Contacts manager with in-memory cache.
@@ -35,7 +35,7 @@ pub struct IdentityClient<W: WalletInterface> {
     originator: Option<String>,
 }
 
-impl<W: WalletInterface> IdentityClient<W> {
+impl<W: WalletInterface + ?Sized> IdentityClient<W> {
     /// Create a new IdentityClient.
     pub fn new(
         wallet: Arc<W>,

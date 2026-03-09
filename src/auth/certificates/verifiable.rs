@@ -57,7 +57,7 @@ impl VerifiableCertificate {
     /// Results are cached in `self.decrypted_fields`.
     ///
     /// Translated from TS SDK VerifiableCertificate.decryptFields().
-    pub async fn decrypt_fields<W: WalletInterface>(
+    pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
         &mut self,
         verifier_wallet: &W,
     ) -> Result<HashMap<String, String>, AuthError> {

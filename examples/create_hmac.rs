@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create HMAC
-    let hmac = wallet.create_hmac(data, &protocol, key_id, &counterparty)?;
+    let hmac = wallet.create_hmac_sync(data, &protocol, key_id, &counterparty)?;
     println!(
         "HMAC:     {}",
         hmac.iter()
@@ -40,13 +40,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Length:   {} bytes", hmac.len());
 
     // Verify HMAC
-    let valid = wallet.verify_hmac(data, &hmac, &protocol, key_id, &counterparty)?;
+    let valid = wallet.verify_hmac_sync(data, &hmac, &protocol, key_id, &counterparty)?;
     println!("Valid:    {}", valid);
     assert!(valid, "HMAC verification must succeed");
 
     // Verify with tampered data
     let tampered = b"Tampered message requiring integrity";
-    let invalid = wallet.verify_hmac(tampered, &hmac, &protocol, key_id, &counterparty)?;
+    let invalid = wallet.verify_hmac_sync(tampered, &hmac, &protocol, key_id, &counterparty)?;
     println!("Tampered: {} (expected false)", invalid);
     assert!(!invalid, "Tampered HMAC must fail verification");
 

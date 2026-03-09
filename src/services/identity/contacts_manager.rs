@@ -18,7 +18,7 @@ use crate::wallet::WalletInterface;
 /// ContactsManager manages contacts with an in-memory cache and wallet-backed
 /// encrypted storage. Uses HMAC lookup optimization for efficient identity key
 /// lookups without decrypting all entries.
-pub struct ContactsManager<W: WalletInterface> {
+pub struct ContactsManager<W: WalletInterface + ?Sized> {
     /// Reference to the wallet for crypto operations and storage.
     wallet: Arc<W>,
     /// Thread-safe in-memory contact cache keyed by identity key.
@@ -29,7 +29,7 @@ pub struct ContactsManager<W: WalletInterface> {
     originator: Option<String>,
 }
 
-impl<W: WalletInterface> ContactsManager<W> {
+impl<W: WalletInterface + ?Sized> ContactsManager<W> {
     /// Create a new ContactsManager.
     pub fn new(wallet: Arc<W>, originator: Option<String>) -> Self {
         ContactsManager {

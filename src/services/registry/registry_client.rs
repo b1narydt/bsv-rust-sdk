@@ -31,7 +31,7 @@ use crate::wallet::WalletInterface;
 ///
 /// Uses PushDrop tokens for on-chain storage, TopicBroadcaster for writes,
 /// and LookupResolver for reads. Generic over `W: WalletInterface`.
-pub struct RegistryClient<W: WalletInterface> {
+pub struct RegistryClient<W: WalletInterface + ?Sized> {
     /// Wallet reference for transaction creation and crypto.
     wallet: Arc<W>,
     /// Lookup resolver for querying the overlay.
@@ -47,7 +47,7 @@ pub struct RegistryClient<W: WalletInterface> {
     originator: Option<String>,
 }
 
-impl<W: WalletInterface> RegistryClient<W> {
+impl<W: WalletInterface + ?Sized> RegistryClient<W> {
     /// Create a new RegistryClient.
     pub fn new(
         wallet: Arc<W>,

@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Encrypt
-    let ciphertext = wallet.encrypt(plaintext, &protocol, key_id, &counterparty)?;
+    let ciphertext = wallet.encrypt_sync(plaintext, &protocol, key_id, &counterparty)?;
     println!(
         "Ciphertext: {} ({} bytes)",
         ciphertext
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Decrypt
-    let decrypted = wallet.decrypt(&ciphertext, &protocol, key_id, &counterparty)?;
+    let decrypted = wallet.decrypt_sync(&ciphertext, &protocol, key_id, &counterparty)?;
     let decrypted_text = std::str::from_utf8(&decrypted)?;
     println!("Decrypted:  \"{}\"", decrypted_text);
 

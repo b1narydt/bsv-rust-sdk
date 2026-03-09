@@ -13,7 +13,7 @@ use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 ///
 /// Generates 16 random bytes, computes an HMAC over them using the wallet,
 /// concatenates random_bytes + hmac, and returns the result as a base64 string.
-pub async fn create_nonce<W: WalletInterface>(wallet: &W) -> Result<String, AuthError> {
+pub async fn create_nonce<W: WalletInterface + ?Sized>(wallet: &W) -> Result<String, AuthError> {
     let random = random_bytes(16);
     let key_id = String::from_utf8_lossy(&random).to_string();
 
@@ -48,7 +48,7 @@ pub async fn create_nonce<W: WalletInterface>(wallet: &W) -> Result<String, Auth
 ///
 /// Decodes the base64 nonce, splits at byte 16 (random vs hmac),
 /// and verifies the HMAC using the wallet.
-pub async fn verify_nonce<W: WalletInterface>(wallet: &W, nonce: &str) -> Result<bool, AuthError> {
+pub async fn verify_nonce<W: WalletInterface + ?Sized>(wallet: &W, nonce: &str) -> Result<bool, AuthError> {
     let decoded = base64_decode(nonce)?;
     if decoded.len() < 17 {
         return Err(AuthError::InvalidNonce(
@@ -281,7 +281,7 @@ mod tests {
             args: CreateHmacArgs,
             _originator: Option<&str>,
         ) -> Result<CreateHmacResult, WalletError> {
-            let hmac = self.inner.create_hmac(
+            let hmac = self.inner.create_hmac_sync(
                 &args.data,
                 &args.protocol_id,
                 &args.key_id,
@@ -295,7 +295,7 @@ mod tests {
             args: VerifyHmacArgs,
             _originator: Option<&str>,
         ) -> Result<VerifyHmacResult, WalletError> {
-            let valid = self.inner.verify_hmac(
+            let valid = self.inner.verify_hmac_sync(
                 &args.data,
                 &args.hmac,
                 &args.protocol_id,

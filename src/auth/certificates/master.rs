@@ -79,7 +79,7 @@ impl MasterCertificate {
     /// master keys are created before the serial number exists.
     ///
     /// Returns (encrypted_fields, master_keyring).
-    pub async fn create_certificate_fields<W: WalletInterface>(
+    pub async fn create_certificate_fields<W: WalletInterface + ?Sized>(
         fields: &HashMap<String, String>,
         certifier_wallet: &W,
         subject: &PublicKey,
@@ -99,7 +99,7 @@ impl MasterCertificate {
     /// (unlike master key creation which uses only fieldName).
     ///
     /// Translated from TS SDK MasterCertificate.createKeyringForVerifier().
-    pub async fn create_keyring_for_verifier<W: WalletInterface>(
+    pub async fn create_keyring_for_verifier<W: WalletInterface + ?Sized>(
         &self,
         verifier_public_key: &PublicKey,
         fields_to_reveal: &[String],
@@ -207,7 +207,7 @@ impl MasterCertificate {
     /// 5. Return MasterCertificate { certificate, master_keyring }
     ///
     /// Translated from TS SDK MasterCertificate.issueCertificateForSubject().
-    pub async fn issue_certificate_for_subject<W: WalletInterface>(
+    pub async fn issue_certificate_for_subject<W: WalletInterface + ?Sized>(
         cert_type: &CertificateType,
         subject: &PublicKey,
         fields: HashMap<String, String>,
@@ -264,7 +264,7 @@ impl MasterCertificate {
     ///
     /// Decrypts the master keyring entries and uses them to decrypt field values.
     /// The counterparty should be the other party involved in certificate creation.
-    pub async fn decrypt_fields<W: WalletInterface>(
+    pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
         &self,
         wallet: &W,
         counterparty: &PublicKey,
@@ -423,7 +423,7 @@ mod tests {
                 counterparty_type: CounterpartyType::Uninitialized,
                 public_key: None,
             });
-            let pk = self.inner.get_public_key(
+            let pk = self.inner.get_public_key_sync(
                 &protocol,
                 &key_id,
                 &counterparty,
@@ -449,7 +449,7 @@ mod tests {
             args: EncryptArgs,
             _originator: Option<&str>,
         ) -> Result<EncryptResult, WalletError> {
-            let ciphertext = self.inner.encrypt(
+            let ciphertext = self.inner.encrypt_sync(
                 &args.plaintext,
                 &args.protocol_id,
                 &args.key_id,
@@ -463,7 +463,7 @@ mod tests {
             args: DecryptArgs,
             _originator: Option<&str>,
         ) -> Result<DecryptResult, WalletError> {
-            let plaintext = self.inner.decrypt(
+            let plaintext = self.inner.decrypt_sync(
                 &args.ciphertext,
                 &args.protocol_id,
                 &args.key_id,
@@ -477,7 +477,7 @@ mod tests {
             args: CreateHmacArgs,
             _originator: Option<&str>,
         ) -> Result<CreateHmacResult, WalletError> {
-            let hmac = self.inner.create_hmac(
+            let hmac = self.inner.create_hmac_sync(
                 &args.data,
                 &args.protocol_id,
                 &args.key_id,
@@ -491,7 +491,7 @@ mod tests {
             args: VerifyHmacArgs,
             _originator: Option<&str>,
         ) -> Result<VerifyHmacResult, WalletError> {
-            let valid = self.inner.verify_hmac(
+            let valid = self.inner.verify_hmac_sync(
                 &args.data,
                 &args.hmac,
                 &args.protocol_id,
@@ -506,7 +506,7 @@ mod tests {
             args: CreateSignatureArgs,
             _originator: Option<&str>,
         ) -> Result<CreateSignatureResult, WalletError> {
-            let signature = self.inner.create_signature(
+            let signature = self.inner.create_signature_sync(
                 &args.data,
                 &args.protocol_id,
                 &args.key_id,
@@ -520,7 +520,7 @@ mod tests {
             args: VerifySignatureArgs,
             _originator: Option<&str>,
         ) -> Result<VerifySignatureResult, WalletError> {
-            let valid = self.inner.verify_signature(
+            let valid = self.inner.verify_signature_sync(
                 &args.data,
                 &args.signature,
                 &args.protocol_id,
