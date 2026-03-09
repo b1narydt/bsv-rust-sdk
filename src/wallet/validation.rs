@@ -6,7 +6,6 @@
 
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
-use crate::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 
 // ---------------------------------------------------------------------------
 // Shared validation helpers
@@ -191,26 +190,9 @@ pub fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<
     for label in &args.labels {
         validate_label(label)?;
     }
-    for output in &args.outputs {
-        match output.protocol {
-            InternalizeProtocol::WalletPayment => {
-                if output.payment_remittance.is_none() {
-                    return Err(invalid(
-                        "payment_remittance",
-                        "provided for wallet payment protocol",
-                    ));
-                }
-            }
-            InternalizeProtocol::BasketInsertion => {
-                if output.insertion_remittance.is_none() {
-                    return Err(invalid(
-                        "insertion_remittance",
-                        "provided for basket insertion protocol",
-                    ));
-                }
-            }
-        }
-    }
+    // InternalizeOutput enum variants guarantee that the correct remittance
+    // data is always present -- impossible states are unrepresentable.
+    let _ = &args.outputs;
     Ok(())
 }
 
@@ -721,15 +703,13 @@ mod tests {
             description: "Valid description text".to_string(),
             labels: vec![],
             seek_permission: BooleanDefaultTrue(None),
-            outputs: vec![InternalizeOutput {
+            outputs: vec![InternalizeOutput::BasketInsertion {
                 output_index: 0,
-                protocol: InternalizeProtocol::BasketInsertion,
-                payment_remittance: None,
-                insertion_remittance: Some(BasketInsertion {
+                insertion: BasketInsertion {
                     basket: "test-basket".to_string(),
                     custom_instructions: None,
                     tags: vec![],
-                }),
+                },
             }],
         };
         assert!(validate_internalize_action_args(&args).is_ok());
@@ -742,15 +722,13 @@ mod tests {
             description: "Valid description text".to_string(),
             labels: vec![],
             seek_permission: BooleanDefaultTrue(None),
-            outputs: vec![InternalizeOutput {
+            outputs: vec![InternalizeOutput::BasketInsertion {
                 output_index: 0,
-                protocol: InternalizeProtocol::BasketInsertion,
-                payment_remittance: None,
-                insertion_remittance: Some(BasketInsertion {
+                insertion: BasketInsertion {
                     basket: "test".to_string(),
                     custom_instructions: None,
                     tags: vec![],
-                }),
+                },
             }],
         };
         assert!(validate_internalize_action_args(&args).is_err());
@@ -764,23 +742,6 @@ mod tests {
             labels: vec![],
             seek_permission: BooleanDefaultTrue(None),
             outputs: vec![],
-        };
-        assert!(validate_internalize_action_args(&args).is_err());
-    }
-
-    #[test]
-    fn test_internalize_action_missing_remittance() {
-        let args = InternalizeActionArgs {
-            tx: vec![1, 2, 3],
-            description: "Valid description text".to_string(),
-            labels: vec![],
-            seek_permission: BooleanDefaultTrue(None),
-            outputs: vec![InternalizeOutput {
-                output_index: 0,
-                protocol: InternalizeProtocol::WalletPayment,
-                payment_remittance: None,
-                insertion_remittance: None,
-            }],
         };
         assert!(validate_internalize_action_args(&args).is_err());
     }

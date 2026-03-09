@@ -39,3 +39,9 @@ impl From<crate::transaction::TransactionError> for WalletError {
         WalletError::Internal(e.to_string())
     }
 }
+
+impl From<std::io::Error> for WalletError {
+    fn from(e: std::io::Error) -> Self {
+        WalletError::Internal(e.to_string())
+    }
+}

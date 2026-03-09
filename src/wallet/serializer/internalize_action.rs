@@ -18,25 +18,22 @@ pub fn serialize_internalize_action_args(
         // Outputs
         write_varint(w, args.outputs.len() as u64)?;
         for output in &args.outputs {
-            write_varint(w, output.output_index as u64)?;
-            match output.protocol {
-                InternalizeProtocol::WalletPayment => {
-                    let payment = output.payment_remittance.as_ref().ok_or_else(|| {
-                        WalletError::Internal(
-                            "payment remittance required for wallet payment".to_string(),
-                        )
-                    })?;
+            match output {
+                InternalizeOutput::WalletPayment {
+                    output_index,
+                    payment,
+                } => {
+                    write_varint(w, *output_index as u64)?;
                     write_byte(w, PROTOCOL_WALLET_PAYMENT)?;
                     write_public_key(w, &payment.sender_identity_key)?;
                     write_bytes(w, &payment.derivation_prefix)?;
                     write_bytes(w, &payment.derivation_suffix)?;
                 }
-                InternalizeProtocol::BasketInsertion => {
-                    let insertion = output.insertion_remittance.as_ref().ok_or_else(|| {
-                        WalletError::Internal(
-                            "insertion remittance required for basket insertion".to_string(),
-                        )
-                    })?;
+                InternalizeOutput::BasketInsertion {
+                    output_index,
+                    insertion,
+                } => {
+                    write_varint(w, *output_index as u64)?;
                     write_byte(w, PROTOCOL_BASKET_INSERTION)?;
                     write_string(w, &insertion.basket)?;
                     write_string_optional(
@@ -79,20 +76,19 @@ pub fn deserialize_internalize_action_args(
     for _ in 0..output_count {
         let output_index = read_varint(&mut r)? as u32;
         let protocol_byte = read_byte(&mut r)?;
-        let (protocol, payment_remittance, insertion_remittance) = match protocol_byte {
+        let output = match protocol_byte {
             PROTOCOL_WALLET_PAYMENT => {
                 let sender_identity_key = read_public_key(&mut r)?;
                 let derivation_prefix = read_bytes(&mut r)?;
                 let derivation_suffix = read_bytes(&mut r)?;
-                (
-                    InternalizeProtocol::WalletPayment,
-                    Some(Payment {
+                InternalizeOutput::WalletPayment {
+                    output_index,
+                    payment: Payment {
                         derivation_prefix,
                         derivation_suffix,
                         sender_identity_key,
-                    }),
-                    None,
-                )
+                    },
+                }
             }
             PROTOCOL_BASKET_INSERTION => {
                 let basket = read_string(&mut r)?;
@@ -103,15 +99,14 @@ pub fn deserialize_internalize_action_args(
                     Some(custom_instructions_str)
                 };
                 let tags = read_string_slice(&mut r)?.unwrap_or_default();
-                (
-                    InternalizeProtocol::BasketInsertion,
-                    None,
-                    Some(BasketInsertion {
+                InternalizeOutput::BasketInsertion {
+                    output_index,
+                    insertion: BasketInsertion {
                         basket,
                         custom_instructions,
                         tags,
-                    }),
-                )
+                    },
+                }
             }
             _ => {
                 return Err(WalletError::Internal(format!(
@@ -120,12 +115,7 @@ pub fn deserialize_internalize_action_args(
                 )))
             }
         };
-        outputs.push(InternalizeOutput {
-            output_index,
-            protocol,
-            payment_remittance,
-            insertion_remittance,
-        });
+        outputs.push(output);
     }
     let labels = read_string_slice(&mut r)?.unwrap_or_default();
     let description = read_string(&mut r)?;

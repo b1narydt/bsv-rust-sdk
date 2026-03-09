@@ -277,15 +277,15 @@ test_args_vector!(
     ListActionsArgs {
         labels: vec!["test-label".to_string()],
         label_query_mode: None,
-        include_labels: None,
-        include_inputs: None,
-        include_input_source_locking_scripts: None,
-        include_input_unlocking_scripts: None,
-        include_outputs: Some(true),
-        include_output_locking_scripts: None,
+        include_labels: BooleanDefaultFalse(None),
+        include_inputs: BooleanDefaultFalse(None),
+        include_input_source_locking_scripts: BooleanDefaultFalse(None),
+        include_input_unlocking_scripts: BooleanDefaultFalse(None),
+        include_outputs: BooleanDefaultFalse(Some(true)),
+        include_output_locking_scripts: BooleanDefaultFalse(None),
         limit: Some(10),
         offset: None,
-        seek_permission: None,
+        seek_permission: BooleanDefaultTrue(None),
     }
 );
 
@@ -333,30 +333,26 @@ test_args_vector!(
     InternalizeActionArgs {
         tx: vec![1, 2, 3, 4],
         outputs: vec![
-            InternalizeOutput {
+            InternalizeOutput::WalletPayment {
                 output_index: 0,
-                protocol: InternalizeProtocol::WalletPayment,
-                payment_remittance: Some(Payment {
+                payment: Payment {
                     derivation_prefix: b"prefix".to_vec(),
                     derivation_suffix: b"suffix".to_vec(),
                     sender_identity_key: pk_from_hex(VERIFIER_HEX),
-                }),
-                insertion_remittance: None,
+                },
             },
-            InternalizeOutput {
+            InternalizeOutput::BasketInsertion {
                 output_index: 1,
-                protocol: InternalizeProtocol::BasketInsertion,
-                payment_remittance: None,
-                insertion_remittance: Some(BasketInsertion {
+                insertion: BasketInsertion {
                     basket: "test-basket".to_string(),
                     custom_instructions: Some("instruction".to_string()),
                     tags: vec!["tag1".to_string(), "tag2".to_string()],
-                }),
+                },
             },
         ],
         description: "test transaction".to_string(),
         labels: vec!["label1".to_string(), "label2".to_string()],
-        seek_permission: Some(true),
+        seek_permission: BooleanDefaultTrue(Some(true)),
     }
 );
 
@@ -383,12 +379,12 @@ test_args_vector!(
         tags: vec!["tag1".to_string(), "tag2".to_string()],
         tag_query_mode: Some(QueryMode::Any),
         include: Some(OutputInclude::LockingScripts),
-        include_custom_instructions: None,
-        include_tags: Some(true),
-        include_labels: None,
+        include_custom_instructions: BooleanDefaultFalse(None),
+        include_tags: BooleanDefaultFalse(Some(true)),
+        include_labels: BooleanDefaultFalse(None),
         limit: Some(10),
         offset: None,
-        seek_permission: None,
+        seek_permission: BooleanDefaultTrue(None),
     }
 );
 
@@ -885,7 +881,7 @@ test_args_vector!(
         ],
         limit: Some(5),
         offset: Some(0),
-        privileged: Some(true),
+        privileged: BooleanDefaultFalse(Some(true)),
         privileged_reason: Some("list-cert-reason".to_string()),
     }
 );
@@ -975,7 +971,7 @@ test_args_vector!(
             },
             fields_to_reveal: vec!["name".to_string()],
             verifier: pk_from_hex(VERIFIER_HEX),
-            privileged: Some(false),
+            privileged: BooleanDefaultFalse(Some(false)),
             privileged_reason: Some("prove-reason".to_string()),
         }
     }
