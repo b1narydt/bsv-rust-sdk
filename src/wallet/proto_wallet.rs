@@ -8,8 +8,10 @@
 
 use crate::primitives::ecdsa::{ecdsa_sign, ecdsa_verify};
 use crate::primitives::hash::{sha256, sha256_hmac};
+use crate::primitives::point::Point;
 use crate::primitives::private_key::PrivateKey;
 use crate::primitives::public_key::PublicKey;
+use crate::primitives::schnorr::schnorr_generate_proof;
 use crate::primitives::signature::Signature;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::{
@@ -124,13 +126,15 @@ impl ProtoWallet {
             .derive_public_key(protocol, key_id, &effective, for_self)
     }
 
-    /// Create an ECDSA signature over data.
+    /// Create an ECDSA signature over data or a pre-computed hash.
     ///
-    /// Hashes data with SHA-256, then signs the hash with a derived private key.
+    /// If `data` is provided, hashes it with SHA-256 then signs.
+    /// If `hash_to_directly_sign` is provided, signs it directly.
     /// Returns the DER-encoded signature bytes.
     pub fn create_signature_sync(
         &self,
-        data: &[u8],
+        data: Option<&[u8]>,
+        hash_to_directly_sign: Option<&[u8]>,
         protocol: &Protocol,
         key_id: &str,
         counterparty: &Counterparty,
@@ -140,20 +144,34 @@ impl ProtoWallet {
             .key_deriver
             .derive_private_key(protocol, key_id, &effective)?;
 
-        let data_hash = sha256(data);
-        // Use ecdsa_sign directly with the hash to avoid double-hashing
-        // (PrivateKey.sign() would hash again internally).
-        let sig = ecdsa_sign(&data_hash, derived_key.bn(), true)?;
+        let hash = if let Some(h) = hash_to_directly_sign {
+            if h.len() != 32 {
+                return Err(WalletError::InvalidParameter(
+                    "hash_to_directly_sign must be exactly 32 bytes".to_string(),
+                ));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(h);
+            arr
+        } else if let Some(d) = data {
+            sha256(d)
+        } else {
+            return Err(WalletError::InvalidParameter(
+                "either data or hash_to_directly_sign must be provided".to_string(),
+            ));
+        };
+        let sig = ecdsa_sign(&hash, derived_key.bn(), true)?;
         Ok(sig.to_der())
     }
 
-    /// Verify an ECDSA signature over data.
+    /// Verify an ECDSA signature over data or a pre-computed hash.
     ///
-    /// Hashes data with SHA-256, parses the DER signature, and verifies
-    /// against the derived public key.
+    /// If `data` is provided, hashes it with SHA-256 then verifies.
+    /// If `hash_to_directly_verify` is provided, verifies against it directly.
     pub fn verify_signature_sync(
         &self,
-        data: &[u8],
+        data: Option<&[u8]>,
+        hash_to_directly_verify: Option<&[u8]>,
         signature: &[u8],
         protocol: &Protocol,
         key_id: &str,
@@ -166,9 +184,23 @@ impl ProtoWallet {
             .derive_public_key(protocol, key_id, &effective, for_self)?;
 
         let sig = Signature::from_der(signature)?;
-        let data_hash = sha256(data);
-        // Use ecdsa_verify directly with the hash to match create_signature behavior.
-        Ok(ecdsa_verify(&data_hash, &sig, derived_pub.point()))
+        let hash = if let Some(h) = hash_to_directly_verify {
+            if h.len() != 32 {
+                return Err(WalletError::InvalidParameter(
+                    "hash_to_directly_verify must be exactly 32 bytes".to_string(),
+                ));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(h);
+            arr
+        } else if let Some(d) = data {
+            sha256(d)
+        } else {
+            return Err(WalletError::InvalidParameter(
+                "either data or hash_to_directly_verify must be provided".to_string(),
+            ));
+        };
+        Ok(ecdsa_verify(&hash, &sig, derived_pub.point()))
     }
 
     /// Encrypt plaintext using a derived symmetric key (AES-GCM).
@@ -281,21 +313,10 @@ impl ProtoWallet {
             &verifier_counterparty,
         )?;
 
-        // Create HMAC proof of the linkage and encrypt it for the verifier
-        let proof = self.create_hmac_sync(
-            &linkage_bytes,
-            &linkage_protocol,
-            &revelation_time,
-            &verifier_counterparty,
-        )?;
-        let encrypted_proof = self.encrypt_sync(
-            &proof,
-            &linkage_protocol,
-            &revelation_time,
-            &verifier_counterparty,
-        )?;
-
-        // Extract the counterparty public key for the result
+        // Create Schnorr DLEQ proof (matching TS SDK ProtoWallet.ts)
+        // Proves knowledge of private key `a` such that A = a*G and S = a*B
+        let linkage_point = Point::from_der(&linkage_bytes)
+            .map_err(|e| WalletError::Internal(format!("invalid linkage point: {}", e)))?;
         let counterparty_pub = match &counterparty.public_key {
             Some(pk) => pk.clone(),
             None => {
@@ -304,6 +325,23 @@ impl ProtoWallet {
                 ))
             }
         };
+        let schnorr_proof = schnorr_generate_proof(
+            self.key_deriver.root_key(),
+            &self.key_deriver.identity_key(),
+            &counterparty_pub,
+            &linkage_point,
+        )?;
+        // Serialize proof as R(33) || S'(33) || z(variable) matching TS SDK format
+        let mut proof_bin = Vec::with_capacity(33 + 33 + 32);
+        proof_bin.extend_from_slice(&schnorr_proof.r_point.to_der(true));
+        proof_bin.extend_from_slice(&schnorr_proof.s_prime.to_der(true));
+        proof_bin.extend_from_slice(&schnorr_proof.z.to_bytes());
+        let encrypted_proof = self.encrypt_sync(
+            &proof_bin,
+            &linkage_protocol,
+            &revelation_time,
+            &verifier_counterparty,
+        )?;
 
         Ok(RevealCounterpartyResult {
             prover,
@@ -597,7 +635,11 @@ impl WalletInterface for ProtoWallet {
             &args.key_id,
             &args.counterparty,
         )?;
-        Ok(VerifyHmacResult { valid })
+        // Match TS SDK behavior: throw error on invalid HMAC instead of returning false
+        if !valid {
+            return Err(WalletError::InvalidHmac);
+        }
+        Ok(VerifyHmacResult { valid: true })
     }
 
     async fn create_signature(
@@ -606,7 +648,8 @@ impl WalletInterface for ProtoWallet {
         _originator: Option<&str>,
     ) -> Result<CreateSignatureResult, WalletError> {
         let signature = self.create_signature_sync(
-            &args.data,
+            args.data.as_deref(),
+            args.hash_to_directly_sign.as_deref(),
             &args.protocol_id,
             &args.key_id,
             &args.counterparty,
@@ -621,14 +664,19 @@ impl WalletInterface for ProtoWallet {
     ) -> Result<VerifySignatureResult, WalletError> {
         let for_self = args.for_self.unwrap_or(false);
         let valid = self.verify_signature_sync(
-            &args.data,
+            args.data.as_deref(),
+            args.hash_to_directly_verify.as_deref(),
             &args.signature,
             &args.protocol_id,
             &args.key_id,
             &args.counterparty,
             for_self,
         )?;
-        Ok(VerifySignatureResult { valid })
+        // Match TS SDK behavior: throw error on invalid signature instead of returning false
+        if !valid {
+            return Err(WalletError::InvalidSignature);
+        }
+        Ok(VerifySignatureResult { valid: true })
     }
 
     // -- Certificate methods (not supported) --
@@ -829,12 +877,12 @@ mod tests {
         let data = b"hello world signature test";
 
         let sig = wallet
-            .create_signature_sync(data, &protocol, "sig1", &counterparty)
+            .create_signature_sync(Some(data), None, &protocol, "sig1", &counterparty)
             .unwrap();
         assert!(!sig.is_empty());
 
         let valid = wallet
-            .verify_signature_sync(data, &sig, &protocol, "sig1", &counterparty, true)
+            .verify_signature_sync(Some(data), None, &sig, &protocol, "sig1", &counterparty, true)
             .unwrap();
         assert!(valid, "signature should verify");
     }
@@ -846,10 +894,10 @@ mod tests {
         let counterparty = self_counterparty();
 
         let sig = wallet
-            .create_signature_sync(b"correct data", &protocol, "sig2", &counterparty)
+            .create_signature_sync(Some(b"correct data"), None, &protocol, "sig2", &counterparty)
             .unwrap();
         let valid = wallet
-            .verify_signature_sync(b"wrong data", &sig, &protocol, "sig2", &counterparty, true)
+            .verify_signature_sync(Some(b"wrong data"), None, &sig, &protocol, "sig2", &counterparty, true)
             .unwrap();
         assert!(!valid, "signature should not verify for wrong data");
     }
@@ -1134,7 +1182,8 @@ mod tests {
                 protocol_id: test_protocol(),
                 key_id: "wsig1".to_string(),
                 counterparty: self_counterparty(),
-                data: data.clone(),
+                data: Some(data.clone()),
+                hash_to_directly_sign: None,
                 privileged: false,
                 privileged_reason: None,
                 seek_permission: None,
@@ -1150,7 +1199,8 @@ mod tests {
                 protocol_id: test_protocol(),
                 key_id: "wsig1".to_string(),
                 counterparty: self_counterparty(),
-                data,
+                data: Some(data),
+                hash_to_directly_verify: None,
                 signature: sig_result.signature,
                 for_self: Some(true),
                 privileged: false,

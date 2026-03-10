@@ -241,7 +241,8 @@ impl AuthCertificate {
         let result = wallet
             .create_signature(
                 CreateSignatureArgs {
-                    data: preimage,
+                    data: Some(preimage),
+                    hash_to_directly_sign: None,
                     protocol_id: Protocol {
                         security_level: SECURITY_LEVEL,
                         protocol: CERTIFICATE_SIGNATURE_PROTOCOL.to_string(),
@@ -284,7 +285,8 @@ impl AuthCertificate {
         let result = wallet
             .verify_signature(
                 VerifySignatureArgs {
-                    data: preimage,
+                    data: Some(preimage),
+                    hash_to_directly_verify: None,
                     signature,
                     protocol_id: Protocol {
                         security_level: SECURITY_LEVEL,

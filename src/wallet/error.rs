@@ -20,6 +20,26 @@ pub enum WalletError {
     /// Internal error wrapping lower-level failures.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Insufficient funds for the requested action.
+    /// Matches TS SDK `WERR_INSUFFICIENT_FUNDS`.
+    #[error("insufficient funds: {0}")]
+    InsufficientFunds(String),
+
+    /// User must review and approve pending actions.
+    /// Matches TS SDK `WERR_REVIEW_ACTIONS`.
+    #[error("review actions: {0}")]
+    ReviewActions(String),
+
+    /// HMAC verification failed.
+    /// Matches TS SDK behavior which throws on invalid HMAC rather than returning false.
+    #[error("HMAC is not valid")]
+    InvalidHmac,
+
+    /// Signature verification failed.
+    /// Matches TS SDK behavior which throws on invalid signature rather than returning false.
+    #[error("signature is not valid")]
+    InvalidSignature,
 }
 
 impl From<crate::primitives::PrimitivesError> for WalletError {

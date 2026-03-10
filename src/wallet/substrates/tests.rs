@@ -229,6 +229,8 @@ impl WalletInterface for MockWallet {
     ) -> Result<ProveCertificateResult, WalletError> {
         Ok(ProveCertificateResult {
             keyring_for_verifier: HashMap::new(),
+            certificate: None,
+            verifier: None,
         })
     }
 
@@ -494,7 +496,8 @@ async fn test_create_signature_round_trip() {
                     counterparty_type: CounterpartyType::Self_,
                     public_key: None,
                 },
-                data: vec![1, 2, 3],
+                data: Some(vec![1, 2, 3]),
+                hash_to_directly_sign: None,
                 privileged: false,
                 privileged_reason: None,
                 seek_permission: None,
@@ -521,7 +524,8 @@ async fn test_verify_signature_round_trip() {
                     counterparty_type: CounterpartyType::Self_,
                     public_key: None,
                 },
-                data: vec![1, 2, 3],
+                data: Some(vec![1, 2, 3]),
+                hash_to_directly_verify: None,
                 signature: vec![0xBB; 64],
                 for_self: None,
                 privileged: false,
@@ -849,6 +853,7 @@ mod json_round_trip {
             (ActionStatus::Unsigned, "\"unsigned\""),
             (ActionStatus::NoSend, "\"nosend\""),
             (ActionStatus::NonFinal, "\"nonfinal\""),
+            (ActionStatus::Failed, "\"failed\""),
         ];
 
         for (status, expected) in statuses {
