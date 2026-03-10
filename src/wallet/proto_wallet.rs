@@ -168,6 +168,7 @@ impl ProtoWallet {
     ///
     /// If `data` is provided, hashes it with SHA-256 then verifies.
     /// If `hash_to_directly_verify` is provided, verifies against it directly.
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_signature_sync(
         &self,
         data: Option<&[u8]>,
