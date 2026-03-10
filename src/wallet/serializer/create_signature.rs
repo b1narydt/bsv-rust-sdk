@@ -16,15 +16,18 @@ pub fn serialize_create_signature_args(args: &CreateSignatureArgs) -> Result<Vec
                 privileged_reason: args.privileged_reason.clone().unwrap_or_default(),
             },
         )?;
-        // Data flag: 1 = data provided, 2 = hash provided
-        if !args.data.is_empty() {
+        // Data flag: 1 = data provided, 2 = hash_to_directly_sign provided
+        if let Some(ref data) = args.data {
             write_byte(w, 1)?;
-            write_varint(w, args.data.len() as u64)?;
-            write_raw_bytes(w, &args.data)?;
+            write_varint(w, data.len() as u64)?;
+            write_raw_bytes(w, data)?;
+        } else if let Some(ref hash) = args.hash_to_directly_sign {
+            write_byte(w, 2)?;
+            write_raw_bytes(w, hash)?;
         } else {
-            // hash_to_directly_sign would be an alternative - not in our struct currently
+            // No data — write empty data flag
             write_byte(w, 1)?;
-            write_varint(w, args.data.len() as u64)?;
+            write_varint(w, 0)?;
         }
         write_optional_bool(w, args.seek_permission)
     })
@@ -34,14 +37,16 @@ pub fn deserialize_create_signature_args(data: &[u8]) -> Result<CreateSignatureA
     let mut r = std::io::Cursor::new(data);
     let params = read_key_related_params(&mut r)?;
     let data_type_flag = read_byte(&mut r)?;
-    let sig_data = match data_type_flag {
+    let (sig_data, hash_to_directly_sign) = match data_type_flag {
         1 => {
             let data_len = read_varint(&mut r)?;
-            read_raw_bytes(&mut r, data_len as usize)?
+            let d = read_raw_bytes(&mut r, data_len as usize)?;
+            (if d.is_empty() { None } else { Some(d) }, None)
         }
         2 => {
             // Hash to directly sign (32 bytes)
-            read_raw_bytes(&mut r, 32)?
+            let h = read_raw_bytes(&mut r, 32)?;
+            (None, Some(h))
         }
         _ => {
             return Err(WalletError::Internal(format!(
@@ -62,6 +67,7 @@ pub fn deserialize_create_signature_args(data: &[u8]) -> Result<CreateSignatureA
             Some(params.privileged_reason)
         },
         data: sig_data,
+        hash_to_directly_sign,
         seek_permission,
     })
 }

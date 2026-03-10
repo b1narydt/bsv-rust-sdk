@@ -35,7 +35,7 @@ fn validate_tag(s: &str) -> Result<(), WalletError> {
 }
 
 fn validate_basket(s: &str) -> Result<(), WalletError> {
-    validate_string_length(s, "basket", 1, 300)
+    validate_basket_name(s)
 }
 
 fn validate_description(s: &str, name: &str) -> Result<(), WalletError> {
@@ -51,14 +51,91 @@ fn validate_optional_limit(limit: Option<u32>) -> Result<(), WalletError> {
     Ok(())
 }
 
+/// Normalize an identifier per BRC-100: trim whitespace, lowercase.
+/// Matches TS SDK `validateIdentifier` which does `trim().toLowerCase()`.
+pub fn normalize_identifier(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
 fn validate_protocol_id(protocol: &crate::wallet::types::Protocol) -> Result<(), WalletError> {
     if protocol.security_level > 2 {
         return Err(invalid("protocol_id.security_level", "0, 1, or 2"));
     }
-    if protocol.protocol.is_empty() {
+    let normalized = normalize_identifier(&protocol.protocol);
+    if normalized.is_empty() {
         return Err(invalid("protocol_id.protocol", "non-empty"));
     }
-    validate_string_length(&protocol.protocol, "protocol_id.protocol", 1, 400)?;
+    validate_string_length(&normalized, "protocol_id.protocol", 1, 400)?;
+    // BRC-100: must not contain multiple consecutive spaces
+    if normalized.contains("  ") {
+        return Err(invalid(
+            "protocol_id.protocol",
+            "free of consecutive spaces",
+        ));
+    }
+    // BRC-100: must only contain lowercase letters, numbers, and spaces
+    if !normalized
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ')
+    {
+        return Err(invalid(
+            "protocol_id.protocol",
+            "only lowercase letters, numbers, and spaces",
+        ));
+    }
+    // BRC-100: must not end with "protocol"
+    if normalized.ends_with("protocol") {
+        return Err(invalid(
+            "protocol_id.protocol",
+            "not ending with 'protocol'",
+        ));
+    }
+    // BRC-98: must not start with "p"
+    if normalized.starts_with('p') {
+        return Err(invalid(
+            "protocol_id.protocol",
+            "not starting with 'p' (reserved per BRC-98)",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_basket_name(s: &str) -> Result<(), WalletError> {
+    let normalized = normalize_identifier(s);
+    validate_string_length(&normalized, "basket", 5, 300)?;
+    // BRC-100: must only contain lowercase letters, numbers, and spaces
+    if !normalized
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ')
+    {
+        return Err(invalid(
+            "basket",
+            "only lowercase letters, numbers, and spaces",
+        ));
+    }
+    // BRC-100: must not contain consecutive spaces
+    if normalized.contains("  ") {
+        return Err(invalid("basket", "free of consecutive spaces"));
+    }
+    // BRC-100: must not end with "basket"
+    if normalized.ends_with("basket") {
+        return Err(invalid("basket", "not ending with 'basket'"));
+    }
+    // BRC-100: must not start with "admin"
+    if normalized.starts_with("admin") {
+        return Err(invalid("basket", "not starting with 'admin'"));
+    }
+    // BRC-100: must not be "default"
+    if normalized == "default" {
+        return Err(invalid("basket", "not 'default'"));
+    }
+    // BRC-99: must not start with "p"
+    if normalized.starts_with('p') {
+        return Err(invalid(
+            "basket",
+            "not starting with 'p' (reserved per BRC-99)",
+        ));
+    }
     Ok(())
 }
 
@@ -288,8 +365,23 @@ pub fn validate_verify_hmac_args(args: &VerifyHmacArgs) -> Result<(), WalletErro
 pub fn validate_create_signature_args(args: &CreateSignatureArgs) -> Result<(), WalletError> {
     validate_protocol_id(&args.protocol_id)?;
     validate_key_id(&args.key_id)?;
-    if args.data.is_empty() {
-        return Err(invalid("data", "non-empty"));
+    let has_data = args.data.as_ref().is_some_and(|d| !d.is_empty());
+    let has_hash = args
+        .hash_to_directly_sign
+        .as_ref()
+        .is_some_and(|h| !h.is_empty());
+    if !has_data && !has_hash {
+        return Err(invalid(
+            "data",
+            "provided (either data or hash_to_directly_sign)",
+        ));
+    }
+    if has_hash {
+        if let Some(ref h) = args.hash_to_directly_sign {
+            if h.len() != 32 {
+                return Err(invalid("hash_to_directly_sign", "exactly 32 bytes"));
+            }
+        }
     }
     validate_privileged_reason(args.privileged, &args.privileged_reason)?;
     Ok(())
@@ -299,8 +391,23 @@ pub fn validate_create_signature_args(args: &CreateSignatureArgs) -> Result<(), 
 pub fn validate_verify_signature_args(args: &VerifySignatureArgs) -> Result<(), WalletError> {
     validate_protocol_id(&args.protocol_id)?;
     validate_key_id(&args.key_id)?;
-    if args.data.is_empty() {
-        return Err(invalid("data", "non-empty"));
+    let has_data = args.data.as_ref().is_some_and(|d| !d.is_empty());
+    let has_hash = args
+        .hash_to_directly_verify
+        .as_ref()
+        .is_some_and(|h| !h.is_empty());
+    if !has_data && !has_hash {
+        return Err(invalid(
+            "data",
+            "provided (either data or hash_to_directly_verify)",
+        ));
+    }
+    if has_hash {
+        if let Some(ref h) = args.hash_to_directly_verify {
+            if h.len() != 32 {
+                return Err(invalid("hash_to_directly_verify", "exactly 32 bytes"));
+            }
+        }
     }
     if args.signature.is_empty() {
         return Err(invalid("signature", "non-empty"));
@@ -462,7 +569,7 @@ mod tests {
     fn test_protocol() -> Protocol {
         Protocol {
             security_level: 1,
-            protocol: "test-protocol".to_string(),
+            protocol: "test signing".to_string(),
         }
     }
 
@@ -751,7 +858,7 @@ mod tests {
     #[test]
     fn test_list_outputs_valid() {
         let args = ListOutputsArgs {
-            basket: "test-basket".to_string(),
+            basket: "token store".to_string(),
             tags: vec![],
             tag_query_mode: None,
             include: None,
@@ -785,7 +892,7 @@ mod tests {
     #[test]
     fn test_list_outputs_limit_too_high() {
         let args = ListOutputsArgs {
-            basket: "test".to_string(),
+            basket: "token store".to_string(),
             tags: vec![],
             tag_query_mode: None,
             include: None,
@@ -804,7 +911,7 @@ mod tests {
     #[test]
     fn test_relinquish_output_valid() {
         let args = RelinquishOutputArgs {
-            basket: "test-basket".to_string(),
+            basket: "token store".to_string(),
             output: "abc123.0".to_string(),
         };
         assert!(validate_relinquish_output_args(&args).is_ok());
@@ -822,7 +929,7 @@ mod tests {
     #[test]
     fn test_relinquish_output_empty_output() {
         let args = RelinquishOutputArgs {
-            basket: "test".to_string(),
+            basket: "token store".to_string(),
             output: "".to_string(),
         };
         assert!(validate_relinquish_output_args(&args).is_err());
@@ -1068,7 +1175,8 @@ mod tests {
             protocol_id: test_protocol(),
             key_id: "my-key".to_string(),
             counterparty: test_counterparty(),
-            data: vec![1, 2, 3],
+            data: Some(vec![1, 2, 3]),
+            hash_to_directly_sign: None,
             privileged: false,
             privileged_reason: None,
             seek_permission: None,
@@ -1082,7 +1190,8 @@ mod tests {
             protocol_id: test_protocol(),
             key_id: "my-key".to_string(),
             counterparty: test_counterparty(),
-            data: vec![],
+            data: Some(vec![]),
+            hash_to_directly_sign: None,
             privileged: false,
             privileged_reason: None,
             seek_permission: None,
@@ -1098,7 +1207,8 @@ mod tests {
             protocol_id: test_protocol(),
             key_id: "my-key".to_string(),
             counterparty: test_counterparty(),
-            data: vec![1, 2, 3],
+            data: Some(vec![1, 2, 3]),
+            hash_to_directly_verify: None,
             signature: vec![4, 5, 6],
             for_self: None,
             privileged: false,
@@ -1114,7 +1224,8 @@ mod tests {
             protocol_id: test_protocol(),
             key_id: "my-key".to_string(),
             counterparty: test_counterparty(),
-            data: vec![1, 2, 3],
+            data: Some(vec![1, 2, 3]),
+            hash_to_directly_verify: None,
             signature: vec![],
             for_self: None,
             privileged: false,
@@ -1243,7 +1354,8 @@ mod tests {
                 revocation_outpoint: None,
                 fields: None,
                 signature: None,
-            },
+            }
+            .into(),
             fields_to_reveal: vec!["name".to_string()],
             verifier: test_pubkey(),
             privileged: BooleanDefaultFalse(None),
@@ -1263,7 +1375,8 @@ mod tests {
                 revocation_outpoint: None,
                 fields: None,
                 signature: None,
-            },
+            }
+            .into(),
             fields_to_reveal: vec![],
             verifier: test_pubkey(),
             privileged: BooleanDefaultFalse(None),

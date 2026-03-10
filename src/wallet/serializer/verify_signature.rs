@@ -20,14 +20,16 @@ pub fn serialize_verify_signature_args(args: &VerifySignatureArgs) -> Result<Vec
         write_optional_bool(w, args.for_self)?;
         // Signature (length-prefixed)
         write_bytes(w, &args.signature)?;
-        // Data flag: 1 = data, 2 = hash
-        if !args.data.is_empty() {
+        // Data flag: 1 = data, 2 = hash_to_directly_verify
+        if let Some(ref data) = args.data {
             write_byte(w, 1)?;
-            write_bytes(w, &args.data)?;
+            write_bytes(w, data)?;
+        } else if let Some(ref hash) = args.hash_to_directly_verify {
+            write_byte(w, 2)?;
+            write_raw_bytes(w, hash)?;
         } else {
-            // hash_to_directly_verify would go here
             write_byte(w, 1)?;
-            write_bytes(w, &args.data)?;
+            write_bytes(w, &[])?;
         }
         write_optional_bool(w, args.seek_permission)
     })
@@ -39,9 +41,15 @@ pub fn deserialize_verify_signature_args(data: &[u8]) -> Result<VerifySignatureA
     let for_self = read_optional_bool(&mut r)?;
     let signature = read_bytes(&mut r)?;
     let data_type_flag = read_byte(&mut r)?;
-    let sig_data = match data_type_flag {
-        1 => read_bytes(&mut r)?,
-        2 => read_raw_bytes(&mut r, 32)?,
+    let (sig_data, hash_to_directly_verify) = match data_type_flag {
+        1 => {
+            let d = read_bytes(&mut r)?;
+            (if d.is_empty() { None } else { Some(d) }, None)
+        }
+        2 => {
+            let h = read_raw_bytes(&mut r, 32)?;
+            (None, Some(h))
+        }
         _ => {
             return Err(WalletError::Internal(format!(
                 "invalid data type flag: {}",
@@ -63,6 +71,7 @@ pub fn deserialize_verify_signature_args(data: &[u8]) -> Result<VerifySignatureA
         for_self,
         signature,
         data: sig_data,
+        hash_to_directly_verify,
         seek_permission,
     })
 }

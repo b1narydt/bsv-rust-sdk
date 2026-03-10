@@ -726,7 +726,8 @@ test_args_vector!(
             counterparty_type: CounterpartyType::Self_,
             public_key: None
         },
-        data: vec![11, 22, 33, 44],
+        data: Some(vec![11, 22, 33, 44]),
+        hash_to_directly_sign: None,
         privileged: true,
         privileged_reason: Some("test reason".to_string()),
         seek_permission: Some(true),
@@ -761,7 +762,8 @@ test_args_vector!(
             counterparty_type: CounterpartyType::Self_,
             public_key: None
         },
-        data: vec![11, 22, 33, 44],
+        data: Some(vec![11, 22, 33, 44]),
+        hash_to_directly_verify: None,
         signature: sig_from_hex(
             "302502204e45e16932b8af514961a1d3a1a25fdf3f4f7732e9d624c6c61548ab5fb8cd41020101"
         ),
@@ -968,7 +970,8 @@ test_args_vector!(
                 revocation_outpoint: Some(OUTPOINT_STR.to_string()),
                 fields: Some(fields),
                 signature: Some(sig_from_hex(SIG_HEX)),
-            },
+            }
+            .into(),
             fields_to_reveal: vec!["name".to_string()],
             verifier: pk_from_hex(VERIFIER_HEX),
             privileged: BooleanDefaultFalse(Some(false)),
@@ -987,6 +990,8 @@ test_result_vector!(
         keyring.insert("name".to_string(), "bmFtZS1rZXk=".to_string());
         ProveCertificateResult {
             keyring_for_verifier: keyring,
+            certificate: None,
+            verifier: None,
         }
     }
 );

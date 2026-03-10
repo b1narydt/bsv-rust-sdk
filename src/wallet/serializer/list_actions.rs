@@ -15,6 +15,7 @@ const ACTION_STATUS_UNPROVEN: u8 = 4;
 const ACTION_STATUS_UNSIGNED: u8 = 5;
 const ACTION_STATUS_NOSEND: u8 = 6;
 const ACTION_STATUS_NONFINAL: u8 = 7;
+const ACTION_STATUS_FAILED: u8 = 8;
 
 pub fn serialize_list_actions_args(args: &ListActionsArgs) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
@@ -92,6 +93,7 @@ pub fn serialize_list_actions_result(result: &ListActionsResult) -> Result<Vec<u
                 ActionStatus::Unsigned => ACTION_STATUS_UNSIGNED,
                 ActionStatus::NoSend => ACTION_STATUS_NOSEND,
                 ActionStatus::NonFinal => ACTION_STATUS_NONFINAL,
+                ActionStatus::Failed => ACTION_STATUS_FAILED,
             };
             write_byte(w, status_byte)?;
             write_optional_bool(w, Some(action.is_outgoing))?;
@@ -179,6 +181,7 @@ pub fn deserialize_list_actions_result(data: &[u8]) -> Result<ListActionsResult,
             ACTION_STATUS_UNSIGNED => ActionStatus::Unsigned,
             ACTION_STATUS_NOSEND => ActionStatus::NoSend,
             ACTION_STATUS_NONFINAL => ActionStatus::NonFinal,
+            ACTION_STATUS_FAILED => ActionStatus::Failed,
             _ => {
                 return Err(WalletError::Internal(format!(
                     "invalid status byte: {}",

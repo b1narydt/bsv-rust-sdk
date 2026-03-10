@@ -244,7 +244,8 @@ impl<W: WalletInterface> Peer<W> {
             .wallet
             .create_signature(
                 CreateSignatureArgs {
-                    data: payload.clone(),
+                    data: Some(payload.clone()),
+                    hash_to_directly_sign: None,
                     protocol_id: Protocol {
                         security_level: 2,
                         protocol: AUTH_PROTOCOL_ID.to_string(),
@@ -429,7 +430,8 @@ impl<W: WalletInterface> Peer<W> {
             .wallet
             .verify_signature(
                 VerifySignatureArgs {
-                    data: verify_data,
+                    data: Some(verify_data),
+                    hash_to_directly_verify: None,
                     signature: response.signature.clone().unwrap_or_default(),
                     protocol_id: Protocol {
                         security_level: 2,
@@ -584,7 +586,8 @@ impl<W: WalletInterface> Peer<W> {
             .wallet
             .create_signature(
                 CreateSignatureArgs {
-                    data: sign_data,
+                    data: Some(sign_data),
+                    hash_to_directly_sign: None,
                     protocol_id: Protocol {
                         security_level: 2,
                         protocol: AUTH_PROTOCOL_ID.to_string(),
@@ -656,7 +659,8 @@ impl<W: WalletInterface> Peer<W> {
             .wallet
             .verify_signature(
                 VerifySignatureArgs {
-                    data: payload.clone(),
+                    data: Some(payload.clone()),
+                    hash_to_directly_verify: None,
                     signature: msg.signature.clone().unwrap_or_default(),
                     protocol_id: Protocol {
                         security_level: 2,
@@ -907,7 +911,8 @@ mod tests {
             _originator: Option<&str>,
         ) -> Result<CreateSignatureResult, WalletError> {
             let signature = self.inner.create_signature_sync(
-                &args.data,
+                args.data.as_deref(),
+                args.hash_to_directly_sign.as_deref(),
                 &args.protocol_id,
                 &args.key_id,
                 &args.counterparty,
@@ -921,7 +926,8 @@ mod tests {
             _originator: Option<&str>,
         ) -> Result<VerifySignatureResult, WalletError> {
             let valid = self.inner.verify_signature_sync(
-                &args.data,
+                args.data.as_deref(),
+                args.hash_to_directly_verify.as_deref(),
                 &args.signature,
                 &args.protocol_id,
                 &args.key_id,

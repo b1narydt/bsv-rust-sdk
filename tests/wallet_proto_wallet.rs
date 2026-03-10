@@ -92,7 +92,15 @@ fn validates_the_brc3_compliance_vector() {
         counterparty_of("0294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a1");
 
     let valid = wallet
-        .verify_signature_sync(&data, &signature, &protocol, "42", &counterparty, false)
+        .verify_signature_sync(
+            Some(data.as_slice()),
+            None,
+            &signature,
+            &protocol,
+            "42",
+            &counterparty,
+            false,
+        )
         .unwrap();
     assert!(valid, "BRC-3 compliance vector should verify");
 }
@@ -288,13 +296,20 @@ fn signs_messages_verifiable_by_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let signature = user
-        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_signature_sync(
+            Some(SAMPLE_DATA),
+            None,
+            &protocol_2_tests(),
+            "4",
+            &cp_for_user,
+        )
         .unwrap();
     assert!(!signature.is_empty());
 
     let valid = counterparty_wallet
         .verify_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &signature,
             &protocol_2_tests(),
             "4",
@@ -321,13 +336,20 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
     let cp_for_counterparty = counterparty_of(&user_pub_hex);
 
     let signature = user
-        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &cp_for_user)
+        .create_signature_sync(
+            Some(SAMPLE_DATA),
+            None,
+            &protocol_2_tests(),
+            "4",
+            &cp_for_user,
+        )
         .unwrap();
 
     // Wrong data
-    let wrong_data = &[0, 3, 1, 4, 1, 5, 9];
+    let wrong_data: &[u8] = &[0, 3, 1, 4, 1, 5, 9];
     let result = counterparty_wallet.verify_signature_sync(
-        wrong_data,
+        Some(wrong_data),
+        None,
         &signature,
         &protocol_2_tests(),
         "4",
@@ -346,7 +368,8 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
         protocol: "wrong".to_string(),
     };
     let result = counterparty_wallet.verify_signature_sync(
-        SAMPLE_DATA,
+        Some(SAMPLE_DATA),
+        None,
         &signature,
         &wrong_protocol,
         "4",
@@ -360,7 +383,8 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
 
     // Wrong key ID
     let result = counterparty_wallet.verify_signature_sync(
-        SAMPLE_DATA,
+        Some(SAMPLE_DATA),
+        None,
         &signature,
         &protocol_2_tests(),
         "2",
@@ -375,7 +399,8 @@ fn fails_to_verify_signature_for_wrong_data_protocol_key_counterparty() {
     // Wrong counterparty
     let wrong_cp = counterparty_of(&cp_pub_hex);
     let result = counterparty_wallet.verify_signature_sync(
-        SAMPLE_DATA,
+        Some(SAMPLE_DATA),
+        None,
         &signature,
         &protocol_2_tests(),
         "4",
@@ -484,8 +509,13 @@ fn fails_to_verify_hmac_for_wrong_data_protocol_key_counterparty() {
 
     // Wrong counterparty
     let wrong_cp = counterparty_of(&cp_pub_hex);
-    let result =
-        counterparty_wallet.verify_hmac_sync(SAMPLE_DATA, &hmac, &protocol_2_tests(), "4", &wrong_cp);
+    let result = counterparty_wallet.verify_hmac_sync(
+        SAMPLE_DATA,
+        &hmac,
+        &protocol_2_tests(),
+        "4",
+        &wrong_cp,
+    );
     assert!(
         result.is_err() || !result.unwrap(),
         "HMAC should fail with wrong counterparty"
@@ -536,7 +566,8 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
     // Signature with no counterparty (defaults to anyone)
     let anyone_sig = user
         .create_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &protocol_2_tests(),
             "4",
             &uninit_counterparty(),
@@ -549,7 +580,8 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
     let cp_user = counterparty_of(&user_pub_hex);
     let valid_anyone = anyone_wallet
         .verify_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &anyone_sig,
             &protocol_2_tests(),
             "4",
@@ -564,11 +596,18 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     // Self signature
     let self_sig = user
-        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(
+            Some(SAMPLE_DATA),
+            None,
+            &protocol_2_tests(),
+            "4",
+            &self_counterparty(),
+        )
         .unwrap();
     let valid_self = user
         .verify_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &self_sig,
             &protocol_2_tests(),
             "4",
@@ -583,7 +622,8 @@ fn uses_anyone_for_signatures_and_self_for_other_ops_when_no_counterparty() {
 
     let valid_explicit_self = user
         .verify_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &self_sig,
             &protocol_2_tests(),
             "4",
@@ -828,7 +868,13 @@ fn validates_correct_hmac_using_constant_time_comparison() {
 fn signature_creation_returns_non_empty_bytes() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
-        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(
+            Some(SAMPLE_DATA),
+            None,
+            &protocol_2_tests(),
+            "4",
+            &self_counterparty(),
+        )
         .unwrap();
     assert!(!sig.is_empty(), "signature should be non-empty");
 }
@@ -841,11 +887,18 @@ fn signature_creation_returns_non_empty_bytes() {
 fn signature_verification_succeeds_with_correct_params() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
-        .create_signature_sync(SAMPLE_DATA, &protocol_2_tests(), "4", &self_counterparty())
+        .create_signature_sync(
+            Some(SAMPLE_DATA),
+            None,
+            &protocol_2_tests(),
+            "4",
+            &self_counterparty(),
+        )
         .unwrap();
     let valid = wallet
         .verify_signature_sync(
-            SAMPLE_DATA,
+            Some(SAMPLE_DATA),
+            None,
             &sig,
             &protocol_2_tests(),
             "4",
@@ -865,7 +918,8 @@ fn signature_verification_fails_with_wrong_data() {
     let (_key, wallet) = make_wallet("aa");
     let sig = wallet
         .create_signature_sync(
-            b"correct data",
+            Some(b"correct data"),
+            None,
             &protocol_2_tests(),
             "4",
             &self_counterparty(),
@@ -873,7 +927,8 @@ fn signature_verification_fails_with_wrong_data() {
         .unwrap();
     let valid = wallet
         .verify_signature_sync(
-            b"wrong data",
+            Some(b"wrong data"),
+            None,
             &sig,
             &protocol_2_tests(),
             "4",

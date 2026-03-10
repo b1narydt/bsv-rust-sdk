@@ -349,6 +349,7 @@ pub enum ActionStatus {
     NoSend,
     #[cfg_attr(feature = "network", serde(rename = "nonfinal"))]
     NonFinal,
+    Failed,
 }
 
 impl ActionStatus {
@@ -361,6 +362,7 @@ impl ActionStatus {
             ActionStatus::Unsigned => "unsigned",
             ActionStatus::NoSend => "nosend",
             ActionStatus::NonFinal => "nonfinal",
+            ActionStatus::Failed => "failed",
         }
     }
 }
@@ -662,6 +664,49 @@ pub struct Certificate {
     )]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
+}
+
+/// A partial certificate where all fields are optional.
+/// Used for ProveCertificateArgs to match TS SDK's `Partial<WalletCertificate>`.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+pub struct PartialCertificate {
+    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub cert_type: Option<CertificateType>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub serial_number: Option<SerialNumber>,
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub subject: Option<PublicKey>,
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub certifier: Option<PublicKey>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub revocation_outpoint: Option<String>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub fields: Option<HashMap<String, String>>,
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_bytes_as_hex")
+    )]
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub signature: Option<Vec<u8>>,
+}
+
+impl From<Certificate> for PartialCertificate {
+    fn from(c: Certificate) -> Self {
+        PartialCertificate {
+            cert_type: Some(c.cert_type),
+            serial_number: Some(c.serial_number),
+            subject: Some(c.subject),
+            certifier: Some(c.certifier),
+            revocation_outpoint: c.revocation_outpoint,
+            fields: c.fields,
+            signature: c.signature,
+        }
+    }
 }
 
 /// Identifies who reveals a keyring.
@@ -1408,8 +1453,24 @@ pub struct CreateSignatureArgs {
     #[cfg_attr(feature = "network", serde(rename = "keyID"))]
     pub key_id: String,
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
-    pub data: Vec<u8>,
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_bytes_as_array")
+    )]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub data: Option<Vec<u8>>,
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_bytes_as_array")
+    )]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub hash_to_directly_sign: Option<Vec<u8>>,
     pub privileged: bool,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
@@ -1435,8 +1496,24 @@ pub struct VerifySignatureArgs {
     #[cfg_attr(feature = "network", serde(rename = "keyID"))]
     pub key_id: String,
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
-    pub data: Vec<u8>,
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_bytes_as_array")
+    )]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub data: Option<Vec<u8>>,
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_bytes_as_array")
+    )]
+    #[cfg_attr(
+        feature = "network",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub hash_to_directly_verify: Option<Vec<u8>>,
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
     pub signature: Vec<u8>,
     pub for_self: Option<bool>,
@@ -1546,7 +1623,7 @@ pub struct ListCertificatesResult {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateArgs {
-    pub certificate: Certificate,
+    pub certificate: PartialCertificate,
     pub fields_to_reveal: Vec<String>,
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
@@ -1561,6 +1638,11 @@ pub struct ProveCertificateArgs {
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateResult {
     pub keyring_for_verifier: HashMap<String, String>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub certificate: Option<Certificate>,
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub verifier: Option<PublicKey>,
 }
 
 /// Arguments for relinquishing ownership of a certificate.

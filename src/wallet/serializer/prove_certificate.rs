@@ -12,13 +12,37 @@ pub fn serialize_prove_certificate_args(
 ) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
         // Certificate type (32 bytes)
-        write_raw_bytes(w, args.certificate.cert_type.bytes())?;
+        write_raw_bytes(
+            w,
+            args.certificate
+                .cert_type
+                .as_ref()
+                .expect("cert_type required")
+                .bytes(),
+        )?;
         // Subject (33 bytes)
-        write_public_key(w, &args.certificate.subject)?;
+        write_public_key(
+            w,
+            args.certificate.subject.as_ref().expect("subject required"),
+        )?;
         // Serial number (32 bytes)
-        write_raw_bytes(w, &args.certificate.serial_number.0)?;
+        write_raw_bytes(
+            w,
+            &args
+                .certificate
+                .serial_number
+                .as_ref()
+                .expect("serial_number required")
+                .0,
+        )?;
         // Certifier (33 bytes)
-        write_public_key(w, &args.certificate.certifier)?;
+        write_public_key(
+            w,
+            args.certificate
+                .certifier
+                .as_ref()
+                .expect("certifier required"),
+        )?;
         // Revocation outpoint
         if let Some(ref outpoint) = args.certificate.revocation_outpoint {
             write_outpoint(w, outpoint)?;
@@ -119,7 +143,8 @@ pub fn deserialize_prove_certificate_args(
                 Some(fields)
             },
             signature,
-        },
+        }
+        .into(),
         fields_to_reveal,
         verifier,
         privileged: BooleanDefaultFalse(privileged),
@@ -161,5 +186,7 @@ pub fn deserialize_prove_certificate_result(
     }
     Ok(ProveCertificateResult {
         keyring_for_verifier,
+        certificate: None,
+        verifier: None,
     })
 }
