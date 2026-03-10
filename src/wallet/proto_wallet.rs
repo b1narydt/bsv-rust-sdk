@@ -882,7 +882,15 @@ mod tests {
         assert!(!sig.is_empty());
 
         let valid = wallet
-            .verify_signature_sync(Some(data), None, &sig, &protocol, "sig1", &counterparty, true)
+            .verify_signature_sync(
+                Some(data),
+                None,
+                &sig,
+                &protocol,
+                "sig1",
+                &counterparty,
+                true,
+            )
             .unwrap();
         assert!(valid, "signature should verify");
     }
@@ -894,10 +902,24 @@ mod tests {
         let counterparty = self_counterparty();
 
         let sig = wallet
-            .create_signature_sync(Some(b"correct data"), None, &protocol, "sig2", &counterparty)
+            .create_signature_sync(
+                Some(b"correct data"),
+                None,
+                &protocol,
+                "sig2",
+                &counterparty,
+            )
             .unwrap();
         let valid = wallet
-            .verify_signature_sync(Some(b"wrong data"), None, &sig, &protocol, "sig2", &counterparty, true)
+            .verify_signature_sync(
+                Some(b"wrong data"),
+                None,
+                &sig,
+                &protocol,
+                "sig2",
+                &counterparty,
+                true,
+            )
             .unwrap();
         assert!(!valid, "signature should not verify for wrong data");
     }

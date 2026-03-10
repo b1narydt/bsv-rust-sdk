@@ -677,10 +677,16 @@ pub struct PartialCertificate {
     pub cert_type: Option<CertificateType>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub serial_number: Option<SerialNumber>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_public_key_hex")
+    )]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub subject: Option<PublicKey>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_public_key_hex")
+    )]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub certifier: Option<PublicKey>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
@@ -1652,7 +1658,10 @@ pub struct ProveCertificateResult {
     pub keyring_for_verifier: HashMap<String, String>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub certificate: Option<Certificate>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::option_public_key_hex"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(with = "serde_helpers::option_public_key_hex")
+    )]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub verifier: Option<PublicKey>,
 }

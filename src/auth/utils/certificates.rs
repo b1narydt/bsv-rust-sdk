@@ -574,7 +574,9 @@ mod tests {
         // Create a requested set that does NOT include this cert type
         let mut requested = RequestedCertificateSet::default();
         let different_type_b64 = crate::auth::certificates::certificate::base64_encode(&[99u8; 32]);
-        requested.types.insert(different_type_b64, vec!["field".to_string()]);
+        requested
+            .types
+            .insert(different_type_b64, vec!["field".to_string()]);
 
         let anyone_wallet = TestWallet::new(
             PrivateKey::from_bytes(&{
