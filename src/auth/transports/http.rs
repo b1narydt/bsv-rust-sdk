@@ -387,6 +387,16 @@ struct DeserializedRequest {
 /// - varint + bytes: search/query string
 /// - varint: number of headers, then for each: varint+key, varint+value
 /// - varint + bytes: body
+/// Sentinel value representing "absent/none" in varint-encoded payloads.
+/// The serializer writes varint(-1) as two's complement u64 (0xFFFFFFFFFFFFFFFF)
+/// to indicate an absent field (empty query string, no body, etc.).
+const VARINT_ABSENT: u64 = u64::MAX;
+
+/// Returns true if a varint-encoded length represents actual data (not absent and not zero).
+fn varint_has_data(len: u64) -> bool {
+    len > 0 && len != VARINT_ABSENT
+}
+
 fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, AuthError> {
     let mut pos = 0;
 
@@ -403,7 +413,7 @@ fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, Au
     // Method
     let (method_len, consumed) = read_varint(&payload[pos..])?;
     pos += consumed;
-    let method = if method_len > 0 {
+    let method = if varint_has_data(method_len) {
         let end = pos + method_len as usize;
         if end > payload.len() {
             return Err(AuthError::InvalidMessage(
@@ -420,7 +430,7 @@ fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, Au
     // Path
     let (path_len, consumed) = read_varint(&payload[pos..])?;
     pos += consumed;
-    let path = if path_len > 0 {
+    let path = if varint_has_data(path_len) {
         let end = pos + path_len as usize;
         if end > payload.len() {
             return Err(AuthError::InvalidMessage(
@@ -437,7 +447,7 @@ fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, Au
     // Search/query string
     let (search_len, consumed) = read_varint(&payload[pos..])?;
     pos += consumed;
-    let search = if search_len > 0 {
+    let search = if varint_has_data(search_len) {
         let end = pos + search_len as usize;
         if end > payload.len() {
             return Err(AuthError::InvalidMessage(
@@ -452,8 +462,13 @@ fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, Au
     };
 
     // Headers
-    let (n_headers, consumed) = read_varint(&payload[pos..])?;
+    let (n_headers_raw, consumed) = read_varint(&payload[pos..])?;
     pos += consumed;
+    let n_headers = if n_headers_raw == VARINT_ABSENT {
+        0
+    } else {
+        n_headers_raw
+    };
     let mut headers = HashMap::new();
     for _ in 0..n_headers {
         let (key_len, consumed) = read_varint(&payload[pos..])?;
@@ -484,7 +499,7 @@ fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, Au
     // Body
     let (body_len, consumed) = read_varint(&payload[pos..])?;
     pos += consumed;
-    let body = if body_len > 0 {
+    let body = if varint_has_data(body_len) {
         let end = pos + body_len as usize;
         if end > payload.len() {
             return Err(AuthError::InvalidMessage(
