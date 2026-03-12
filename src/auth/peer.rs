@@ -225,18 +225,11 @@ impl<W: WalletInterface> Peer<W> {
         Ok(count)
     }
 
-    /// Send a general message to a peer identified by their identity key.
-    ///
-    /// If no authenticated session exists, initiates a handshake first.
-    pub async fn send_message(
-        &mut self,
-        identity_key: &str,
+    async fn create_general_message_from_session(
+        &self,
+        session: &PeerSession,
         payload: Vec<u8>,
-    ) -> Result<(), AuthError> {
-        // Find or create an authenticated session
-        let session = self.get_authenticated_session(identity_key).await?;
-
-        // Build the general message
+    ) -> Result<AuthMessage, AuthError> {
         let request_nonce = base64_encode(&crate::primitives::random::random_bytes(32));
         let key_id = format!("{} {}", request_nonce, session.peer_nonce);
 
@@ -265,7 +258,7 @@ impl<W: WalletInterface> Peer<W> {
 
         let identity_key_str = self.get_identity_public_key().await?;
 
-        let general_msg = AuthMessage {
+        Ok(AuthMessage {
             version: AUTH_VERSION.to_string(),
             message_type: MessageType::General,
             identity_key: identity_key_str,
@@ -276,7 +269,55 @@ impl<W: WalletInterface> Peer<W> {
             requested_certificates: None,
             payload: Some(payload),
             signature: Some(signature_result.signature),
-        };
+        })
+    }
+
+    /// Build a signed general message for an existing authenticated session
+    /// without sending it over the transport.
+    ///
+    /// `session_identifier` may be either the peer identity key or the local
+    /// session nonce. The latter is useful for servers that need to bind the
+    /// signature to the exact session that authenticated an incoming request.
+    pub async fn create_general_message(
+        &self,
+        session_identifier: &str,
+        payload: Vec<u8>,
+    ) -> Result<AuthMessage, AuthError> {
+        let session = self
+            .session_manager
+            .get_session_by_identifier(session_identifier)
+            .cloned()
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!(
+                    "session not found for identifier: {}",
+                    session_identifier
+                ))
+            })?;
+
+        if !session.is_authenticated {
+            return Err(AuthError::NotAuthenticated(format!(
+                "session not authenticated for identifier: {}",
+                session_identifier
+            )));
+        }
+
+        self.create_general_message_from_session(&session, payload)
+            .await
+    }
+
+    /// Send a general message to a peer identified by their identity key.
+    ///
+    /// If no authenticated session exists, initiates a handshake first.
+    pub async fn send_message(
+        &mut self,
+        identity_key: &str,
+        payload: Vec<u8>,
+    ) -> Result<(), AuthError> {
+        // Find or create an authenticated session
+        let session = self.get_authenticated_session(identity_key).await?;
+        let general_msg = self
+            .create_general_message_from_session(&session, payload)
+            .await?;
 
         self.transport.send(general_msg).await
     }
