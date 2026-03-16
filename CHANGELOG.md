@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.73] - 2026-03-15
+
+### Changed
+- **`ProveCertificateArgs.certificate`** -- now uses `PartialCertificate` (all fields optional) instead of `Certificate`, matching TS SDK's `Partial<WalletCertificate>`
+- **`ProveCertificateResult`** -- added optional `certificate` and `verifier` fields
+
 ## [0.1.72] - 2026-03-10
 
 ### Fixed
