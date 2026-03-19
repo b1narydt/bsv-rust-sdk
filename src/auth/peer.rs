@@ -531,7 +531,11 @@ impl<W: WalletInterface> Peer<W> {
     }
 
     /// Dispatch an incoming message based on its type.
-    async fn dispatch_message(&mut self, msg: AuthMessage) -> Result<(), AuthError> {
+    /// Dispatch a single incoming auth message directly.
+    ///
+    /// This is useful when you want to process one specific message without
+    /// draining the entire transport channel via `process_pending`.
+    pub async fn dispatch_message(&mut self, msg: AuthMessage) -> Result<(), AuthError> {
         if msg.version != AUTH_VERSION {
             return Err(AuthError::InvalidMessage(format!(
                 "unsupported auth version: {}, expected: {}",
@@ -728,11 +732,12 @@ impl<W: WalletInterface> Peer<W> {
             )));
         }
 
-        // Push to general message channel
+        // Push to general message channel (non-blocking).
+        // Use try_send to avoid blocking when the channel is full — the HTTP
+        // middleware only needs verification, not the decoded payload.
         let _ = self
             .general_message_tx
-            .send((msg.identity_key.clone(), payload))
-            .await;
+            .try_send((msg.identity_key.clone(), payload));
 
         Ok(())
     }

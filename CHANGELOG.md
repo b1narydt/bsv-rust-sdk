@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.74] - 2026-03-19
+
+### Fixed
+
+- **`Peer::dispatch_message` is now public** -- Allows middleware to verify
+  individual auth messages directly without draining the entire transport
+  channel via `process_pending`, preventing request serialization bottlenecks.
+
+- **`handle_general_message` uses non-blocking channel send** -- Changed
+  `general_message_tx.send().await` to `try_send()` to prevent deadlock when
+  the general message channel fills up (buffer=32) and nobody consumes from it.
+  Previously, after 32 authenticated requests the Peer Mutex would deadlock.
+
 ## [0.1.73] - 2026-03-15
 
 ### Changed
