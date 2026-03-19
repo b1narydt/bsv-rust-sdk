@@ -519,14 +519,34 @@ impl<'de> serde::Deserialize<'de> for CertificateType {
 }
 
 impl CertificateType {
+    /// Parse a CertificateType from a base64, hex, or raw string.
+    ///
+    /// Accepts base64 (44 chars or ending with '='), hex (64 hex chars),
+    /// or raw byte strings (<=32 bytes).
     pub fn from_string(s: &str) -> Result<Self, WalletError> {
-        if s.len() > 32 {
-            return Err(WalletError::InvalidParameter(
-                "certificate type string longer than 32 bytes".to_string(),
-            ));
+        let bytes = if s.len() == 44 || (!s.is_empty() && s.ends_with('=')) {
+            SerialNumber::base64_decode_sn(s)?
+        } else if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+            crate::primitives::utils::from_hex(s)
+                .map_err(|e| WalletError::InvalidParameter(format!("hex: {}", e)))?
+        } else if s.len() <= 32 {
+            let mut buf = [0u8; 32];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            return Ok(CertificateType(buf));
+        } else {
+            return Err(WalletError::InvalidParameter(format!(
+                "CertificateType: unsupported string length {}",
+                s.len()
+            )));
+        };
+        if bytes.len() != 32 {
+            return Err(WalletError::InvalidParameter(format!(
+                "CertificateType must decode to 32 bytes, got {}",
+                bytes.len()
+            )));
         }
         let mut buf = [0u8; 32];
-        buf[..s.len()].copy_from_slice(s.as_bytes());
+        buf.copy_from_slice(&bytes);
         Ok(CertificateType(buf))
     }
 
@@ -587,7 +607,7 @@ impl SerialNumber {
     }
 
     /// Inline base64 decoder for SerialNumber (self-contained, no cross-module dependency).
-    fn base64_decode_sn(s: &str) -> Result<Vec<u8>, WalletError> {
+    pub(crate) fn base64_decode_sn(s: &str) -> Result<Vec<u8>, WalletError> {
         fn b64_val(c: u8) -> Result<u8, WalletError> {
             match c {
                 b'A'..=b'Z' => Ok(c - b'A'),
@@ -1606,6 +1626,10 @@ pub struct ListCertificatesArgs {
     pub privileged: BooleanDefaultFalse,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
+    /// Optional partial certificate filter for exact matching.
+    /// When provided, only certificates matching these fields are returned.
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub partial: Option<PartialCertificate>,
 }
 
 /// A certificate with its keyring and verifier.

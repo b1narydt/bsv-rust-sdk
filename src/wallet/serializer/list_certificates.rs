@@ -69,6 +69,7 @@ pub fn deserialize_list_certificates_args(
         } else {
             Some(privileged_reason)
         },
+        partial: None,
     })
 }
 

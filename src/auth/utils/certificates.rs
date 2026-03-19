@@ -111,6 +111,7 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
                 offset: Some(0),
                 privileged: BooleanDefaultFalse(None),
                 privileged_reason: None,
+                partial: None,
             },
             None,
         )

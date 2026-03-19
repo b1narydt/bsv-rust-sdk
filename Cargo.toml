@@ -1,6 +1,6 @@
 [package]
 name = "bsv-sdk"
-version = "0.1.74"
+version = "0.1.75"
 edition = "2021"
 rust-version = "1.87"
 description = "Pure Rust implementation of the BSV Blockchain SDK"

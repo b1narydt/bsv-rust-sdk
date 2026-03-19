@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.75] - 2026-03-19
+
+### Fixed
+
+- **`CertificateType::from_string` now decodes base64 and hex** -- Previously
+  only accepted raw byte strings <=32 chars, rejecting base64-encoded types
+  (44 chars) which caused certificate lookups to silently fall back to all-zeros.
+
+### Added
+
+- **`partial` field on `ListCertificatesArgs`** -- Optional `PartialCertificate`
+  filter for exact certificate matching by type, serialNumber, certifier, and
+  subject. Required by `proveCertificate` which calls `listCertificates` with
+  a partial filter to find the unique matching certificate.
+
 ## [0.1.74] - 2026-03-19
 
 ### Fixed
