@@ -23,7 +23,7 @@ use bsv::remittance::remittance_module::{
 use bsv::remittance::types::{
     Amount, IdentityVerificationAcknowledgment, IdentityVerificationRequest,
     IdentityVerificationResponse, InstrumentBase, Invoice, LineItem, ModuleContext, PeerMessage,
-    RemittanceKind, RemittanceThreadState, sat_unit,
+    Receipt, RemittanceEnvelope, RemittanceKind, RemittanceThreadState, Settlement, sat_unit,
 };
 use bsv::wallet::error::WalletError;
 use bsv::wallet::interfaces::{
@@ -96,6 +96,14 @@ struct MockComms {
     sent: Arc<StdMutex<Vec<(String, String, String)>>>,
     /// When true, send_live_message returns an error to test queued fallback.
     fail_live: bool,
+    /// Configurable list for list_messages to return.
+    queued_messages: Arc<StdMutex<Vec<PeerMessage>>>,
+    /// Tracks acknowledged message IDs.
+    acknowledged: Arc<StdMutex<Vec<String>>>,
+    /// Stored live listener callback (for verifying start_listening).
+    live_callback: Arc<StdMutex<Option<Arc<dyn Fn(PeerMessage) + Send + Sync>>>>,
+    /// Flag set when listen_for_live_messages is called.
+    listening_flag: Arc<AtomicBool>,
 }
 
 impl MockComms {
@@ -103,20 +111,29 @@ impl MockComms {
         Self {
             sent: Arc::new(StdMutex::new(Vec::new())),
             fail_live: false,
+            queued_messages: Arc::new(StdMutex::new(Vec::new())),
+            acknowledged: Arc::new(StdMutex::new(Vec::new())),
+            live_callback: Arc::new(StdMutex::new(None)),
+            listening_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     #[allow(dead_code)]
     fn new_with_fail_live() -> Self {
-        Self {
-            sent: Arc::new(StdMutex::new(Vec::new())),
-            fail_live: true,
-        }
+        let mut c = Self::new();
+        c.fail_live = true;
+        c
     }
 
     #[allow(dead_code)]
     fn sent_count(&self) -> usize {
         self.sent.lock().unwrap().len()
+    }
+
+    /// Set messages to return from list_messages.
+    #[allow(dead_code)]
+    fn set_queued_messages(&self, msgs: Vec<PeerMessage>) {
+        *self.queued_messages.lock().unwrap() = msgs;
     }
 }
 
@@ -142,13 +159,18 @@ impl CommsLayer for MockComms {
         _message_box: &str,
         _host: Option<&str>,
     ) -> Result<Vec<PeerMessage>, RemittanceError> {
-        Ok(vec![])
+        let msgs = self.queued_messages.lock().unwrap().clone();
+        Ok(msgs)
     }
 
     async fn acknowledge_message(
         &self,
-        _message_ids: &[String],
+        message_ids: &[String],
     ) -> Result<(), RemittanceError> {
+        let mut ack = self.acknowledged.lock().unwrap();
+        for id in message_ids {
+            ack.push(id.clone());
+        }
         Ok(())
     }
 
@@ -175,8 +197,10 @@ impl CommsLayer for MockComms {
         &self,
         _message_box: &str,
         _override_host: Option<&str>,
-        _on_message: Arc<dyn Fn(PeerMessage) + Send + Sync>,
+        on_message: Arc<dyn Fn(PeerMessage) + Send + Sync>,
     ) -> Result<(), RemittanceError> {
+        self.listening_flag.store(true, Ordering::SeqCst);
+        *self.live_callback.lock().unwrap() = Some(on_message);
         Ok(())
     }
 }
@@ -384,8 +408,82 @@ impl RemittanceModule for MockModuleTracked {
 }
 
 // ---------------------------------------------------------------------------
+// MockModuleWithReceipt — accept_settlement returns receipt_data
+// ---------------------------------------------------------------------------
+
+struct MockModuleWithReceipt {
+    accept_called: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl RemittanceModule for MockModuleWithReceipt {
+    type OptionTerms = serde_json::Value;
+    type SettlementArtifact = serde_json::Value;
+    type ReceiptData = serde_json::Value;
+
+    fn id(&self) -> &str { "mock" }
+    fn name(&self) -> &str { "Mock Module With Receipt" }
+    fn allow_unsolicited_settlements(&self) -> bool { true }
+
+    async fn build_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _option: &serde_json::Value,
+        _note: Option<&str>,
+        _ctx: &ModuleContext,
+    ) -> Result<BuildSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(BuildSettlementResult::Settle {
+            artifact: serde_json::json!({ "tx": "receipt-module-tx" }),
+        })
+    }
+
+    async fn accept_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _settlement: &serde_json::Value,
+        _sender: &str,
+        _ctx: &ModuleContext,
+    ) -> Result<AcceptSettlementResult<serde_json::Value>, RemittanceError> {
+        self.accept_called.store(true, Ordering::SeqCst);
+        Ok(AcceptSettlementResult::Accept {
+            receipt_data: Some(serde_json::json!({ "confirmed": true })),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+/// Build a manager with a MockModuleWithReceipt (tracks accept_settlement calls).
+fn make_manager_with_receipt_module(
+    comms: Arc<MockComms>,
+    accept_called: Arc<AtomicBool>,
+) -> RemittanceManager {
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms;
+    RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                auto_issue_receipt: true,
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleWithReceipt { accept_called })],
+    )
+}
 
 fn make_manager() -> RemittanceManager {
     make_manager_with_config(RemittanceManagerConfig {
@@ -894,16 +992,13 @@ async fn test_unsolicited_settlement() {
 
 #[tokio::test]
 async fn test_identity_exchange() {
-    let comms = Arc::new(MockComms::new());
     let identity_opts = IdentityRuntimeOptions {
         maker_request_identity: Some(IdentityPhase::BeforeInvoicing),
         taker_request_identity: None,
     };
-    let comms_inner = Arc::new(MockComms {
-        sent: Arc::clone(&comms.sent),
-        fail_live: comms.fail_live,
-    });
-    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms_inner;
+    // Use a single MockComms instance for both observation and manager.
+    let comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms.clone();
     let manager = RemittanceManager::new(
         RemittanceManagerConfig {
             message_box: None,
@@ -1001,4 +1096,328 @@ async fn test_preselect_option() {
     assert!(called_flag.load(Ordering::SeqCst), "mock module should have been called via preselected option");
     let thread = handle.get_thread().await.unwrap();
     assert_eq!(thread.state, RemittanceThreadState::Settled);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 03 tests — sync_threads, start_listening, wait_for_receipt, dedup
+// ---------------------------------------------------------------------------
+
+/// Build a PeerMessage with the given fields.
+fn make_peer_message(id: &str, sender: &str, body: &str) -> PeerMessage {
+    PeerMessage {
+        message_id: id.to_string(),
+        sender: sender.to_string(),
+        recipient: "me".to_string(),
+        message_box: "remittance".to_string(),
+        body: body.to_string(),
+    }
+}
+
+/// Serialize a RemittanceEnvelope with Invoice kind.
+fn make_invoice_envelope(thread_id: &str, invoice: Invoice) -> String {
+    let payload = serde_json::to_value(&invoice).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "test-env-id".to_string(),
+        kind: RemittanceKind::Invoice,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    serde_json::to_string(&env).unwrap()
+}
+
+/// Build a minimal Invoice for testing.
+fn test_invoice(thread_id: &str) -> Invoice {
+    Invoice {
+        kind: RemittanceKind::Invoice,
+        expires_at: Some(9_999_999),
+        options: {
+            let mut m = HashMap::new();
+            m.insert("mock".to_string(), serde_json::json!({ "minAmount": 100 }));
+            m
+        },
+        base: InstrumentBase {
+            thread_id: thread_id.to_string(),
+            payee: "alice".to_string(),
+            payer: "bob".to_string(),
+            note: None,
+            line_items: vec![],
+            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            invoice_number: "INV-T01".to_string(),
+            created_at: 1_000_000,
+            arbitrary: None,
+        },
+    }
+}
+
+/// Build a Settlement envelope body for an existing thread.
+fn make_settlement_envelope(thread_id: &str) -> String {
+    let settlement = Settlement {
+        kind: RemittanceKind::Settlement,
+        thread_id: thread_id.to_string(),
+        module_id: "mock".to_string(),
+        option_id: "mock".to_string(),
+        sender: "bob".to_string(),
+        created_at: 1_000_000,
+        artifact: serde_json::json!({ "tx": "abc" }),
+        note: None,
+    };
+    let payload = serde_json::to_value(&settlement).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "settle-env-id".to_string(),
+        kind: RemittanceKind::Settlement,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    serde_json::to_string(&env).unwrap()
+}
+
+/// Build a Receipt envelope body for an existing thread.
+fn make_receipt_envelope(thread_id: &str) -> String {
+    let receipt = Receipt {
+        kind: RemittanceKind::Receipt,
+        thread_id: thread_id.to_string(),
+        module_id: "mock".to_string(),
+        option_id: "mock".to_string(),
+        payee: "alice".to_string(),
+        payer: "bob".to_string(),
+        created_at: 1_000_000,
+        receipt_data: serde_json::json!({ "confirmed": true }),
+    };
+    let payload = serde_json::to_value(&receipt).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "receipt-env-id".to_string(),
+        kind: RemittanceKind::Receipt,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    serde_json::to_string(&env).unwrap()
+}
+
+#[tokio::test]
+async fn test_sync_threads() {
+    let comms = Arc::new(MockComms::new());
+    let thread_id = "sync-thread-001";
+    let invoice = test_invoice(thread_id);
+    let body = make_invoice_envelope(thread_id, invoice);
+    let msg = make_peer_message("msg-001", "alice", &body);
+
+    // Queue one message for list_messages to return.
+    comms.set_queued_messages(vec![msg]);
+
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    manager.sync_threads().await.expect("sync_threads should succeed");
+
+    // Thread should have been created and transitioned to Invoiced.
+    let thread = manager.get_thread(thread_id).await;
+    assert!(thread.is_some(), "thread should have been created by sync_threads");
+    let thread = thread.unwrap();
+    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
+    assert!(thread.invoice.is_some(), "invoice should be stored");
+
+    // Message should have been acknowledged.
+    let acked = comms.acknowledged.lock().unwrap().clone();
+    assert!(acked.contains(&"msg-001".to_string()), "message should have been acknowledged");
+}
+
+#[tokio::test]
+async fn test_start_listening() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    manager.start_listening().await.expect("start_listening should succeed");
+
+    // Verify listen_for_live_messages was called.
+    assert!(
+        comms.listening_flag.load(Ordering::SeqCst),
+        "listening_flag should be set after start_listening"
+    );
+    assert!(
+        comms.live_callback.lock().unwrap().is_some(),
+        "live_callback should be stored after start_listening"
+    );
+}
+
+#[tokio::test]
+async fn test_wait_for_receipt_notify() {
+    use tokio::time::{timeout, Duration};
+
+    let comms = Arc::new(MockComms::new());
+    let accept_called = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_receipt_module(Arc::clone(&comms), Arc::clone(&accept_called));
+    manager.init().await.unwrap();
+
+    // Set up an Invoiced taker thread.
+    let thread_id = "wait-receipt-thread";
+    manager.insert_thread(invoiced_taker_thread(thread_id)).await;
+
+    // Transition to Settled first (so we can send receipt).
+    manager
+        .transition_thread_state(thread_id, RemittanceThreadState::Settled, None)
+        .await
+        .unwrap();
+
+    // Clone manager for spawned task.
+    let manager_clone = manager.clone();
+    let tid = thread_id.to_string();
+    tokio::spawn(async move {
+        // Small delay to ensure wait_for_receipt is already waiting.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send a Receipt message to trigger Receipted transition.
+        let body = make_receipt_envelope(&tid);
+        let msg = make_peer_message("rcpt-001", "alice", &body);
+        let _ = manager_clone.handle_inbound_message(msg).await;
+    });
+
+    // Wait for receipt (with timeout to prevent hanging).
+    let result = timeout(
+        Duration::from_secs(2),
+        manager.wait_for_receipt(thread_id),
+    )
+    .await
+    .expect("wait_for_receipt should complete within 2 seconds")
+    .expect("wait_for_receipt should succeed");
+
+    assert_eq!(
+        result.receipt_data,
+        serde_json::json!({ "confirmed": true }),
+        "receipt_data should match"
+    );
+}
+
+#[tokio::test]
+async fn test_deduplication() {
+    let comms = Arc::new(MockComms::new());
+    let thread_id = "dedup-thread";
+    let invoice = test_invoice(thread_id);
+    let body = make_invoice_envelope(thread_id, invoice);
+
+    // Same message_id sent twice.
+    let msg1 = make_peer_message("dedup-msg-001", "alice", &body);
+    let msg2 = make_peer_message("dedup-msg-001", "alice", &body);
+
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    manager.handle_inbound_message(msg1).await.unwrap();
+    manager.handle_inbound_message(msg2).await.unwrap();
+
+    // Thread should exist and be in Invoiced (not double-transitioned).
+    let thread = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Invoiced,
+        "thread should be in Invoiced (not Settled or other double-transition)"
+    );
+
+    // Processed IDs should contain dedup-msg-001 exactly once.
+    let count = thread
+        .processed_message_ids
+        .iter()
+        .filter(|id| id.as_str() == "dedup-msg-001")
+        .count();
+    assert_eq!(count, 1, "dedup-msg-001 should appear exactly once in processed_message_ids");
+}
+
+#[tokio::test]
+async fn test_thread_handle() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    let thread_id = "handle-test-thread";
+    manager.insert_thread(sample_thread(thread_id)).await;
+
+    // Get a ThreadHandle.
+    let handle = manager
+        .get_thread_handle(thread_id)
+        .await
+        .expect("get_thread_handle should succeed");
+
+    assert_eq!(handle.thread_id(), thread_id);
+
+    // get_thread() on handle returns the correct thread.
+    let thread = handle.get_thread().await.expect("handle.get_thread should succeed");
+    assert_eq!(thread.thread_id, thread_id);
+    assert_eq!(thread.state, RemittanceThreadState::New);
+}
+
+#[tokio::test]
+async fn test_inbound_invoice() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    let thread_id = "inbound-invoice-thread";
+    let invoice = test_invoice(thread_id);
+    let body = make_invoice_envelope(thread_id, invoice);
+    let msg = make_peer_message("inv-msg-001", "alice", &body);
+
+    manager.handle_inbound_message(msg).await.expect("handle_inbound_message should succeed");
+
+    let thread = manager.get_thread(thread_id).await.expect("thread should have been created");
+    // We are taker (they sent the invoice as maker).
+    assert!(matches!(thread.my_role, ThreadRole::Taker), "our role should be Taker");
+    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
+    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+    assert!(thread.flags.has_invoiced, "has_invoiced flag should be set");
+}
+
+#[tokio::test]
+async fn test_inbound_settlement_with_auto_receipt() {
+    let comms = Arc::new(MockComms::new());
+    let accept_called = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_receipt_module(Arc::clone(&comms), Arc::clone(&accept_called));
+    manager.init().await.unwrap();
+
+    // Pre-insert an Invoiced thread (taker sent us a settlement, so we are maker).
+    let thread_id = "settle-recv-thread";
+    let mut thread = sample_thread(thread_id);
+    thread.my_role = ThreadRole::Maker;
+    thread.their_role = ThreadRole::Taker;
+    thread.state = RemittanceThreadState::Invoiced;
+    thread.invoice = Some(test_invoice(thread_id));
+    thread.flags.has_invoiced = true;
+    manager.insert_thread(thread).await;
+
+    let body = make_settlement_envelope(thread_id);
+    let msg = make_peer_message("settle-msg-001", "bob", &body);
+
+    manager.handle_inbound_message(msg).await.expect("handle_inbound_message for settlement should succeed");
+
+    // accept_settlement should have been called on the module.
+    assert!(
+        accept_called.load(Ordering::SeqCst),
+        "module.accept_settlement should have been called"
+    );
+
+    let thread = manager.get_thread(thread_id).await.unwrap();
+    // auto_issue_receipt=true → should be Receipted, not just Settled.
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Receipted,
+        "thread should be Receipted after auto-receipt, got {:?}",
+        thread.state
+    );
+    assert!(thread.receipt.is_some(), "receipt should be stored");
+
+    // A receipt message should have been sent back to the counterparty.
+    let sent = comms.sent.lock().unwrap();
+    let receipt_sent = sent.iter().any(|(_, _, body)| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            v.get("kind").and_then(|k| k.as_str()) == Some("receipt")
+        } else {
+            false
+        }
+    });
+    assert!(receipt_sent, "a receipt message should have been sent via comms");
 }
