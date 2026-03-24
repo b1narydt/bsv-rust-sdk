@@ -15,7 +15,11 @@ pub use types::{
     RemittanceOptionId, RemittanceThreadState, ThreadId, UnixMillis,
 };
 
-// Future type re-exports will be added here as plans are implemented:
-// - Invoice, Settlement, Receipt, Termination (Plan 01-02)
-// - PeerMessage, RemittanceEnvelope (Plan 01-03)
-// - ModuleContext (Plan 01-04)
+// Protocol structs
+pub use types::{
+    sat_unit, Amount, IdentityCertificate, IdentityRequest,
+    IdentityVerificationAcknowledgment, IdentityVerificationRequest,
+    IdentityVerificationResponse, InstrumentBase, Invoice, LineItem,
+    ModuleContext, PeerMessage, Receipt, RemittanceEnvelope, Settlement,
+    Termination, Unit,
+};
