@@ -525,4 +525,8 @@ mod tests {
         assert_eq!(RemittanceThreadState::Invoiced.to_string(), "invoiced");
         assert_eq!(RemittanceThreadState::Errored.to_string(), "errored");
     }
+
+    // Wire-format roundtrip tests for Plan 01-02 structs are in
+    // tests/remittance_wire_format.rs (integration test file) to avoid
+    // pre-existing wallet module compilation errors in lib test target.
 }
