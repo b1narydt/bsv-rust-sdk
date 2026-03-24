@@ -176,7 +176,7 @@ pub trait RemittanceModule: Send + Sync {
 
 /// Type-erased result of `build_settlement` — carries `serde_json::Value`
 /// instead of the module's `SettlementArtifact` associated type.
-pub(crate) struct BuildSettlementErased {
+pub struct BuildSettlementErased {
     /// Either "settle" or "terminate".
     pub action: &'static str,
     pub artifact: Option<serde_json::Value>,
@@ -185,7 +185,7 @@ pub(crate) struct BuildSettlementErased {
 
 /// Type-erased result of `accept_settlement` — carries `serde_json::Value`
 /// instead of the module's `ReceiptData` associated type.
-pub(crate) struct AcceptSettlementErased {
+pub struct AcceptSettlementErased {
     /// Either "accept" or "terminate".
     pub action: &'static str,
     pub receipt_data: Option<serde_json::Value>,
@@ -197,10 +197,14 @@ pub(crate) struct AcceptSettlementErased {
 // ---------------------------------------------------------------------------
 
 /// Object-safe mirror of `RemittanceModule`, with associated types replaced by
-/// `serde_json::Value`. Used internally by `RemittanceManager` to store modules
+/// `serde_json::Value`. Used by `RemittanceManager` to store modules
 /// behind `Box<dyn ErasedRemittanceModule>` in a `HashMap<String, …>`.
+///
+/// External callers pass concrete `RemittanceModule` implementors to the constructor;
+/// the blanket impl `impl<T: RemittanceModule> ErasedRemittanceModule for T` handles
+/// the coercion automatically.
 #[async_trait]
-pub(crate) trait ErasedRemittanceModule: Send + Sync {
+pub trait ErasedRemittanceModule: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
     fn allow_unsolicited_settlements(&self) -> bool;

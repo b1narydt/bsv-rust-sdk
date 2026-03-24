@@ -24,7 +24,8 @@ pub use comms_layer::CommsLayer;
 pub use identity_layer::{AssessIdentityResult, IdentityLayer, RespondToRequestResult};
 #[cfg(feature = "network")]
 pub use remittance_module::{
-    AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
+    AcceptSettlementErased, AcceptSettlementResult, BuildSettlementErased, BuildSettlementResult,
+    ErasedRemittanceModule, RemittanceModule,
 };
 
 // Phase 3 manager re-exports

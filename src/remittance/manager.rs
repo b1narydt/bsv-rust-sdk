@@ -610,8 +610,8 @@ impl RemittanceManager {
         })
     }
 
-    /// Insert a thread into the inner map directly (used by invoice/create flows).
-    pub(crate) async fn insert_thread(&self, thread: Thread) {
+    /// Insert a thread into the inner map directly (used by invoice/create flows and tests).
+    pub async fn insert_thread(&self, thread: Thread) {
         let mut guard = self.inner.lock().await;
         guard.threads.insert(thread.thread_id.clone(), thread);
     }
