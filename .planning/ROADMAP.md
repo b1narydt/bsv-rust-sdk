@@ -61,7 +61,12 @@ Plans:
   3. `RemittanceManagerState` serializes to a `{ v: 1, threads: [...] }` JSON envelope that can be reloaded via `init()`
   4. `wait_for_receipt()` resolves when the thread reaches `Receipted` state without busy-polling (uses `tokio::sync::Notify`)
   5. `RemittanceEvent` listeners fire at every state change and message receipt
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Core types, constructor, state persistence, state machine enforcement, event system, thread accessors
+- [ ] 03-02-PLAN.md — Invoice and payment flow methods (send_invoice, pay, send_unsolicited_settlement, identity exchange)
+- [ ] 03-03-PLAN.md — Comms integration, inbound message dispatch, Notify-based waiters, ThreadHandle/InvoiceHandle
 
 ### Phase 4: BasicBRC29 Module
 **Goal**: A working BRC-29 P2PKH settlement module that builds and accepts settlements via the wallet interface, with injectable dependencies for testability
@@ -94,6 +99,6 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 |-------|----------------|--------|-----------|
 | 1. Foundation Types | 2/2 | Complete   | 2026-03-24 |
 | 2. Interface Traits | 2/2 | Complete   | 2026-03-24 |
-| 3. RemittanceManager | 0/TBD | Not started | - |
+| 3. RemittanceManager | 0/3 | Not started | - |
 | 4. BasicBRC29 Module | 0/TBD | Not started | - |
 | 5. Integration Tests | 0/TBD | Not started | - |

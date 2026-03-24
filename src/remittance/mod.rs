@@ -12,6 +12,8 @@ pub mod comms_layer;
 pub mod identity_layer;
 #[cfg(feature = "network")]
 pub mod remittance_module;
+#[cfg(feature = "network")]
+pub mod manager;
 
 pub use error::RemittanceError;
 
@@ -23,6 +25,15 @@ pub use identity_layer::{AssessIdentityResult, IdentityLayer, RespondToRequestRe
 #[cfg(feature = "network")]
 pub use remittance_module::{
     AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
+};
+
+// Phase 3 manager re-exports
+#[cfg(feature = "network")]
+pub use manager::{
+    ComposeInvoiceInput, IdentityPhase, IdentityRuntimeOptions, InvoiceHandle, MessageDirection,
+    ProtocolLogEntry, RemittanceEvent, RemittanceManager, RemittanceManagerConfig,
+    RemittanceManagerRuntimeOptions, RemittanceManagerState, StateLogEntry, Thread, ThreadError,
+    ThreadFlags, ThreadHandle, ThreadIdentity, ThreadRole,
 };
 
 // Core enums and state machine
