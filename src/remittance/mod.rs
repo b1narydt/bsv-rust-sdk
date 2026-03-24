@@ -10,8 +10,20 @@ pub mod types;
 pub mod comms_layer;
 #[cfg(feature = "network")]
 pub mod identity_layer;
+#[cfg(feature = "network")]
+pub mod remittance_module;
 
 pub use error::RemittanceError;
+
+// Phase 2 trait re-exports
+#[cfg(feature = "network")]
+pub use comms_layer::CommsLayer;
+#[cfg(feature = "network")]
+pub use identity_layer::{AssessIdentityResult, IdentityLayer, RespondToRequestResult};
+#[cfg(feature = "network")]
+pub use remittance_module::{
+    AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
+};
 
 // Core enums and state machine
 pub use types::{
