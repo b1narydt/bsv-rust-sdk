@@ -6,6 +6,10 @@
 
 pub mod error;
 pub mod types;
+#[cfg(feature = "network")]
+pub mod comms_layer;
+#[cfg(feature = "network")]
+pub mod identity_layer;
 
 pub use error::RemittanceError;
 
