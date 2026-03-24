@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-24T21:51:00.284Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-03-24T22:42:08.979Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 7
+  completed_plans: 5
   percent: 60
 ---
 
@@ -52,6 +52,7 @@ Progress: [████████░░] 60%
 
 *Updated after each plan completion*
 | Phase 02-interface-traits P02 | 6 | 2 tasks | 3 files |
+| Phase 03-remittancemanager P01 | 7 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 02-interface-traits]: Inline tests moved to tests/remittance_module.rs — pre-existing wallet test compilation errors prevent lib test target from building
 - [Phase 02-interface-traits]: ErasedRemittanceModule is pub(crate) only — not re-exported from mod.rs, internal implementation detail for Phase 3
 - [Phase 02-interface-traits]: process_termination_erased takes Option<&Settlement> (concrete type), not serde_json::Value — no erasure needed since Settlement is a concrete wire-format struct, matches TS exactly
+- [Phase 03-remittancemanager]: ErasedRemittanceModule made pub: public constructor requires public trait parameter; pub(crate) blocks external callers
+- [Phase 03-remittancemanager]: modules stored as Arc<HashMap> not Arc<Mutex<HashMap>> — registered at construction, never mutated, no lock needed per-call
+- [Phase 03-remittancemanager]: New->Receipted is invalid transition test case, not New->Settled — direct settlement from New is valid per protocol
 
 ### Pending Todos
 
@@ -88,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T21:51:00.282Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-03-24T22:42:08.977Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
