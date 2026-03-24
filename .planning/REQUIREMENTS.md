@@ -35,13 +35,13 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 - [x] **TRAIT-03**: IdentityLayer trait with determineCertificatesToRequest method
 - [x] **TRAIT-04**: IdentityLayer respondToRequest method returning respond or terminate
 - [x] **TRAIT-05**: IdentityLayer assessReceivedCertificateSufficiency method
-- [ ] **TRAIT-06**: RemittanceModule trait with id, name, allowUnsolicitedSettlements properties
-- [ ] **TRAIT-07**: RemittanceModule createOption method (optional)
-- [ ] **TRAIT-08**: RemittanceModule buildSettlement method returning settle artifact or terminate
-- [ ] **TRAIT-09**: RemittanceModule acceptSettlement method returning accept with receipt data or terminate
-- [ ] **TRAIT-10**: RemittanceModule processReceipt method (optional)
-- [ ] **TRAIT-11**: RemittanceModule processTermination method (optional)
-- [ ] **TRAIT-12**: Type-erased module wrapper for heterogeneous module registry using serde_json::Value
+- [x] **TRAIT-06**: RemittanceModule trait with id, name, allowUnsolicitedSettlements properties
+- [x] **TRAIT-07**: RemittanceModule createOption method (optional)
+- [x] **TRAIT-08**: RemittanceModule buildSettlement method returning settle artifact or terminate
+- [x] **TRAIT-09**: RemittanceModule acceptSettlement method returning accept with receipt data or terminate
+- [x] **TRAIT-10**: RemittanceModule processReceipt method (optional)
+- [x] **TRAIT-11**: RemittanceModule processTermination method (optional)
+- [x] **TRAIT-12**: Type-erased module wrapper for heterogeneous module registry using serde_json::Value
 
 ### RemittanceManager
 
@@ -155,13 +155,13 @@ Deferred to future release.
 | TRAIT-03 | Phase 2 — Interface Traits | Complete (02-01) |
 | TRAIT-04 | Phase 2 — Interface Traits | Complete (02-01) |
 | TRAIT-05 | Phase 2 — Interface Traits | Complete (02-01) |
-| TRAIT-06 | Phase 2 — Interface Traits | Pending |
-| TRAIT-07 | Phase 2 — Interface Traits | Pending |
-| TRAIT-08 | Phase 2 — Interface Traits | Pending |
-| TRAIT-09 | Phase 2 — Interface Traits | Pending |
-| TRAIT-10 | Phase 2 — Interface Traits | Pending |
-| TRAIT-11 | Phase 2 — Interface Traits | Pending |
-| TRAIT-12 | Phase 2 — Interface Traits | Pending |
+| TRAIT-06 | Phase 2 — Interface Traits | Complete |
+| TRAIT-07 | Phase 2 — Interface Traits | Complete |
+| TRAIT-08 | Phase 2 — Interface Traits | Complete |
+| TRAIT-09 | Phase 2 — Interface Traits | Complete |
+| TRAIT-10 | Phase 2 — Interface Traits | Complete |
+| TRAIT-11 | Phase 2 — Interface Traits | Complete |
+| TRAIT-12 | Phase 2 — Interface Traits | Complete |
 | MGR-01 | Phase 3 — RemittanceManager | Pending |
 | MGR-02 | Phase 3 — RemittanceManager | Pending |
 | MGR-03 | Phase 3 — RemittanceManager | Pending |
