@@ -30,11 +30,11 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 ### Interface Traits
 
-- [ ] **TRAIT-01**: CommsLayer trait with sendMessage, listMessages, acknowledgeMessage methods
-- [ ] **TRAIT-02**: CommsLayer optional sendLiveMessage and listenForLiveMessages methods
-- [ ] **TRAIT-03**: IdentityLayer trait with determineCertificatesToRequest method
-- [ ] **TRAIT-04**: IdentityLayer respondToRequest method returning respond or terminate
-- [ ] **TRAIT-05**: IdentityLayer assessReceivedCertificateSufficiency method
+- [x] **TRAIT-01**: CommsLayer trait with sendMessage, listMessages, acknowledgeMessage methods
+- [x] **TRAIT-02**: CommsLayer optional sendLiveMessage and listenForLiveMessages methods
+- [x] **TRAIT-03**: IdentityLayer trait with determineCertificatesToRequest method
+- [x] **TRAIT-04**: IdentityLayer respondToRequest method returning respond or terminate
+- [x] **TRAIT-05**: IdentityLayer assessReceivedCertificateSufficiency method
 - [ ] **TRAIT-06**: RemittanceModule trait with id, name, allowUnsolicitedSettlements properties
 - [ ] **TRAIT-07**: RemittanceModule createOption method (optional)
 - [ ] **TRAIT-08**: RemittanceModule buildSettlement method returning settle artifact or terminate
@@ -150,11 +150,11 @@ Deferred to future release.
 | WIRE-04 | Phase 1 — Foundation Types | Complete |
 | WIRE-05 | Phase 1 — Foundation Types | Complete |
 | WIRE-06 | Phase 1 — Foundation Types | Complete |
-| TRAIT-01 | Phase 2 — Interface Traits | Pending |
-| TRAIT-02 | Phase 2 — Interface Traits | Pending |
-| TRAIT-03 | Phase 2 — Interface Traits | Pending |
-| TRAIT-04 | Phase 2 — Interface Traits | Pending |
-| TRAIT-05 | Phase 2 — Interface Traits | Pending |
+| TRAIT-01 | Phase 2 — Interface Traits | Complete (02-01) |
+| TRAIT-02 | Phase 2 — Interface Traits | Complete (02-01) |
+| TRAIT-03 | Phase 2 — Interface Traits | Complete (02-01) |
+| TRAIT-04 | Phase 2 — Interface Traits | Complete (02-01) |
+| TRAIT-05 | Phase 2 — Interface Traits | Complete (02-01) |
 | TRAIT-06 | Phase 2 — Interface Traits | Pending |
 | TRAIT-07 | Phase 2 — Interface Traits | Pending |
 | TRAIT-08 | Phase 2 — Interface Traits | Pending |
