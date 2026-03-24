@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
@@ -12,17 +13,17 @@ use bsv::remittance::comms_layer::CommsLayer;
 use bsv::remittance::error::RemittanceError;
 use bsv::remittance::identity_layer::{AssessIdentityResult, IdentityLayer, RespondToRequestResult};
 use bsv::remittance::manager::{
-    ComposeInvoiceInput, IdentityPhase, MessageDirection, RemittanceEvent, RemittanceManager,
-    RemittanceManagerConfig, RemittanceManagerRuntimeOptions, RemittanceManagerState, Thread,
-    ThreadFlags, ThreadIdentity, ThreadRole,
+    ComposeInvoiceInput, IdentityPhase, IdentityRuntimeOptions, RemittanceEvent,
+    RemittanceManager, RemittanceManagerConfig, RemittanceManagerRuntimeOptions,
+    RemittanceManagerState, Thread, ThreadFlags, ThreadIdentity, ThreadRole,
 };
 use bsv::remittance::remittance_module::{
     AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
 };
 use bsv::remittance::types::{
     Amount, IdentityVerificationAcknowledgment, IdentityVerificationRequest,
-    IdentityVerificationResponse, InstrumentBase, Invoice, ModuleContext, PeerMessage,
-    RemittanceKind, RemittanceThreadState, Settlement, Termination, sat_unit,
+    IdentityVerificationResponse, InstrumentBase, Invoice, LineItem, ModuleContext, PeerMessage,
+    RemittanceKind, RemittanceThreadState, sat_unit,
 };
 use bsv::wallet::error::WalletError;
 use bsv::wallet::interfaces::{
@@ -90,15 +91,32 @@ impl WalletInterface for MockWallet {
 // MockComms
 // ---------------------------------------------------------------------------
 
+/// Tracks all sent messages (both live and queued) as (recipient, message_box, body).
 struct MockComms {
     sent: Arc<StdMutex<Vec<(String, String, String)>>>,
+    /// When true, send_live_message returns an error to test queued fallback.
+    fail_live: bool,
 }
 
 impl MockComms {
     fn new() -> Self {
         Self {
             sent: Arc::new(StdMutex::new(Vec::new())),
+            fail_live: false,
         }
+    }
+
+    #[allow(dead_code)]
+    fn new_with_fail_live() -> Self {
+        Self {
+            sent: Arc::new(StdMutex::new(Vec::new())),
+            fail_live: true,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn sent_count(&self) -> usize {
+        self.sent.lock().unwrap().len()
     }
 }
 
@@ -136,11 +154,20 @@ impl CommsLayer for MockComms {
 
     async fn send_live_message(
         &self,
-        _recipient: &str,
-        _message_box: &str,
-        _body: &str,
+        recipient: &str,
+        message_box: &str,
+        body: &str,
         _host_override: Option<&str>,
     ) -> Result<String, RemittanceError> {
+        if self.fail_live {
+            return Err(RemittanceError::Protocol("live not supported".into()));
+        }
+        // Record live messages in the same vec for observability.
+        self.sent.lock().unwrap().push((
+            recipient.to_string(),
+            message_box.to_string(),
+            body.to_string(),
+        ));
         Ok("mock-live-id".to_string())
     }
 
@@ -251,6 +278,112 @@ impl RemittanceModule for MockModule {
 }
 
 // ---------------------------------------------------------------------------
+// MockModuleWithOptions — supports create_option, returns fixed terms
+// ---------------------------------------------------------------------------
+
+struct MockModuleWithOptions;
+
+#[async_trait]
+impl RemittanceModule for MockModuleWithOptions {
+    type OptionTerms = serde_json::Value;
+    type SettlementArtifact = serde_json::Value;
+    type ReceiptData = serde_json::Value;
+
+    fn id(&self) -> &str { "mock" }
+    fn name(&self) -> &str { "Mock Module With Options" }
+    fn allow_unsolicited_settlements(&self) -> bool { false }
+    fn supports_create_option(&self) -> bool { true }
+
+    async fn create_option(
+        &self,
+        _thread_id: &str,
+        _invoice: &Invoice,
+        _ctx: &ModuleContext,
+    ) -> Result<serde_json::Value, RemittanceError> {
+        Ok(serde_json::json!({ "minAmount": 100 }))
+    }
+
+    async fn build_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _option: &serde_json::Value,
+        _note: Option<&str>,
+        _ctx: &ModuleContext,
+    ) -> Result<BuildSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(BuildSettlementResult::Settle {
+            artifact: serde_json::json!({ "tx": "mock-tx" }),
+        })
+    }
+
+    async fn accept_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _settlement: &serde_json::Value,
+        _sender: &str,
+        _ctx: &ModuleContext,
+    ) -> Result<AcceptSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(AcceptSettlementResult::Accept { receipt_data: None })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MockModuleTracked — sets called_flag when build_settlement is called
+// Also allows unsolicited settlements.
+// ---------------------------------------------------------------------------
+
+struct MockModuleTracked {
+    called_flag: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl RemittanceModule for MockModuleTracked {
+    type OptionTerms = serde_json::Value;
+    type SettlementArtifact = serde_json::Value;
+    type ReceiptData = serde_json::Value;
+
+    fn id(&self) -> &str { "mock" }
+    fn name(&self) -> &str { "Mock Module Tracked" }
+    fn allow_unsolicited_settlements(&self) -> bool { true }
+    fn supports_create_option(&self) -> bool { true }
+
+    async fn create_option(
+        &self,
+        _thread_id: &str,
+        _invoice: &Invoice,
+        _ctx: &ModuleContext,
+    ) -> Result<serde_json::Value, RemittanceError> {
+        Ok(serde_json::json!({ "minAmount": 50 }))
+    }
+
+    async fn build_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _option: &serde_json::Value,
+        _note: Option<&str>,
+        _ctx: &ModuleContext,
+    ) -> Result<BuildSettlementResult<serde_json::Value>, RemittanceError> {
+        self.called_flag.store(true, Ordering::SeqCst);
+        Ok(BuildSettlementResult::Settle {
+            artifact: serde_json::json!({ "tx": "tracked-tx" }),
+        })
+    }
+
+    async fn accept_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _settlement: &serde_json::Value,
+        _sender: &str,
+        _ctx: &ModuleContext,
+    ) -> Result<AcceptSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(AcceptSettlementResult::Accept { receipt_data: None })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -278,6 +411,53 @@ fn make_manager_with_config(config: RemittanceManagerConfig) -> RemittanceManage
     )
 }
 
+/// Build a manager with a specific MockComms (for observing messages).
+fn make_manager_with_comms(comms: Arc<MockComms>) -> RemittanceManager {
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms;
+    RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: None,
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleWithOptions)],
+    )
+}
+
+/// Build a manager with a tracked module (supports unsolicited settlements).
+fn make_manager_with_tracked_module(
+    comms: Arc<MockComms>,
+    called_flag: Arc<AtomicBool>,
+) -> RemittanceManager {
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms;
+    RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: None,
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleTracked { called_flag })],
+    )
+}
+
 fn sample_thread(thread_id: &str) -> Thread {
     Thread {
         thread_id: thread_id.to_string(),
@@ -293,6 +473,73 @@ fn sample_thread(thread_id: &str) -> Thread {
         identity: ThreadIdentity::default(),
         flags: ThreadFlags::default(),
         invoice: None,
+        settlement: None,
+        receipt: None,
+        termination: None,
+        last_error: None,
+    }
+}
+
+fn sample_invoice_input() -> ComposeInvoiceInput {
+    ComposeInvoiceInput {
+        note: Some("test invoice".to_string()),
+        line_items: vec![LineItem {
+            id: None,
+            description: "Widget".to_string(),
+            quantity: None,
+            unit_price: None,
+            amount: Some(Amount {
+                value: "1000".to_string(),
+                unit: sat_unit(),
+            }),
+            metadata: None,
+        }],
+        total: Amount {
+            value: "1000".to_string(),
+            unit: sat_unit(),
+        },
+        invoice_number: "INV-001".to_string(),
+        arbitrary: None,
+        expires_at: None,
+    }
+}
+
+/// Build a taker thread already in Invoiced state with a mock invoice containing module options.
+fn invoiced_taker_thread(thread_id: &str) -> Thread {
+    let invoice = Invoice {
+        kind: RemittanceKind::Invoice,
+        expires_at: Some(2_000_000),
+        options: {
+            let mut map = HashMap::new();
+            map.insert("mock".to_string(), serde_json::json!({ "minAmount": 50 }));
+            map
+        },
+        base: InstrumentBase {
+            thread_id: thread_id.to_string(),
+            payee: "alice".to_string(),
+            payer: "bob".to_string(),
+            note: None,
+            line_items: vec![],
+            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            invoice_number: "INV-001".to_string(),
+            created_at: 1_000_000,
+            arbitrary: None,
+        },
+    };
+    Thread {
+        thread_id: thread_id.to_string(),
+        counterparty: "alice".to_string(),
+        my_role: ThreadRole::Taker,
+        their_role: ThreadRole::Maker,
+        created_at: 0,
+        updated_at: 0,
+        state: RemittanceThreadState::Invoiced,
+        state_log: vec![],
+        processed_message_ids: vec![],
+        protocol_log: vec![],
+        identity: ThreadIdentity::default(),
+        flags: ThreadFlags::default(),
+        invoice: Some(invoice),
         settlement: None,
         receipt: None,
         termination: None,
@@ -520,4 +767,238 @@ async fn test_event_listener() {
         "expected StateChanged event, got {:?}",
         recorded
     );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 02 tests — invoice lifecycle, pay, unsolicited settlement, etc.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_send_invoice_lifecycle() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    let handle = manager
+        .send_invoice("counterparty", sample_invoice_input())
+        .await
+        .expect("send_invoice should succeed");
+
+    let thread = handle.handle.get_thread().await.unwrap();
+    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
+    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+    assert!(thread.flags.has_invoiced, "has_invoiced flag should be set");
+
+    // MockComms.send_live_message records the message; verify at least one was sent.
+    let sent_count = comms.sent.lock().unwrap().len();
+    assert!(sent_count >= 1, "at least one message should have been sent, got {}", sent_count);
+}
+
+#[tokio::test]
+async fn test_send_invoice_for_thread() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    // Pre-insert a thread in IdentityAcknowledged state.
+    let mut thread = sample_thread("existing-thread");
+    thread.state = RemittanceThreadState::IdentityAcknowledged;
+    thread.counterparty = "bob".to_string();
+    manager.insert_thread(thread).await;
+
+    let handle = manager
+        .send_invoice_for_thread("existing-thread", sample_invoice_input())
+        .await
+        .expect("send_invoice_for_thread should succeed");
+
+    let thread = handle.handle.get_thread().await.unwrap();
+    assert_eq!(thread.state, RemittanceThreadState::Invoiced);
+    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+}
+
+#[tokio::test]
+async fn test_find_invoices_payable() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    // Thread 1: taker + Invoiced — should be returned.
+    let t1 = invoiced_taker_thread("t-payable");
+
+    // Thread 2: maker + Invoiced — should NOT be returned.
+    let mut t2 = invoiced_taker_thread("t-maker-invoiced");
+    t2.my_role = ThreadRole::Maker;
+    t2.their_role = ThreadRole::Taker;
+
+    // Thread 3: taker + Settled — should NOT be returned.
+    let mut t3 = invoiced_taker_thread("t-settled");
+    t3.state = RemittanceThreadState::Settled;
+
+    manager.insert_thread(t1).await;
+    manager.insert_thread(t2).await;
+    manager.insert_thread(t3).await;
+
+    let payable = manager.find_invoices_payable().await;
+    assert_eq!(payable.len(), 1, "only 1 thread should be payable, got {:?}", payable.len());
+    assert_eq!(payable[0].thread_id, "t-payable");
+}
+
+#[tokio::test]
+async fn test_pay() {
+    let comms = Arc::new(MockComms::new());
+    let called_flag = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_tracked_module(Arc::clone(&comms), Arc::clone(&called_flag));
+    manager.init().await.unwrap();
+
+    // Insert a taker thread in Invoiced state.
+    let thread = invoiced_taker_thread("t-pay");
+    manager.insert_thread(thread).await;
+
+    let handle = manager
+        .pay("t-pay", Some("mock"))
+        .await
+        .expect("pay should succeed");
+
+    assert!(called_flag.load(Ordering::SeqCst), "build_settlement_erased should have been called");
+
+    let thread = handle.get_thread().await.unwrap();
+    assert_eq!(thread.state, RemittanceThreadState::Settled, "thread should be Settled after pay");
+    assert!(thread.settlement.is_some(), "settlement should be stored on thread");
+    assert!(thread.flags.has_paid, "has_paid flag should be set");
+
+    let sent_count = comms.sent.lock().unwrap().len();
+    assert!(sent_count >= 1, "at least one settlement message should have been sent");
+}
+
+#[tokio::test]
+async fn test_unsolicited_settlement() {
+    let comms = Arc::new(MockComms::new());
+    let called_flag = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_tracked_module(Arc::clone(&comms), Arc::clone(&called_flag));
+    manager.init().await.unwrap();
+
+    let amount = Amount { value: "500".to_string(), unit: sat_unit() };
+    let handle = manager
+        .send_unsolicited_settlement("alice", "mock", "mock", amount)
+        .await
+        .expect("send_unsolicited_settlement should succeed");
+
+    let thread = handle.get_thread().await.unwrap();
+    assert!(matches!(thread.my_role, ThreadRole::Taker), "thread role should be Taker");
+    assert_eq!(thread.state, RemittanceThreadState::Settled, "thread should be Settled");
+    assert!(thread.settlement.is_some(), "settlement should be stored");
+
+    let sent_count = comms.sent.lock().unwrap().len();
+    assert!(sent_count >= 1, "settlement message should have been sent");
+}
+
+#[tokio::test]
+async fn test_identity_exchange() {
+    let comms = Arc::new(MockComms::new());
+    let identity_opts = IdentityRuntimeOptions {
+        maker_request_identity: Some(IdentityPhase::BeforeInvoicing),
+        taker_request_identity: None,
+    };
+    let comms_inner = Arc::new(MockComms {
+        sent: Arc::clone(&comms.sent),
+        fail_live: comms.fail_live,
+    });
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms_inner;
+    let manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(identity_opts),
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleWithOptions)],
+    );
+    manager.init().await.unwrap();
+
+    // send_invoice with identity options configured — should send identity request first.
+    let _handle = manager
+        .send_invoice("counterparty", sample_invoice_input())
+        .await
+        .expect("send_invoice should succeed even with identity exchange");
+
+    let sent = comms.sent.lock().unwrap().clone();
+    assert!(
+        sent.len() >= 2,
+        "expected at least 2 messages (identity request + invoice), got {}",
+        sent.len()
+    );
+    // The first message should be the identity verification request.
+    let first_body: serde_json::Value = serde_json::from_str(&sent[0].2).unwrap();
+    assert_eq!(
+        first_body.get("kind").and_then(|v| v.as_str()),
+        Some("identityVerificationRequest"),
+        "first message should be identityVerificationRequest, got {:?}",
+        first_body.get("kind")
+    );
+}
+
+#[tokio::test]
+async fn test_compose_invoice_includes_module_options() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_comms(Arc::clone(&comms));
+    manager.init().await.unwrap();
+
+    // send_invoice to trigger compose_invoice; then inspect the stored invoice.
+    let handle = manager
+        .send_invoice("bob", sample_invoice_input())
+        .await
+        .expect("send_invoice should succeed");
+
+    let thread = handle.handle.get_thread().await.unwrap();
+    let invoice = thread.invoice.expect("invoice should be stored");
+
+    assert!(
+        invoice.options.contains_key("mock"),
+        "invoice.options should contain 'mock' module option, got {:?}",
+        invoice.options.keys().collect::<Vec<_>>()
+    );
+    let option_val = &invoice.options["mock"];
+    assert_eq!(
+        option_val.get("minAmount").and_then(|v| v.as_u64()),
+        Some(100),
+        "mock option should have minAmount=100, got {:?}",
+        option_val
+    );
+}
+
+#[tokio::test]
+async fn test_preselect_option() {
+    let comms = Arc::new(MockComms::new());
+    let called_flag = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_tracked_module(Arc::clone(&comms), Arc::clone(&called_flag));
+    manager.init().await.unwrap();
+
+    // Set default option.
+    manager.preselect_payment_option_id("mock").await;
+
+    // Verify it was stored.
+    let default_opt = manager.get_default_payment_option_id().await;
+    assert_eq!(default_opt.as_deref(), Some("mock"), "default option should be 'mock'");
+
+    // Insert an Invoiced taker thread and pay without explicit option_id.
+    manager.insert_thread(invoiced_taker_thread("t-preselect")).await;
+    let handle = manager
+        .pay("t-preselect", None)  // no explicit option_id — should use default
+        .await
+        .expect("pay with preselected option should succeed");
+
+    assert!(called_flag.load(Ordering::SeqCst), "mock module should have been called via preselected option");
+    let thread = handle.get_thread().await.unwrap();
+    assert_eq!(thread.state, RemittanceThreadState::Settled);
 }
