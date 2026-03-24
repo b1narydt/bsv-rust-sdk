@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-03-24T22:42:08.979Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-03-24T22:50:05.011Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 7
-  completed_plans: 5
+  completed_plans: 6
   percent: 60
 ---
 
@@ -53,6 +53,7 @@ Progress: [████████░░] 60%
 *Updated after each plan completion*
 | Phase 02-interface-traits P02 | 6 | 2 tasks | 3 files |
 | Phase 03-remittancemanager P01 | 7 | 2 tasks | 5 files |
+| Phase 03-remittancemanager P02 | 5 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,8 @@ Recent decisions affecting current work:
 - [Phase 03-remittancemanager]: ErasedRemittanceModule made pub: public constructor requires public trait parameter; pub(crate) blocks external callers
 - [Phase 03-remittancemanager]: modules stored as Arc<HashMap> not Arc<Mutex<HashMap>> — registered at construction, never mutated, no lock needed per-call
 - [Phase 03-remittancemanager]: New->Receipted is invalid transition test case, not New->Settled — direct settlement from New is valid per protocol
+- [Phase 03-remittancemanager]: ModuleContext.now is fn() -> u64 — uses static default_now() in make_module_context; config.now override only affects self.now_internal() calls, not module context
+- [Phase 03-remittancemanager]: preselect_payment_option_id(&str) added alongside existing preselect_payment_option(Option<String>) — string-slice is public API, Option variant kept for backward compat
 
 ### Pending Todos
 
@@ -92,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T22:42:08.977Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-03-24T22:50:05.009Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
