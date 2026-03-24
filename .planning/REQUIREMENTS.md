@@ -11,21 +11,21 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 - [x] **TYPE-01**: RemittanceThreadState enum with 9 states matching TS (new, identityRequested, identityResponded, identityAcknowledged, invoiced, settled, receipted, terminated, errored)
 - [x] **TYPE-02**: REMITTANCE_STATE_TRANSITIONS validation table with all valid transitions including back-transitions from invoiced to identity states
-- [ ] **TYPE-03**: Unit and Amount types for denomination-agnostic values
-- [ ] **TYPE-04**: LineItem struct with all fields (id, description, quantity, unitPrice, amount, metadata)
-- [ ] **TYPE-05**: InstrumentBase struct (threadId, payee, payer, note, lineItems, total, invoiceNumber, createdAt, arbitrary)
-- [ ] **TYPE-06**: Invoice struct extending InstrumentBase with expiresAt and options map
-- [ ] **TYPE-07**: IdentityVerificationRequest with nested request containing types map and certifiers list
-- [ ] **TYPE-08**: IdentityVerificationResponse with certificates array (type, certifier, subject, fields, signature, serialNumber, revocationOutpoint, keyringForVerifier)
-- [ ] **TYPE-09**: IdentityVerificationAcknowledgment struct
-- [ ] **TYPE-10**: Settlement struct (kind, threadId, moduleId, optionId, sender, createdAt, artifact, note)
-- [ ] **TYPE-11**: Receipt struct (kind, threadId, moduleId, optionId, payee, payer, createdAt, receiptData)
-- [ ] **TYPE-12**: Termination struct (code, message, details)
-- [ ] **TYPE-13**: PeerMessage struct (messageId, sender, recipient, messageBox, body)
-- [ ] **TYPE-14**: RemittanceEnvelope struct with version, id, kind, threadId, createdAt, payload
+- [x] **TYPE-03**: Unit and Amount types for denomination-agnostic values
+- [x] **TYPE-04**: LineItem struct with all fields (id, description, quantity, unitPrice, amount, metadata)
+- [x] **TYPE-05**: InstrumentBase struct (threadId, payee, payer, note, lineItems, total, invoiceNumber, createdAt, arbitrary)
+- [x] **TYPE-06**: Invoice struct extending InstrumentBase with expiresAt and options map
+- [x] **TYPE-07**: IdentityVerificationRequest with nested request containing types map and certifiers list
+- [x] **TYPE-08**: IdentityVerificationResponse with certificates array (type, certifier, subject, fields, signature, serialNumber, revocationOutpoint, keyringForVerifier)
+- [x] **TYPE-09**: IdentityVerificationAcknowledgment struct
+- [x] **TYPE-10**: Settlement struct (kind, threadId, moduleId, optionId, sender, createdAt, artifact, note)
+- [x] **TYPE-11**: Receipt struct (kind, threadId, moduleId, optionId, payee, payer, createdAt, receiptData)
+- [x] **TYPE-12**: Termination struct (code, message, details)
+- [x] **TYPE-13**: PeerMessage struct (messageId, sender, recipient, messageBox, body)
+- [x] **TYPE-14**: RemittanceEnvelope struct with version, id, kind, threadId, createdAt, payload
 - [x] **TYPE-15**: RemittanceKind enum (invoice, identityVerificationRequest/Response/Acknowledgment, settlement, receipt, termination)
 - [x] **TYPE-16**: All types derive Serialize/Deserialize with camelCase JSON field names matching TS wire format
-- [ ] **TYPE-17**: ModuleContext struct (wallet, originator, now, logger)
+- [x] **TYPE-17**: ModuleContext struct (wallet, originator, now, logger)
 - [x] **TYPE-18**: LoggerLike trait for optional structured logging
 
 ### Interface Traits
@@ -80,12 +80,12 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 ### Wire Format & Serialization
 
-- [ ] **WIRE-01**: All JSON field names use camelCase matching TypeScript SDK exactly
+- [x] **WIRE-01**: All JSON field names use camelCase matching TypeScript SDK exactly
 - [x] **WIRE-02**: Enum variants serialize as lowercase strings matching TS (e.g., "new", "invoiced", "settled")
-- [ ] **WIRE-03**: Optional fields omitted from JSON when None (skip_serializing_if)
-- [ ] **WIRE-04**: RemittanceEnvelope payload uses serde_json::Value for module-opaque payloads
-- [ ] **WIRE-05**: Settlement.artifact and Receipt.receiptData use serde_json::Value
-- [ ] **WIRE-06**: Invoice.options uses HashMap<String, serde_json::Value>
+- [x] **WIRE-03**: Optional fields omitted from JSON when None (skip_serializing_if)
+- [x] **WIRE-04**: RemittanceEnvelope payload uses serde_json::Value for module-opaque payloads
+- [x] **WIRE-05**: Settlement.artifact and Receipt.receiptData use serde_json::Value
+- [x] **WIRE-06**: Invoice.options uses HashMap<String, serde_json::Value>
 
 ### Testing
 
@@ -128,28 +128,28 @@ Deferred to future release.
 |-------------|-------|--------|
 | TYPE-01 | Phase 1 — Foundation Types | Complete |
 | TYPE-02 | Phase 1 — Foundation Types | Complete |
-| TYPE-03 | Phase 1 — Foundation Types | Pending |
-| TYPE-04 | Phase 1 — Foundation Types | Pending |
-| TYPE-05 | Phase 1 — Foundation Types | Pending |
-| TYPE-06 | Phase 1 — Foundation Types | Pending |
-| TYPE-07 | Phase 1 — Foundation Types | Pending |
-| TYPE-08 | Phase 1 — Foundation Types | Pending |
-| TYPE-09 | Phase 1 — Foundation Types | Pending |
-| TYPE-10 | Phase 1 — Foundation Types | Pending |
-| TYPE-11 | Phase 1 — Foundation Types | Pending |
-| TYPE-12 | Phase 1 — Foundation Types | Pending |
-| TYPE-13 | Phase 1 — Foundation Types | Pending |
-| TYPE-14 | Phase 1 — Foundation Types | Pending |
+| TYPE-03 | Phase 1 — Foundation Types | Complete |
+| TYPE-04 | Phase 1 — Foundation Types | Complete |
+| TYPE-05 | Phase 1 — Foundation Types | Complete |
+| TYPE-06 | Phase 1 — Foundation Types | Complete |
+| TYPE-07 | Phase 1 — Foundation Types | Complete |
+| TYPE-08 | Phase 1 — Foundation Types | Complete |
+| TYPE-09 | Phase 1 — Foundation Types | Complete |
+| TYPE-10 | Phase 1 — Foundation Types | Complete |
+| TYPE-11 | Phase 1 — Foundation Types | Complete |
+| TYPE-12 | Phase 1 — Foundation Types | Complete |
+| TYPE-13 | Phase 1 — Foundation Types | Complete |
+| TYPE-14 | Phase 1 — Foundation Types | Complete |
 | TYPE-15 | Phase 1 — Foundation Types | Complete |
 | TYPE-16 | Phase 1 — Foundation Types | Complete |
-| TYPE-17 | Phase 1 — Foundation Types | Pending |
+| TYPE-17 | Phase 1 — Foundation Types | Complete |
 | TYPE-18 | Phase 1 — Foundation Types | Complete |
-| WIRE-01 | Phase 1 — Foundation Types | Pending |
+| WIRE-01 | Phase 1 — Foundation Types | Complete |
 | WIRE-02 | Phase 1 — Foundation Types | Complete |
-| WIRE-03 | Phase 1 — Foundation Types | Pending |
-| WIRE-04 | Phase 1 — Foundation Types | Pending |
-| WIRE-05 | Phase 1 — Foundation Types | Pending |
-| WIRE-06 | Phase 1 — Foundation Types | Pending |
+| WIRE-03 | Phase 1 — Foundation Types | Complete |
+| WIRE-04 | Phase 1 — Foundation Types | Complete |
+| WIRE-05 | Phase 1 — Foundation Types | Complete |
+| WIRE-06 | Phase 1 — Foundation Types | Complete |
 | TRAIT-01 | Phase 2 — Interface Traits | Pending |
 | TRAIT-02 | Phase 2 — Interface Traits | Pending |
 | TRAIT-03 | Phase 2 — Interface Traits | Pending |

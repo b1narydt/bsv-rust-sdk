@@ -12,7 +12,7 @@ Translate the TypeScript SDK's `src/remittance/` subsystem to Rust in strict dep
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation Types** - All protocol types, enums, state machine, and wire-format serialization
+- [x] **Phase 1: Foundation Types** - All protocol types, enums, state machine, and wire-format serialization (completed 2026-03-24)
 - [ ] **Phase 2: Interface Traits** - CommsLayer, IdentityLayer, and RemittanceModule trait definitions with erased-trait pattern
 - [ ] **Phase 3: RemittanceManager** - Full orchestrator with state machine enforcement, message routing, and persistence
 - [ ] **Phase 4: BasicBRC29 Module** - Concrete BRC-29 P2PKH settlement module implementing RemittanceModule
@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Every `Option<T>` field is absent from JSON output when `None` (not serialized as `null`)
   4. All 18 core types compile under `#[cfg(feature = "network")]` and are re-exported from `src/remittance/mod.rs`
   5. `RemittanceError` covers all error variants needed by the rest of the protocol
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md — Module skeleton, enums, state transitions, error type, LoggerLike trait
@@ -88,7 +88,7 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation Types | 0/2 | Planning complete | - |
+| 1. Foundation Types | 2/2 | Complete   | 2026-03-24 |
 | 2. Interface Traits | 0/TBD | Not started | - |
 | 3. RemittanceManager | 0/TBD | Not started | - |
 | 4. BasicBRC29 Module | 0/TBD | Not started | - |
