@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde_json::json;
 
 use bsv::remittance::types::{
-    sat_unit, Amount, IdentityCertificate, IdentityRequest, IdentityVerificationAcknowledgment,
+    sat_unit, Amount, RemittanceCertificate, IdentityRequest, IdentityVerificationAcknowledgment,
     IdentityVerificationRequest, IdentityVerificationResponse, InstrumentBase, Invoice, LineItem,
     PeerMessage, Receipt, RemittanceEnvelope, RemittanceKind, Settlement, Termination, Unit,
 };
@@ -228,7 +228,7 @@ fn test_identity_request_nested() {
 
 #[test]
 fn test_identity_certificate_type_field() {
-    let cert = IdentityCertificate {
+    let cert = RemittanceCertificate {
         cert_type: "someType".into(),
         certifier: "cert1".into(),
         subject: "sub1".into(),
@@ -254,7 +254,7 @@ fn test_identity_response_roundtrip() {
     let resp = IdentityVerificationResponse {
         kind: RemittanceKind::IdentityVerificationResponse,
         thread_id: "t4".into(),
-        certificates: vec![IdentityCertificate {
+        certificates: vec![RemittanceCertificate {
             cert_type: "kyc".into(),
             certifier: "c1".into(),
             subject: "s1".into(),

@@ -17,7 +17,7 @@ pub use types::{
 
 // Protocol structs
 pub use types::{
-    sat_unit, Amount, IdentityCertificate, IdentityRequest,
+    sat_unit, Amount, RemittanceCertificate, IdentityRequest,
     IdentityVerificationAcknowledgment, IdentityVerificationRequest,
     IdentityVerificationResponse, InstrumentBase, Invoice, LineItem,
     ModuleContext, PeerMessage, Receipt, RemittanceEnvelope, Settlement,

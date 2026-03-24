@@ -224,14 +224,20 @@ pub struct IdentityVerificationRequest {
     pub request: IdentityRequest,
 }
 
-/// A certificate proving identity, with fields matching the TypeScript SDK.
+/// A certificate proving identity in the remittance wire protocol.
+///
+/// Named `RemittanceCertificate` to avoid collision with
+/// `crate::wallet::interfaces::IdentityCertificate` which has a different
+/// structure (strongly-typed `PublicKey`, `CertificateType`, etc.).
+/// This struct uses plain strings for all fields to match the TypeScript
+/// SDK wire format exactly.
 ///
 /// The `cert_type` field is renamed to `"type"` in JSON to avoid the
 /// Rust reserved keyword while maintaining wire-format compatibility.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
-pub struct IdentityCertificate {
+pub struct RemittanceCertificate {
     #[cfg_attr(feature = "network", serde(rename = "type"))]
     pub cert_type: String,
     pub certifier: String,
@@ -250,7 +256,7 @@ pub struct IdentityCertificate {
 pub struct IdentityVerificationResponse {
     pub kind: RemittanceKind,
     pub thread_id: String,
-    pub certificates: Vec<IdentityCertificate>,
+    pub certificates: Vec<RemittanceCertificate>,
 }
 
 /// Acknowledgment that identity verification was received.

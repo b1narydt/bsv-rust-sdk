@@ -36,4 +36,20 @@ pub enum RemittanceError {
     /// A duplicate message was received.
     #[error("duplicate message: {0}")]
     DuplicateMessage(String),
+
+    /// An auth operation failed (e.g., nonce creation).
+    #[error("auth error: {0}")]
+    Auth(String),
+}
+
+impl From<crate::wallet::error::WalletError> for RemittanceError {
+    fn from(e: crate::wallet::error::WalletError) -> Self {
+        RemittanceError::Wallet(e.to_string())
+    }
+}
+
+impl From<crate::auth::AuthError> for RemittanceError {
+    fn from(e: crate::auth::AuthError) -> Self {
+        RemittanceError::Auth(e.to_string())
+    }
 }
