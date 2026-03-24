@@ -9,11 +9,11 @@ pub mod types;
 
 pub use error::RemittanceError;
 
-// Core enums and state machine (populated by Task 2)
-// pub use types::{
-//     allowed_transitions, is_valid_transition, LoggerLike, RemittanceKind,
-//     RemittanceOptionId, RemittanceThreadState, ThreadId, UnixMillis,
-// };
+// Core enums and state machine
+pub use types::{
+    allowed_transitions, is_valid_transition, LoggerLike, RemittanceKind,
+    RemittanceOptionId, RemittanceThreadState, ThreadId, UnixMillis,
+};
 
 // Future type re-exports will be added here as plans are implemented:
 // - Invoice, Settlement, Receipt, Termination (Plan 01-02)
