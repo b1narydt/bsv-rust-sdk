@@ -17,11 +17,25 @@ use crate::remittance::identity_layer::IdentityLayer;
 use crate::remittance::remittance_module::ErasedRemittanceModule;
 use crate::remittance::types::{
     IdentityVerificationAcknowledgment, IdentityVerificationRequest, IdentityVerificationResponse,
-    Invoice, InstrumentBase, LineItem, LoggerLike, Amount, ModuleContext, Receipt,
+    Invoice, InstrumentBase, LineItem, LoggerLike, Amount, ModuleContext, PeerMessage, Receipt,
     RemittanceCertificate, RemittanceEnvelope, RemittanceKind, RemittanceThreadState, Settlement,
     Termination, ThreadId, UnixMillis,
 };
 use crate::wallet::interfaces::{GetPublicKeyArgs, WalletInterface};
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Returns true if `state` is a terminal state (no further transitions expected).
+fn is_terminal_state(state: &RemittanceThreadState) -> bool {
+    matches!(
+        state,
+        RemittanceThreadState::Receipted
+            | RemittanceThreadState::Terminated
+            | RemittanceThreadState::Errored
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Supporting enums
@@ -1293,6 +1307,749 @@ impl RemittanceManager {
         })
     }
 
+    // -----------------------------------------------------------------------
+    // Inbound message pipeline
+    // -----------------------------------------------------------------------
+
+    /// Parse an inbound PeerMessage, deduplicate, and dispatch to the correct handler.
+    pub async fn handle_inbound_message(&self, msg: PeerMessage) -> Result<(), RemittanceError> {
+        // Parse envelope from message body.
+        let envelope: RemittanceEnvelope = serde_json::from_str(&msg.body)
+            .map_err(|e| RemittanceError::Protocol(format!("invalid envelope: {}", e)))?;
+
+        // Get or create thread for this inbound message.
+        let thread_id = self
+            .get_or_create_thread_from_inbound(&envelope, &msg.sender)
+            .await?;
+
+        // Deduplication: skip if already processed.
+        {
+            let guard = self.inner.lock().await;
+            if let Some(thread) = guard.threads.get(&thread_id) {
+                if thread.processed_message_ids.contains(&msg.message_id) {
+                    // Already processed — acknowledge and return.
+                    drop(guard);
+                    let _ = self.comms.acknowledge_message(&[msg.message_id]).await;
+                    return Ok(());
+                }
+            }
+        }
+
+        // Dispatch to kind-specific handler.
+        self.apply_inbound_envelope(&thread_id, envelope.clone()).await?;
+
+        // Record message ID and log entry under lock.
+        let log_entry = ProtocolLogEntry {
+            direction: MessageDirection::In,
+            envelope: envelope.clone(),
+            transport_message_id: msg.message_id.clone(),
+        };
+        {
+            let mut guard = self.inner.lock().await;
+            if let Some(thread) = guard.threads.get_mut(&thread_id) {
+                thread.processed_message_ids.push(msg.message_id.clone());
+                thread.protocol_log.push(log_entry);
+            }
+        }
+
+        // Emit EnvelopeReceived event.
+        self.emit_event(RemittanceEvent::EnvelopeReceived {
+            thread_id: thread_id.clone(),
+            envelope,
+            transport_message_id: msg.message_id.clone(),
+        })
+        .await;
+
+        // Acknowledge message transport.
+        let _ = self.comms.acknowledge_message(&[msg.message_id]).await;
+
+        // Persist updated state.
+        self.persist_state().await;
+
+        Ok(())
+    }
+
+    /// Determine the thread_id for an inbound message, creating a new thread if needed.
+    async fn get_or_create_thread_from_inbound(
+        &self,
+        env: &RemittanceEnvelope,
+        sender: &str,
+    ) -> Result<ThreadId, RemittanceError> {
+        // Check if thread already exists.
+        {
+            let guard = self.inner.lock().await;
+            if guard.threads.contains_key(&env.thread_id) {
+                return Ok(env.thread_id.clone());
+            }
+        }
+
+        // Determine our role based on message kind.
+        // Invoice/IdentityVerificationRequest → I am taker (they are initiating as maker).
+        // Settlement (unsolicited) → I am maker (they are sending without invoice).
+        // Other kinds should only arrive on existing threads.
+        let my_role = match &env.kind {
+            RemittanceKind::Invoice | RemittanceKind::IdentityVerificationRequest => {
+                ThreadRole::Taker
+            }
+            RemittanceKind::Settlement => ThreadRole::Maker,
+            other => {
+                return Err(RemittanceError::Protocol(format!(
+                    "cannot create thread for inbound {:?} — no existing thread {}",
+                    other, env.thread_id
+                )));
+            }
+        };
+
+        let thread = self.create_thread_with_id(sender, my_role, &env.thread_id).await?;
+        Ok(thread.thread_id)
+    }
+
+    /// Create a new thread with a specific thread_id (for inbound message flows).
+    async fn create_thread_with_id(
+        &self,
+        counterparty: &str,
+        my_role: ThreadRole,
+        thread_id: &str,
+    ) -> Result<Thread, RemittanceError> {
+        let now = self.now_internal();
+        let their_role = match my_role {
+            ThreadRole::Maker => ThreadRole::Taker,
+            ThreadRole::Taker => ThreadRole::Maker,
+        };
+
+        let thread = Thread {
+            thread_id: thread_id.to_string(),
+            counterparty: counterparty.to_string(),
+            my_role,
+            their_role,
+            created_at: now,
+            updated_at: now,
+            state: RemittanceThreadState::New,
+            state_log: Vec::new(),
+            processed_message_ids: Vec::new(),
+            protocol_log: Vec::new(),
+            identity: ThreadIdentity::default(),
+            flags: ThreadFlags::default(),
+            invoice: None,
+            settlement: None,
+            receipt: None,
+            termination: None,
+            last_error: None,
+        };
+
+        {
+            let mut guard = self.inner.lock().await;
+            guard.threads.insert(thread_id.to_string(), thread.clone());
+        }
+
+        self.emit_event(RemittanceEvent::ThreadCreated {
+            thread_id: thread_id.to_string(),
+            thread: thread.clone(),
+        })
+        .await;
+
+        Ok(thread)
+    }
+
+    /// Dispatch an inbound envelope to the appropriate protocol handler by kind.
+    async fn apply_inbound_envelope(
+        &self,
+        thread_id: &str,
+        env: RemittanceEnvelope,
+    ) -> Result<(), RemittanceError> {
+        // Extract sender from thread (counterparty field).
+        let (sender, invoice_opt, settlement_opt) = {
+            let guard = self.inner.lock().await;
+            let thread = guard.threads.get(thread_id).ok_or_else(|| {
+                RemittanceError::Protocol(format!("thread not found: {}", thread_id))
+            })?;
+            (
+                thread.counterparty.clone(),
+                thread.invoice.clone(),
+                thread.settlement.clone(),
+            )
+        };
+
+        match env.kind {
+            RemittanceKind::IdentityVerificationRequest => {
+                let request: IdentityVerificationRequest =
+                    serde_json::from_value(env.payload.clone())
+                        .map_err(|e| RemittanceError::Protocol(format!("bad IdentityVerificationRequest: {}", e)))?;
+
+                let identity = match &self.identity {
+                    Some(il) => il.clone(),
+                    None => {
+                        // No identity layer — send termination.
+                        let termination = Termination {
+                            code: "no_identity_layer".to_string(),
+                            message: "no identity layer configured".to_string(),
+                            details: None,
+                        };
+                        let payload = serde_json::to_value(&termination)?;
+                        let term_env = Self::make_envelope(
+                            RemittanceKind::Termination,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &term_env, None).await?;
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::Terminated,
+                            Some("no identity layer".to_string()),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                };
+
+                let ctx = self.make_module_context();
+                let result = identity.respond_to_request(&sender, thread_id, &request, &ctx).await?;
+
+                match result {
+                    crate::remittance::identity_layer::RespondToRequestResult::Respond { response } => {
+                        let certs = response.certificates.clone();
+                        let payload = serde_json::to_value(&response)?;
+                        let resp_env = Self::make_envelope(
+                            RemittanceKind::IdentityVerificationResponse,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &resp_env, None).await?;
+
+                        {
+                            let mut guard = self.inner.lock().await;
+                            if let Some(t) = guard.threads.get_mut(thread_id) {
+                                t.identity.response_sent = true;
+                                t.identity.certs_sent = certs;
+                            }
+                        }
+
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::IdentityResponded,
+                            Some("identity response sent".to_string()),
+                        )
+                        .await?;
+
+                        self.emit_event(RemittanceEvent::IdentityRequested {
+                            thread_id: thread_id.to_string(),
+                            direction: MessageDirection::In,
+                            request,
+                        })
+                        .await;
+                    }
+                    crate::remittance::identity_layer::RespondToRequestResult::Terminate { termination } => {
+                        let payload = serde_json::to_value(&termination)?;
+                        let term_env = Self::make_envelope(
+                            RemittanceKind::Termination,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &term_env, None).await?;
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::Terminated,
+                            Some("identity terminated".to_string()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            RemittanceKind::IdentityVerificationResponse => {
+                let response: IdentityVerificationResponse =
+                    serde_json::from_value(env.payload.clone())
+                        .map_err(|e| RemittanceError::Protocol(format!("bad IdentityVerificationResponse: {}", e)))?;
+
+                let identity = match &self.identity {
+                    Some(il) => il.clone(),
+                    None => {
+                        return Err(RemittanceError::Protocol(
+                            "received IdentityVerificationResponse with no identity layer".to_string(),
+                        ));
+                    }
+                };
+
+                let result = identity
+                    .assess_received_certificate_sufficiency(&sender, &response, thread_id)
+                    .await?;
+
+                match result {
+                    crate::remittance::identity_layer::AssessIdentityResult::Acknowledge(ack) => {
+                        let certs_received = response.certificates.clone();
+                        let payload = serde_json::to_value(&ack)?;
+                        let ack_env = Self::make_envelope(
+                            RemittanceKind::IdentityVerificationAcknowledgment,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &ack_env, None).await?;
+
+                        {
+                            let mut guard = self.inner.lock().await;
+                            if let Some(t) = guard.threads.get_mut(thread_id) {
+                                t.identity.certs_received = certs_received;
+                                t.identity.acknowledgment_sent = true;
+                                t.flags.has_identified = true;
+                            }
+                        }
+
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::IdentityAcknowledged,
+                            Some("identity acknowledged".to_string()),
+                        )
+                        .await?;
+
+                        self.emit_event(RemittanceEvent::IdentityResponded {
+                            thread_id: thread_id.to_string(),
+                            direction: MessageDirection::In,
+                            response,
+                        })
+                        .await;
+                    }
+                    crate::remittance::identity_layer::AssessIdentityResult::Terminate(termination) => {
+                        let payload = serde_json::to_value(&termination)?;
+                        let term_env = Self::make_envelope(
+                            RemittanceKind::Termination,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &term_env, None).await?;
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::Terminated,
+                            Some("identity assessment terminated".to_string()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            RemittanceKind::IdentityVerificationAcknowledgment => {
+                {
+                    let mut guard = self.inner.lock().await;
+                    if let Some(t) = guard.threads.get_mut(thread_id) {
+                        t.identity.acknowledgment_received = true;
+                        t.flags.has_identified = true;
+                    }
+                }
+
+                self.transition_thread_state(
+                    thread_id,
+                    RemittanceThreadState::IdentityAcknowledged,
+                    Some("identity acknowledgment received".to_string()),
+                )
+                .await?;
+
+                let ack: IdentityVerificationAcknowledgment =
+                    serde_json::from_value(env.payload.clone()).unwrap_or_else(|_| {
+                        IdentityVerificationAcknowledgment {
+                            kind: RemittanceKind::IdentityVerificationAcknowledgment,
+                            thread_id: thread_id.to_string(),
+                        }
+                    });
+                self.emit_event(RemittanceEvent::IdentityAcknowledged {
+                    thread_id: thread_id.to_string(),
+                    direction: MessageDirection::In,
+                    acknowledgment: ack,
+                })
+                .await;
+            }
+
+            RemittanceKind::Invoice => {
+                let invoice: Invoice = serde_json::from_value(env.payload.clone())
+                    .map_err(|e| RemittanceError::Protocol(format!("bad Invoice: {}", e)))?;
+
+                let invoice_clone = invoice.clone();
+                {
+                    let mut guard = self.inner.lock().await;
+                    if let Some(t) = guard.threads.get_mut(thread_id) {
+                        t.invoice = Some(invoice.clone());
+                        t.flags.has_invoiced = true;
+                    }
+                }
+
+                self.transition_thread_state(
+                    thread_id,
+                    RemittanceThreadState::Invoiced,
+                    Some("invoice received".to_string()),
+                )
+                .await?;
+
+                self.emit_event(RemittanceEvent::InvoiceReceived {
+                    thread_id: thread_id.to_string(),
+                    invoice: invoice_clone,
+                })
+                .await;
+            }
+
+            RemittanceKind::Settlement => {
+                let settlement: Settlement = serde_json::from_value(env.payload.clone())
+                    .map_err(|e| RemittanceError::Protocol(format!("bad Settlement: {}", e)))?;
+
+                let module_id = settlement.module_id.clone();
+                let module = match self.modules.get(&module_id) {
+                    Some(m) => m,
+                    None => {
+                        return Err(RemittanceError::Protocol(format!(
+                            "no module registered for module_id: {}",
+                            module_id
+                        )));
+                    }
+                };
+
+                let ctx = self.make_module_context();
+                let result = module
+                    .accept_settlement_erased(
+                        thread_id,
+                        invoice_opt.as_ref(),
+                        &settlement.artifact,
+                        &sender,
+                        &ctx,
+                    )
+                    .await?;
+
+                let settlement_clone = settlement.clone();
+                match result.action {
+                    "accept" => {
+                        // Store settlement on thread.
+                        {
+                            let mut guard = self.inner.lock().await;
+                            if let Some(t) = guard.threads.get_mut(thread_id) {
+                                t.settlement = Some(settlement.clone());
+                                t.flags.has_paid = true;
+                            }
+                        }
+
+                        if self.options.auto_issue_receipt {
+                            let receipt_data = result.receipt_data.unwrap_or(serde_json::Value::Null);
+                            // Build payee/payer from invoice if available, else use thread info.
+                            let (payee, payer) = if let Some(ref inv) = invoice_opt {
+                                (inv.base.payee.clone(), inv.base.payer.clone())
+                            } else {
+                                // Maker receives settlement, so maker is payee.
+                                let guard = self.inner.lock().await;
+                                let thread = guard.threads.get(thread_id);
+                                let key = guard.my_identity_key.clone().unwrap_or_default();
+                                let cp = thread.map(|t| t.counterparty.clone()).unwrap_or_default();
+                                drop(guard);
+                                (key, cp)
+                            };
+                            let receipt = Receipt {
+                                kind: RemittanceKind::Receipt,
+                                thread_id: thread_id.to_string(),
+                                module_id: settlement.module_id.clone(),
+                                option_id: settlement.option_id.clone(),
+                                payee,
+                                payer,
+                                receipt_data,
+                                created_at: self.now_internal(),
+                            };
+                            let receipt_clone = receipt.clone();
+                            let payload = serde_json::to_value(&receipt)?;
+                            let receipt_env = Self::make_envelope(
+                                RemittanceKind::Receipt,
+                                thread_id,
+                                payload,
+                                self.now_internal(),
+                            );
+                            self.send_envelope(&sender, &receipt_env, None).await?;
+
+                            {
+                                let mut guard = self.inner.lock().await;
+                                if let Some(t) = guard.threads.get_mut(thread_id) {
+                                    t.receipt = Some(receipt.clone());
+                                    t.flags.has_receipted = true;
+                                }
+                            }
+
+                            self.transition_thread_state(
+                                thread_id,
+                                RemittanceThreadState::Settled,
+                                Some("settlement accepted".to_string()),
+                            )
+                            .await?;
+
+                            self.transition_thread_state(
+                                thread_id,
+                                RemittanceThreadState::Receipted,
+                                Some("receipt auto-issued".to_string()),
+                            )
+                            .await?;
+
+                            self.emit_event(RemittanceEvent::ReceiptSent {
+                                thread_id: thread_id.to_string(),
+                                receipt: receipt_clone,
+                            })
+                            .await;
+                        } else {
+                            self.transition_thread_state(
+                                thread_id,
+                                RemittanceThreadState::Settled,
+                                Some("settlement accepted".to_string()),
+                            )
+                            .await?;
+                        }
+
+                        self.emit_event(RemittanceEvent::SettlementReceived {
+                            thread_id: thread_id.to_string(),
+                            settlement: settlement_clone,
+                        })
+                        .await;
+                    }
+                    "terminate" => {
+                        let termination = result.termination.unwrap_or_else(|| Termination {
+                            code: "module_terminated".to_string(),
+                            message: "module rejected settlement".to_string(),
+                            details: None,
+                        });
+                        let payload = serde_json::to_value(&termination)?;
+                        let term_env = Self::make_envelope(
+                            RemittanceKind::Termination,
+                            thread_id,
+                            payload,
+                            self.now_internal(),
+                        );
+                        self.send_envelope(&sender, &term_env, None).await?;
+                        self.transition_thread_state(
+                            thread_id,
+                            RemittanceThreadState::Terminated,
+                            Some("module rejected settlement".to_string()),
+                        )
+                        .await?;
+
+                        self.emit_event(RemittanceEvent::SettlementReceived {
+                            thread_id: thread_id.to_string(),
+                            settlement: settlement_clone,
+                        })
+                        .await;
+                    }
+                    other => {
+                        return Err(RemittanceError::Protocol(format!(
+                            "unexpected accept_settlement action: {}",
+                            other
+                        )));
+                    }
+                }
+            }
+
+            RemittanceKind::Receipt => {
+                let receipt: Receipt = serde_json::from_value(env.payload.clone())
+                    .map_err(|e| RemittanceError::Protocol(format!("bad Receipt: {}", e)))?;
+
+                let receipt_clone = receipt.clone();
+                {
+                    let mut guard = self.inner.lock().await;
+                    if let Some(t) = guard.threads.get_mut(thread_id) {
+                        t.receipt = Some(receipt.clone());
+                        t.flags.has_receipted = true;
+                    }
+                }
+
+                // Call module's process_receipt_erased if available (swallow errors).
+                // Use settlement's module_id (most reliable) or the receipt's module_id.
+                let module_id_for_receipt = settlement_opt
+                    .as_ref()
+                    .map(|s| s.module_id.as_str())
+                    .unwrap_or(&receipt.module_id);
+                if let Some(module) = self.modules.get(module_id_for_receipt) {
+                    let ctx = self.make_module_context();
+                    let _ = module
+                        .process_receipt_erased(
+                            thread_id,
+                            invoice_opt.as_ref(),
+                            &receipt.receipt_data,
+                            &sender,
+                            &ctx,
+                        )
+                        .await;
+                }
+
+                self.transition_thread_state(
+                    thread_id,
+                    RemittanceThreadState::Receipted,
+                    Some("receipt received".to_string()),
+                )
+                .await?;
+
+                self.emit_event(RemittanceEvent::ReceiptReceived {
+                    thread_id: thread_id.to_string(),
+                    receipt: receipt_clone,
+                })
+                .await;
+            }
+
+            RemittanceKind::Termination => {
+                let termination: Termination = serde_json::from_value(env.payload.clone())
+                    .map_err(|e| RemittanceError::Protocol(format!("bad Termination: {}", e)))?;
+
+                let termination_clone = termination.clone();
+                {
+                    let mut guard = self.inner.lock().await;
+                    if let Some(t) = guard.threads.get_mut(thread_id) {
+                        t.termination = Some(termination.clone());
+                        t.flags.error = true;
+                    }
+                }
+
+                // Call module's process_termination_erased if available (swallow errors).
+                // Use settlement's module_id if available, else try the first registered module.
+                let module_for_term = if let Some(s) = settlement_opt.as_ref() {
+                    self.modules.get(&s.module_id)
+                } else {
+                    self.modules.values().next()
+                };
+                if let Some(module) = module_for_term {
+                    let ctx = self.make_module_context();
+                    let _ = module
+                        .process_termination_erased(
+                            thread_id,
+                            invoice_opt.as_ref(),
+                            settlement_opt.as_ref(),
+                            &termination,
+                            &sender,
+                            &ctx,
+                        )
+                        .await;
+                }
+
+                self.transition_thread_state(
+                    thread_id,
+                    RemittanceThreadState::Terminated,
+                    Some(format!("termination received: {}", termination_clone.code)),
+                )
+                .await?;
+
+                self.emit_event(RemittanceEvent::TerminationReceived {
+                    thread_id: thread_id.to_string(),
+                    termination: termination_clone,
+                })
+                .await;
+            }
+        }
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Comms integration
+    // -----------------------------------------------------------------------
+
+    /// Fetch all pending messages from the CommsLayer and process each one.
+    pub async fn sync_threads(&self) -> Result<(), RemittanceError> {
+        let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
+        let messages = self.comms.list_messages(message_box, None).await?;
+        for msg in messages {
+            // Errors on individual messages are logged, not fatal.
+            if let Err(e) = self.handle_inbound_message(msg).await {
+                // In production, this would log via self.config.logger.
+                let _ = e; // suppress unused warning
+            }
+        }
+        Ok(())
+    }
+
+    /// Register a live message callback with the CommsLayer.
+    ///
+    /// The callback spawns a tokio task for each inbound message, so this
+    /// method returns immediately after registration.
+    pub async fn start_listening(&self) -> Result<(), RemittanceError> {
+        let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
+        let manager_clone = self.clone();
+        let callback: Arc<dyn Fn(PeerMessage) + Send + Sync> = Arc::new(move |msg: PeerMessage| {
+            let mgr = manager_clone.clone();
+            tokio::spawn(async move {
+                let _ = mgr.handle_inbound_message(msg).await;
+            });
+        });
+        self.comms.listen_for_live_messages(message_box, None, callback).await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Notify-based waiters
+    // -----------------------------------------------------------------------
+
+    /// Wait until a thread reaches `target` state (or a terminal state).
+    ///
+    /// Uses `tokio::sync::Notify` to avoid busy-polling. The lost-wakeup
+    /// prevention pattern registers the `notified()` future before re-checking
+    /// state under lock.
+    pub async fn wait_for_state(
+        &self,
+        thread_id: &str,
+        target: RemittanceThreadState,
+    ) -> Result<Thread, RemittanceError> {
+        loop {
+            // Register notify handle under lock, then check state.
+            let notify = {
+                let mut nmap = self.notifiers.lock().await;
+                nmap.entry(thread_id.to_string())
+                    .or_insert_with(|| Arc::new(Notify::new()))
+                    .clone()
+            };
+
+            // CRITICAL: Create notified future before releasing any lock that
+            // guards state, to prevent lost wakeups.
+            let notified = notify.notified();
+
+            // Re-check state under inner lock.
+            {
+                let inner = self.inner.lock().await;
+                if let Some(thread) = inner.threads.get(thread_id) {
+                    if thread.state == target || is_terminal_state(&thread.state) {
+                        return Ok(thread.clone());
+                    }
+                } else {
+                    return Err(RemittanceError::Protocol(format!(
+                        "thread not found: {}",
+                        thread_id
+                    )));
+                }
+            }
+
+            notified.await;
+        }
+    }
+
+    /// Wait until a thread reaches `Receipted` state and return the receipt.
+    pub async fn wait_for_receipt(&self, thread_id: &str) -> Result<Receipt, RemittanceError> {
+        let thread = self
+            .wait_for_state(thread_id, RemittanceThreadState::Receipted)
+            .await?;
+        thread.receipt.ok_or_else(|| {
+            RemittanceError::Protocol(format!(
+                "thread {} reached Receipted state but has no receipt",
+                thread_id
+            ))
+        })
+    }
+
+    /// Wait until a thread reaches `IdentityAcknowledged` state.
+    pub async fn wait_for_identity(&self, thread_id: &str) -> Result<Thread, RemittanceError> {
+        self.wait_for_state(thread_id, RemittanceThreadState::IdentityAcknowledged)
+            .await
+    }
+
+    /// Wait until a thread reaches `Settled` state and return the settlement.
+    pub async fn wait_for_settlement(&self, thread_id: &str) -> Result<Settlement, RemittanceError> {
+        let thread = self
+            .wait_for_state(thread_id, RemittanceThreadState::Settled)
+            .await?;
+        thread.settlement.ok_or_else(|| {
+            RemittanceError::Protocol(format!(
+                "thread {} reached Settled state but has no settlement",
+                thread_id
+            ))
+        })
+    }
+
     /// Send a settlement without a prior invoice (unsolicited).
     ///
     /// Creates a new taker thread, verifies the module allows unsolicited
@@ -1394,9 +2151,53 @@ impl ThreadHandle {
     pub async fn get_thread(&self) -> Result<Thread, RemittanceError> {
         self.manager.get_thread_or_throw(&self.thread_id).await
     }
+
+    /// Wait until the thread reaches `state` (or a terminal state).
+    pub async fn wait_for_state(
+        &self,
+        state: RemittanceThreadState,
+    ) -> Result<Thread, RemittanceError> {
+        self.manager.wait_for_state(&self.thread_id, state).await
+    }
+
+    /// Wait until the thread has completed identity exchange.
+    pub async fn wait_for_identity(&self) -> Result<Thread, RemittanceError> {
+        self.manager.wait_for_identity(&self.thread_id).await
+    }
+
+    /// Wait until the thread has a confirmed settlement.
+    pub async fn wait_for_settlement(&self) -> Result<Settlement, RemittanceError> {
+        self.manager.wait_for_settlement(&self.thread_id).await
+    }
+
+    /// Wait until the thread has been receipted.
+    pub async fn wait_for_receipt(&self) -> Result<Receipt, RemittanceError> {
+        self.manager.wait_for_receipt(&self.thread_id).await
+    }
 }
 
 /// Handle wrapping a `ThreadHandle` for invoice-specific operations.
 pub struct InvoiceHandle {
     pub handle: ThreadHandle,
+}
+
+impl InvoiceHandle {
+    /// Returns the invoice stored on the thread, or an error if not present.
+    pub async fn invoice(&self) -> Result<Invoice, RemittanceError> {
+        let thread = self.handle.get_thread().await?;
+        thread.invoice.ok_or_else(|| {
+            RemittanceError::Protocol(format!(
+                "thread {} has no invoice",
+                self.handle.thread_id
+            ))
+        })
+    }
+
+    /// Pay the invoice using the given option_id (or the default/first available).
+    pub async fn pay(
+        &self,
+        option_id: Option<&str>,
+    ) -> Result<ThreadHandle, RemittanceError> {
+        self.handle.manager.pay(&self.handle.thread_id, option_id).await
+    }
 }
