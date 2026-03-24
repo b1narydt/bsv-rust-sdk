@@ -45,28 +45,28 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 ### RemittanceManager
 
-- [ ] **MGR-01**: Constructor accepting config, wallet (Arc<dyn WalletInterface>), comms layer, and initial threads
-- [ ] **MGR-02**: init() method loading persisted state from stateLoader
-- [ ] **MGR-03**: State persistence via saveState/loadState/persistState
-- [ ] **MGR-04**: syncThreads() fetching and processing pending messages from CommsLayer
-- [ ] **MGR-05**: startListening() for live message listening via CommsLayer
-- [ ] **MGR-06**: sendInvoice() creating thread, optional identity exchange, composing invoice with module options
-- [ ] **MGR-07**: sendInvoiceForThread() sending invoice for existing thread
-- [ ] **MGR-08**: findInvoicesPayable() and findReceivableInvoices() query methods
-- [ ] **MGR-09**: pay() selecting module, building settlement, sending, optionally waiting for receipt
-- [ ] **MGR-10**: sendUnsolicitedSettlement() creating thread and sending settlement without prior invoice
-- [ ] **MGR-11**: waitForReceipt(), waitForState(), waitForIdentity(), waitForSettlement() polling methods
-- [ ] **MGR-12**: Inbound message handling with envelope parsing, deduplication, and dispatch by kind
-- [ ] **MGR-13**: Identity exchange orchestration (request, response, acknowledgment flow)
-- [ ] **MGR-14**: State machine enforcement via transitionThreadState with REMITTANCE_STATE_TRANSITIONS validation
-- [ ] **MGR-15**: Event system with RemittanceEvent enum and listener registration
-- [ ] **MGR-16**: Thread struct with full state (23 fields including identity, flags, stateLog, protocolLog)
-- [ ] **MGR-17**: ThreadHandle and InvoiceHandle ergonomic wrapper types
-- [ ] **MGR-18**: getThread/getThreadOrThrow/getThreadHandle accessor methods
-- [ ] **MGR-19**: preselectPaymentOption for default module selection
-- [ ] **MGR-20**: RemittanceManagerConfig and RemittanceManagerRuntimeOptions types
-- [ ] **MGR-21**: ComposeInvoiceInput type for invoice creation
-- [ ] **MGR-22**: RemittanceManagerState for serializable state snapshots
+- [x] **MGR-01**: Constructor accepting config, wallet (Arc<dyn WalletInterface>), comms layer, and initial threads
+- [x] **MGR-02**: init() method loading persisted state from stateLoader
+- [x] **MGR-03**: State persistence via saveState/loadState/persistState
+- [x] **MGR-04**: syncThreads() fetching and processing pending messages from CommsLayer
+- [x] **MGR-05**: startListening() for live message listening via CommsLayer
+- [x] **MGR-06**: sendInvoice() creating thread, optional identity exchange, composing invoice with module options
+- [x] **MGR-07**: sendInvoiceForThread() sending invoice for existing thread
+- [x] **MGR-08**: findInvoicesPayable() and findReceivableInvoices() query methods
+- [x] **MGR-09**: pay() selecting module, building settlement, sending, optionally waiting for receipt
+- [x] **MGR-10**: sendUnsolicitedSettlement() creating thread and sending settlement without prior invoice
+- [x] **MGR-11**: waitForReceipt(), waitForState(), waitForIdentity(), waitForSettlement() polling methods
+- [x] **MGR-12**: Inbound message handling with envelope parsing, deduplication, and dispatch by kind
+- [x] **MGR-13**: Identity exchange orchestration (request, response, acknowledgment flow)
+- [x] **MGR-14**: State machine enforcement via transitionThreadState with REMITTANCE_STATE_TRANSITIONS validation
+- [x] **MGR-15**: Event system with RemittanceEvent enum and listener registration
+- [x] **MGR-16**: Thread struct with full state (23 fields including identity, flags, stateLog, protocolLog)
+- [x] **MGR-17**: ThreadHandle and InvoiceHandle ergonomic wrapper types
+- [x] **MGR-18**: getThread/getThreadOrThrow/getThreadHandle accessor methods
+- [x] **MGR-19**: preselectPaymentOption for default module selection
+- [x] **MGR-20**: RemittanceManagerConfig and RemittanceManagerRuntimeOptions types
+- [x] **MGR-21**: ComposeInvoiceInput type for invoice creation
+- [x] **MGR-22**: RemittanceManagerState for serializable state snapshots
 
 ### BasicBRC29 Module
 
@@ -162,28 +162,28 @@ Deferred to future release.
 | TRAIT-10 | Phase 2 — Interface Traits | Complete |
 | TRAIT-11 | Phase 2 — Interface Traits | Complete |
 | TRAIT-12 | Phase 2 — Interface Traits | Complete |
-| MGR-01 | Phase 3 — RemittanceManager | Pending |
-| MGR-02 | Phase 3 — RemittanceManager | Pending |
-| MGR-03 | Phase 3 — RemittanceManager | Pending |
-| MGR-04 | Phase 3 — RemittanceManager | Pending |
-| MGR-05 | Phase 3 — RemittanceManager | Pending |
-| MGR-06 | Phase 3 — RemittanceManager | Pending |
-| MGR-07 | Phase 3 — RemittanceManager | Pending |
-| MGR-08 | Phase 3 — RemittanceManager | Pending |
-| MGR-09 | Phase 3 — RemittanceManager | Pending |
-| MGR-10 | Phase 3 — RemittanceManager | Pending |
-| MGR-11 | Phase 3 — RemittanceManager | Pending |
-| MGR-12 | Phase 3 — RemittanceManager | Pending |
-| MGR-13 | Phase 3 — RemittanceManager | Pending |
-| MGR-14 | Phase 3 — RemittanceManager | Pending |
-| MGR-15 | Phase 3 — RemittanceManager | Pending |
-| MGR-16 | Phase 3 — RemittanceManager | Pending |
-| MGR-17 | Phase 3 — RemittanceManager | Pending |
-| MGR-18 | Phase 3 — RemittanceManager | Pending |
-| MGR-19 | Phase 3 — RemittanceManager | Pending |
-| MGR-20 | Phase 3 — RemittanceManager | Pending |
-| MGR-21 | Phase 3 — RemittanceManager | Pending |
-| MGR-22 | Phase 3 — RemittanceManager | Pending |
+| MGR-01 | Phase 3 — RemittanceManager | Complete |
+| MGR-02 | Phase 3 — RemittanceManager | Complete |
+| MGR-03 | Phase 3 — RemittanceManager | Complete |
+| MGR-04 | Phase 3 — RemittanceManager | Complete |
+| MGR-05 | Phase 3 — RemittanceManager | Complete |
+| MGR-06 | Phase 3 — RemittanceManager | Complete |
+| MGR-07 | Phase 3 — RemittanceManager | Complete |
+| MGR-08 | Phase 3 — RemittanceManager | Complete |
+| MGR-09 | Phase 3 — RemittanceManager | Complete |
+| MGR-10 | Phase 3 — RemittanceManager | Complete |
+| MGR-11 | Phase 3 — RemittanceManager | Complete |
+| MGR-12 | Phase 3 — RemittanceManager | Complete |
+| MGR-13 | Phase 3 — RemittanceManager | Complete |
+| MGR-14 | Phase 3 — RemittanceManager | Complete |
+| MGR-15 | Phase 3 — RemittanceManager | Complete |
+| MGR-16 | Phase 3 — RemittanceManager | Complete |
+| MGR-17 | Phase 3 — RemittanceManager | Complete |
+| MGR-18 | Phase 3 — RemittanceManager | Complete |
+| MGR-19 | Phase 3 — RemittanceManager | Complete |
+| MGR-20 | Phase 3 — RemittanceManager | Complete |
+| MGR-21 | Phase 3 — RemittanceManager | Complete |
+| MGR-22 | Phase 3 — RemittanceManager | Complete |
 | BRC29-01 | Phase 4 — BasicBRC29 Module | Pending |
 | BRC29-02 | Phase 4 — BasicBRC29 Module | Pending |
 | BRC29-03 | Phase 4 — BasicBRC29 Module | Pending |
