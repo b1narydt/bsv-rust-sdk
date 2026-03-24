@@ -33,3 +33,6 @@ pub mod script;
 pub mod services;
 pub mod transaction;
 pub mod wallet;
+
+#[cfg(feature = "network")]
+pub mod remittance;
