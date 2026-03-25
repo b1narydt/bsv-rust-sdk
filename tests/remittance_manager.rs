@@ -1432,3 +1432,152 @@ async fn test_inbound_settlement_with_auto_receipt() {
     });
     assert!(receipt_sent, "a receipt message should have been sent via comms");
 }
+
+// ---------------------------------------------------------------------------
+// Plan 04 tests — full 7-state lifecycle (TEST-03)
+// ---------------------------------------------------------------------------
+
+/// Verifies that all 7 thread states appear in the state_log (as `to` values).
+fn assert_all_seven_states_in_log(thread_id: &str, log: &[bsv::remittance::manager::StateLogEntry]) {
+    use RemittanceThreadState::*;
+    let expected = [
+        IdentityRequested,
+        IdentityResponded,
+        IdentityAcknowledged,
+        Invoiced,
+        Settled,
+        Receipted,
+    ];
+    for state in &expected {
+        assert!(
+            log.iter().any(|e| &e.to == state),
+            "state_log for thread {} missing state {:?}; log: {:?}",
+            thread_id,
+            state,
+            log
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_full_lifecycle_new_through_receipted() {
+    // Build a manager with auto_issue_receipt=true and a MockModuleWithReceipt
+    // so that inbound settlement auto-receipts.
+    let comms = Arc::new(MockComms::new());
+    let accept_called = Arc::new(AtomicBool::new(false));
+    let manager = make_manager_with_receipt_module(Arc::clone(&comms), Arc::clone(&accept_called));
+    manager.init().await.unwrap();
+
+    let thread_id = "lifecycle-all-7";
+
+    // --- Step 1: New -> IdentityRequested ---
+    // Insert a fresh thread in New state and manually drive it through
+    // the identity sub-states before invoice and settlement.
+    let initial = sample_thread(thread_id);
+    manager.insert_thread(initial).await;
+
+    // New -> IdentityRequested (valid per allowed_transitions)
+    manager
+        .transition_thread_state(thread_id, RemittanceThreadState::IdentityRequested, Some("identity request sent".to_string()))
+        .await
+        .expect("New -> IdentityRequested must succeed");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(t.state, RemittanceThreadState::IdentityRequested);
+
+    // --- Step 2: IdentityRequested -> IdentityResponded ---
+    manager
+        .transition_thread_state(thread_id, RemittanceThreadState::IdentityResponded, Some("identity response received".to_string()))
+        .await
+        .expect("IdentityRequested -> IdentityResponded must succeed");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(t.state, RemittanceThreadState::IdentityResponded);
+
+    // --- Step 3: IdentityResponded -> IdentityAcknowledged ---
+    manager
+        .transition_thread_state(thread_id, RemittanceThreadState::IdentityAcknowledged, Some("identity acknowledged".to_string()))
+        .await
+        .expect("IdentityResponded -> IdentityAcknowledged must succeed");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(t.state, RemittanceThreadState::IdentityAcknowledged);
+
+    // --- Step 4: IdentityAcknowledged -> Invoiced ---
+    // Attach invoice and set invoiced flag before transitioning so the thread
+    // can accept an inbound settlement later.
+    // Transition to Invoiced and then replace thread data via a new insert
+    // (insert_thread overwrites the existing entry).
+    manager
+        .transition_thread_state(thread_id, RemittanceThreadState::Invoiced, Some("invoice sent".to_string()))
+        .await
+        .expect("IdentityAcknowledged -> Invoiced must succeed");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(t.state, RemittanceThreadState::Invoiced);
+
+    // --- Step 5: Invoiced -> Settled -> Receipted via inbound settlement ---
+    // The thread is now Invoiced/Maker. Inject an inbound settlement message.
+    // The MockModuleWithReceipt accepts it and auto_issue_receipt fires a receipt.
+
+    // Attach invoice to thread so accept_settlement has context.
+    // We do this by re-inserting the thread with invoice data preserved;
+    // insert_thread replaces the entry so we rebuild with existing state.
+    let invoiced_thread = {
+        let snapshot = manager.get_thread(thread_id).await.unwrap();
+        Thread {
+            invoice: Some(test_invoice(thread_id)),
+            flags: ThreadFlags { has_invoiced: true, ..snapshot.flags },
+            my_role: ThreadRole::Maker,
+            their_role: ThreadRole::Taker,
+            ..snapshot
+        }
+    };
+    // Preserve the state log accumulated so far by using the snapshot above
+    // and then re-inserting. The state is already Invoiced so no transition needed.
+    manager.insert_thread(invoiced_thread).await;
+
+    // Verify state is still Invoiced after re-insert.
+    let t = manager.get_thread(thread_id).await.unwrap();
+    assert_eq!(t.state, RemittanceThreadState::Invoiced, "should still be Invoiced after re-insert");
+
+    // Queue an inbound settlement message from the taker.
+    let body = make_settlement_envelope(thread_id);
+    let msg = make_peer_message("lifecycle-settle-001", "bob", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    // sync_threads processes the settlement; auto-receipt fires because auto_issue_receipt=true.
+    manager.sync_threads(None).await.expect("sync_threads for settlement should succeed");
+
+    // --- Assertions ---
+    assert!(accept_called.load(Ordering::SeqCst), "accept_settlement must have been called");
+
+    let final_thread = manager.get_thread(thread_id).await.unwrap();
+
+    // Final state must be Receipted.
+    assert_eq!(
+        final_thread.state,
+        RemittanceThreadState::Receipted,
+        "final state should be Receipted, got {:?}",
+        final_thread.state
+    );
+
+    // Settlement and receipt must be stored.
+    assert!(final_thread.settlement.is_some(), "settlement should be stored on thread");
+    assert!(final_thread.receipt.is_some(), "receipt should be stored on thread");
+
+    // State log must contain entries for all transitions driven (IdentityRequested
+    // through Receipted — 6 transitions covering all 7 states New->Receipted).
+    assert_all_seven_states_in_log(thread_id, &final_thread.state_log);
+
+    // Verify a receipt message was sent outbound.
+    let sent = comms.sent.lock().unwrap();
+    let receipt_sent = sent.iter().any(|(_, _, body)| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            v.get("kind").and_then(|k| k.as_str()) == Some("receipt")
+        } else {
+            false
+        }
+    });
+    assert!(receipt_sent, "a receipt message should have been sent outbound");
+}
