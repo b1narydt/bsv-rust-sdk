@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-25T13:14:11.750Z"
+stopped_at: Completed 05-04-PLAN.md
+last_updated: "2026-03-25T13:19:31.099Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 13
-  completed_plans: 12
+  completed_plans: 13
   percent: 60
 ---
 
@@ -60,6 +60,7 @@ Progress: [████████░░] 60%
 | Phase 05-integrationtests-parityfixes P01 | 15 | 1 tasks | 5 files |
 | Phase 05-integrationtests-parityfixes P03 | 2 | 2 tasks | 3 files |
 | Phase 05-integrationtests-parityfixes P02 | 6 | 1 tasks | 2 files |
+| Phase 05-integrationtests-parityfixes P04 | 3 | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,8 @@ Recent decisions affecting current work:
 - [Phase 05-integrationtests-parityfixes]: TS JSON literals use realistic UUIDs and timestamps to simulate real TypeScript SDK output — proves Rust deserialization handles actual wire data
 - [Phase 05-integrationtests-parityfixes]: host_override is last parameter on all public methods — consistent positional convention matching TS SDK pattern
 - [Phase 05-integrationtests-parityfixes]: InvoiceHandle::pay adds host_override and passes through; ThreadHandle wrapper methods that only delegate to wait/get operations do not need host_override
+- [Phase 05-integrationtests-parityfixes]: test_full_lifecycle uses manual transitions for identity states then injects inbound Settlement via sync_threads — exercises real accept_settlement + auto-receipt code path without full identity mock complexity
+- [Phase 05-integrationtests-parityfixes]: TEST-04 confirmed satisfied by existing 38 BRC29 tests — MOCK_TX_BYTES (4-byte non-empty) satisfies is_atomic_beef; CapturingMockWallet returns tx bytes via create_action; internalize_action receives same bytes in accept_settlement
 
 ### Pending Todos
 
@@ -114,6 +117,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T13:14:11.747Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-25T13:19:31.097Z
+Stopped at: Completed 05-04-PLAN.md
 Resume file: None
