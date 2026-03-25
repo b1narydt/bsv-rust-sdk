@@ -77,7 +77,7 @@ Plans:
   2. `Brc29RemittanceModule::accept_settlement()` calls `wallet.internalize_action()` with correct derivation params and returns `Brc29ReceiptData`
   3. `Brc29RemittanceModule` registers in the manager's module registry under id `"brc29.p2pkh"` and responds to `pay()` calls
   4. Mock `NonceProvider` and `LockingScriptProvider` can be injected, making the module testable without a live wallet
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 - [ ] 04-01-PLAN.md — Module skeleton, types, config, injectable traits, validation helpers
@@ -117,5 +117,5 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 | 1. Foundation Types | 2/2 | Complete   | 2026-03-24 |
 | 2. Interface Traits | 2/2 | Complete   | 2026-03-24 |
 | 3. RemittanceManager | 3/3 | Complete   | 2026-03-24 |
-| 4. BasicBRC29 Module | 0/2 | Not started | - |
+| 4. BasicBRC29 Module | 1/2 | In Progress|  |
 | 5. Integration Tests | 0/TBD | Not started | - |

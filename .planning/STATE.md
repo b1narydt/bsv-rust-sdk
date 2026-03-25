@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-03-24T22:58:41.291Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-25T01:00:58.767Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 9
+  completed_plans: 8
   percent: 60
 ---
 
@@ -55,6 +55,7 @@ Progress: [████████░░] 60%
 | Phase 03-remittancemanager P01 | 7 | 2 tasks | 5 files |
 | Phase 03-remittancemanager P02 | 5 | 2 tasks | 2 files |
 | Phase 03-remittancemanager P03 | 6 | 2 tasks | 2 files |
+| Phase 04-basic-brc29-module P01 | 8 | 1 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,9 @@ Recent decisions affecting current work:
 - [Phase 03-remittancemanager]: ModuleContext.now is fn() -> u64 — uses static default_now() in make_module_context; config.now override only affects self.now_internal() calls, not module context
 - [Phase 03-remittancemanager]: preselect_payment_option_id(&str) added alongside existing preselect_payment_option(Option<String>) — string-slice is public API, Option variant kept for backward compat
 - [Phase 03-remittancemanager]: Receipt fields populated from Settlement (module_id/option_id) and invoice.base (payee/payer); test_identity_exchange fixed to share MockComms Arc
+- [Phase 04-basic-brc29-module]: Providers (NonceProvider, LockingScriptProvider) stored in config struct — matches TS constructor options pattern, enables injection via struct update syntax
+- [Phase 04-basic-brc29-module]: CustomInstructionsPayload is private struct — only used inside build_settlement (Plan 02), not part of public API
+- [Phase 04-basic-brc29-module]: Vec<u8> default serde produces number array matching TS number[] — no custom serde attribute needed for transaction field
 
 ### Pending Todos
 
@@ -97,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T22:58:41.288Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-03-25T01:00:50.939Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None

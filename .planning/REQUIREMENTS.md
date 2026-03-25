@@ -70,13 +70,13 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 ### BasicBRC29 Module
 
-- [ ] **BRC29-01**: Brc29RemittanceModule implementing RemittanceModule trait with id="brc29.p2pkh"
+- [x] **BRC29-01**: Brc29RemittanceModule implementing RemittanceModule trait with id="brc29.p2pkh"
 - [ ] **BRC29-02**: buildSettlement creating BRC-29 P2PKH payment via wallet.createAction with derived keys
 - [ ] **BRC29-03**: acceptSettlement internalizing transaction via wallet.internalizeAction with derivation params
-- [ ] **BRC29-04**: Brc29OptionTerms, Brc29SettlementArtifact, Brc29ReceiptData types
-- [ ] **BRC29-05**: Injectable NonceProvider and LockingScriptProvider traits for testability
-- [ ] **BRC29-06**: Validation helpers (ensureValidOption, ensureValidSettlement, isAtomicBeef)
-- [ ] **BRC29-07**: Brc29RemittanceModuleConfig with all configurable options (protocolID, labels, description, fees, etc.)
+- [x] **BRC29-04**: Brc29OptionTerms, Brc29SettlementArtifact, Brc29ReceiptData types
+- [x] **BRC29-05**: Injectable NonceProvider and LockingScriptProvider traits for testability
+- [x] **BRC29-06**: Validation helpers (ensureValidOption, ensureValidSettlement, isAtomicBeef)
+- [x] **BRC29-07**: Brc29RemittanceModuleConfig with all configurable options (protocolID, labels, description, fees, etc.)
 
 ### Wire Format & Serialization
 
@@ -95,6 +95,13 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 - [ ] **TEST-04**: BasicBRC29 buildSettlement and acceptSettlement unit tests with mock wallet
 - [ ] **TEST-05**: RemittanceEnvelope serialization matching exact TS JSON output
 - [ ] **TEST-06**: State transition back-transitions from invoiced to identity states verified
+
+### TS SDK Parity (identified via Phase 3 audit)
+- [ ] **PARITY-01**: wait_for_receipt/wait_for_settlement return Termination variant (not error) when thread terminates
+- [ ] **PARITY-02**: All public methods that send messages accept optional host_override parameter
+- [ ] **PARITY-03**: wait_for_state accepts optional timeout_ms, returns Timeout error on expiry
+- [ ] **PARITY-04**: find_invoices_payable and find_receivable_invoices accept optional counterparty filter
+- [ ] **PARITY-05**: RemittanceKind implements Display, sync_threads logs errors, handle_inbound_message is pub(crate)
 
 ## v2 Requirements
 
@@ -184,23 +191,28 @@ Deferred to future release.
 | MGR-20 | Phase 3 — RemittanceManager | Complete |
 | MGR-21 | Phase 3 — RemittanceManager | Complete |
 | MGR-22 | Phase 3 — RemittanceManager | Complete |
-| BRC29-01 | Phase 4 — BasicBRC29 Module | Pending |
+| BRC29-01 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-02 | Phase 4 — BasicBRC29 Module | Pending |
 | BRC29-03 | Phase 4 — BasicBRC29 Module | Pending |
-| BRC29-04 | Phase 4 — BasicBRC29 Module | Pending |
-| BRC29-05 | Phase 4 — BasicBRC29 Module | Pending |
-| BRC29-06 | Phase 4 — BasicBRC29 Module | Pending |
-| BRC29-07 | Phase 4 — BasicBRC29 Module | Pending |
+| BRC29-04 | Phase 4 — BasicBRC29 Module | Complete |
+| BRC29-05 | Phase 4 — BasicBRC29 Module | Complete |
+| BRC29-06 | Phase 4 — BasicBRC29 Module | Complete |
+| BRC29-07 | Phase 4 — BasicBRC29 Module | Complete |
 | TEST-01 | Phase 5 — Integration Tests | Pending |
 | TEST-02 | Phase 5 — Integration Tests | Pending |
 | TEST-03 | Phase 5 — Integration Tests | Pending |
 | TEST-04 | Phase 5 — Integration Tests | Pending |
 | TEST-05 | Phase 5 — Integration Tests | Pending |
 | TEST-06 | Phase 5 — Integration Tests | Pending |
+| PARITY-01 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-02 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-03 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-04 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-05 | Phase 5 — Integration Tests & Parity | Pending |
 
 **Coverage:**
-- v1 requirements: 65 total
-- Mapped to phases: 65
+- v1 requirements: 70 total
+- Mapped to phases: 70
 - Unmapped: 0
 
 ---
