@@ -1034,6 +1034,7 @@ impl RemittanceManager {
         &self,
         counterparty: &str,
         input: ComposeInvoiceInput,
+        host_override: Option<&str>,
     ) -> Result<InvoiceHandle, RemittanceError> {
         let thread = self.create_thread(counterparty, ThreadRole::Maker).await?;
         let thread_id = thread.thread_id.clone();
@@ -1053,7 +1054,7 @@ impl RemittanceManager {
             self.now_internal(),
         );
 
-        self.send_envelope(counterparty, &env, None).await?;
+        self.send_envelope(counterparty, &env, host_override).await?;
 
         // Store invoice on thread and transition to Invoiced (lock-free across await).
         {
@@ -1090,6 +1091,7 @@ impl RemittanceManager {
         &self,
         thread_id: &str,
         input: ComposeInvoiceInput,
+        host_override: Option<&str>,
     ) -> Result<InvoiceHandle, RemittanceError> {
         let thread = self.get_thread_or_throw(thread_id).await?;
         let counterparty = thread.counterparty.clone();
@@ -1104,7 +1106,7 @@ impl RemittanceManager {
             self.now_internal(),
         );
 
-        self.send_envelope(&counterparty, &env, None).await?;
+        self.send_envelope(&counterparty, &env, host_override).await?;
 
         {
             let mut guard = self.inner.lock().await;
@@ -1188,6 +1190,7 @@ impl RemittanceManager {
         &self,
         thread_id: &str,
         option_id: Option<&str>,
+        host_override: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
         let thread = self.get_thread_or_throw(thread_id).await?;
 
@@ -1278,7 +1281,7 @@ impl RemittanceManager {
                     now,
                 );
 
-                self.send_envelope(&counterparty, &env, None).await?;
+                self.send_envelope(&counterparty, &env, host_override).await?;
 
                 {
                     let mut guard = self.inner.lock().await;
@@ -1318,7 +1321,7 @@ impl RemittanceManager {
                     now,
                 );
 
-                self.send_envelope(&counterparty, &env, None).await?;
+                self.send_envelope(&counterparty, &env, host_override).await?;
 
                 {
                     let mut guard = self.inner.lock().await;
@@ -1989,9 +1992,9 @@ impl RemittanceManager {
     // -----------------------------------------------------------------------
 
     /// Fetch all pending messages from the CommsLayer and process each one.
-    pub async fn sync_threads(&self) -> Result<(), RemittanceError> {
+    pub async fn sync_threads(&self, host_override: Option<&str>) -> Result<(), RemittanceError> {
         let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
-        let messages = self.comms.list_messages(message_box, None).await?;
+        let messages = self.comms.list_messages(message_box, host_override).await?;
         for msg in messages {
             // Errors on individual messages are logged, not fatal.
             if let Err(e) = self.handle_inbound_message(msg).await {
@@ -2007,7 +2010,7 @@ impl RemittanceManager {
     ///
     /// The callback spawns a tokio task for each inbound message, so this
     /// method returns immediately after registration.
-    pub async fn start_listening(&self) -> Result<(), RemittanceError> {
+    pub async fn start_listening(&self, host_override: Option<&str>) -> Result<(), RemittanceError> {
         let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
         let manager_clone = self.clone();
         let callback: Arc<dyn Fn(PeerMessage) + Send + Sync> = Arc::new(move |msg: PeerMessage| {
@@ -2016,7 +2019,7 @@ impl RemittanceManager {
                 let _ = mgr.handle_inbound_message(msg).await;
             });
         });
-        self.comms.listen_for_live_messages(message_box, None, callback).await?;
+        self.comms.listen_for_live_messages(message_box, host_override, callback).await?;
         Ok(())
     }
 
@@ -2163,6 +2166,7 @@ impl RemittanceManager {
         option_id: &str,
         option: serde_json::Value,
         note: Option<&str>,
+        host_override: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
         let thread = self.create_thread(counterparty, ThreadRole::Taker).await?;
         let thread_id = thread.thread_id.clone();
@@ -2204,7 +2208,7 @@ impl RemittanceManager {
 
         let payload = serde_json::to_value(&settlement)?;
         let env = Self::make_envelope(RemittanceKind::Settlement, &thread_id, payload, now);
-        self.send_envelope(counterparty, &env, None).await?;
+        self.send_envelope(counterparty, &env, host_override).await?;
 
         {
             let mut guard = self.inner.lock().await;
@@ -2302,6 +2306,6 @@ impl InvoiceHandle {
         &self,
         option_id: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
-        self.handle.manager.pay(&self.handle.thread_id, option_id).await
+        self.handle.manager.pay(&self.handle.thread_id, option_id, None).await
     }
 }

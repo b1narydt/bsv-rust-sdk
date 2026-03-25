@@ -1,3 +1,4 @@
+#![cfg(feature = "network")]
 //! Wire-format roundtrip tests for remittance protocol structs.
 //!
 //! Verifies that all structs serialize to JSON matching the TypeScript SDK wire format:
@@ -433,6 +434,300 @@ fn test_envelope_payload_arbitrary() {
     let roundtripped: RemittanceEnvelope = serde_json::from_str(&json_str).unwrap();
     assert_eq!(roundtripped.payload["nested"], json!([1, 2, 3]));
     assert_eq!(roundtripped.payload["flag"], true);
+}
+
+// ---------------------------------------------------------------------------
+// TS-originated JSON literal deserialization (TEST-02, TEST-05)
+//
+// Each test below uses a hardcoded JSON string that replicates what a
+// real TypeScript SDK instance would emit: camelCase keys, integer `v`,
+// Unix millisecond timestamps, UUID-style identifiers.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ts_originated_invoice_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000001",
+        "kind": "invoice",
+        "threadId": "thread-0001",
+        "createdAt": 1700000000000,
+        "payload": {
+            "kind": "invoice",
+            "threadId": "thread-0001",
+            "payee": "1FakePayeeAddress",
+            "payer": "1FakePayerAddress",
+            "invoiceNumber": "INV-2024-001",
+            "createdAt": 1700000000000,
+            "expiresAt": 1700003600000,
+            "lineItems": [
+                {
+                    "id": "li-1",
+                    "description": "Widget service fee",
+                    "quantity": "1",
+                    "amount": {"value": "1000", "unit": {"namespace": "bsv", "code": "sat", "decimals": 0}}
+                }
+            ],
+            "total": {"value": "1000", "unit": {"namespace": "bsv", "code": "sat", "decimals": 0}},
+            "options": {
+                "opt-brc29": {"moduleId": "brc29", "description": "Pay via BSV direct"}
+            }
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::Invoice);
+    assert_eq!(env.thread_id, "thread-0001");
+    assert_eq!(env.v, 1);
+    assert_eq!(env.created_at, 1700000000000);
+
+    let invoice: Invoice = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(invoice.base.payee, "1FakePayeeAddress");
+    assert_eq!(invoice.base.total.value, "1000");
+    assert_eq!(invoice.expires_at, Some(1700003600000));
+    assert!(invoice.options.contains_key("opt-brc29"));
+    assert_eq!(invoice.base.line_items.len(), 1);
+    assert_eq!(invoice.base.line_items[0].description, "Widget service fee");
+}
+
+#[test]
+fn test_ts_originated_identity_request_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000002",
+        "kind": "identityVerificationRequest",
+        "threadId": "thread-0001",
+        "createdAt": 1700000001000,
+        "payload": {
+            "kind": "identityVerificationRequest",
+            "threadId": "thread-0001",
+            "request": {
+                "types": {
+                    "kyc-basic": ["name", "dateOfBirth", "countryOfResidence"]
+                },
+                "certifiers": [
+                    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                ]
+            }
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::IdentityVerificationRequest);
+    assert_eq!(env.thread_id, "thread-0001");
+    assert_eq!(env.v, 1);
+
+    let req: IdentityVerificationRequest = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(req.thread_id, "thread-0001");
+    assert!(req.request.types.contains_key("kyc-basic"));
+    assert_eq!(req.request.types["kyc-basic"], vec!["name", "dateOfBirth", "countryOfResidence"]);
+    assert_eq!(req.request.certifiers.len(), 1);
+}
+
+#[test]
+fn test_ts_originated_identity_response_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000003",
+        "kind": "identityVerificationResponse",
+        "threadId": "thread-0001",
+        "createdAt": 1700000002000,
+        "payload": {
+            "kind": "identityVerificationResponse",
+            "threadId": "thread-0001",
+            "certificates": [
+                {
+                    "type": "kyc-basic",
+                    "certifier": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                    "subject": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+                    "fields": {
+                        "name": "Alice Wonderland",
+                        "dateOfBirth": "1990-01-01"
+                    },
+                    "signature": "3045022100abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890022012345678901234567890",
+                    "serialNumber": "cert-serial-0001",
+                    "revocationOutpoint": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890:0",
+                    "keyringForVerifier": {
+                        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798": "encryptedKeyData"
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::IdentityVerificationResponse);
+    assert_eq!(env.v, 1);
+
+    let resp: IdentityVerificationResponse = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(resp.certificates.len(), 1);
+    let cert = &resp.certificates[0];
+    assert_eq!(cert.cert_type, "kyc-basic");
+    assert_eq!(cert.fields["name"], "Alice Wonderland");
+    assert_eq!(cert.serial_number, "cert-serial-0001");
+    assert!(cert.keyring_for_verifier.contains_key(
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    ));
+}
+
+#[test]
+fn test_ts_originated_identity_ack_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000004",
+        "kind": "identityVerificationAcknowledgment",
+        "threadId": "thread-0001",
+        "createdAt": 1700000003000,
+        "payload": {
+            "kind": "identityVerificationAcknowledgment",
+            "threadId": "thread-0001",
+            "acknowledged": true
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::IdentityVerificationAcknowledgment);
+    assert_eq!(env.thread_id, "thread-0001");
+    assert_eq!(env.v, 1);
+
+    // The payload deserializes into IdentityVerificationAcknowledgment.
+    // `acknowledged` is an extra TS field that serde will accept via deny_unknown_fields
+    // being absent — we only verify the required fields.
+    let ack: IdentityVerificationAcknowledgment = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(ack.thread_id, "thread-0001");
+    assert_eq!(ack.kind, RemittanceKind::IdentityVerificationAcknowledgment);
+}
+
+#[test]
+fn test_ts_originated_settlement_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000005",
+        "kind": "settlement",
+        "threadId": "thread-0001",
+        "createdAt": 1700000010000,
+        "payload": {
+            "kind": "settlement",
+            "threadId": "thread-0001",
+            "moduleId": "brc29",
+            "optionId": "opt-brc29",
+            "sender": "1FakePayerAddress",
+            "createdAt": 1700000010000,
+            "artifact": {
+                "tx": [1, 2, 3, 4, 5],
+                "txid": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
+                "proof": null
+            }
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::Settlement);
+    assert_eq!(env.v, 1);
+
+    let s: Settlement = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(s.module_id, "brc29");
+    assert_eq!(s.option_id, "opt-brc29");
+    assert_eq!(s.sender, "1FakePayerAddress");
+    assert_eq!(
+        s.artifact["txid"],
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+    );
+    assert!(s.note.is_none());
+}
+
+#[test]
+fn test_ts_originated_receipt_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000006",
+        "kind": "receipt",
+        "threadId": "thread-0001",
+        "createdAt": 1700000020000,
+        "payload": {
+            "kind": "receipt",
+            "threadId": "thread-0001",
+            "moduleId": "brc29",
+            "optionId": "opt-brc29",
+            "payee": "1FakePayeeAddress",
+            "payer": "1FakePayerAddress",
+            "createdAt": 1700000020000,
+            "receiptData": {
+                "confirmed": true,
+                "blockHeight": 850000,
+                "txid": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+            }
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::Receipt);
+    assert_eq!(env.v, 1);
+
+    let r: Receipt = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(r.module_id, "brc29");
+    assert_eq!(r.payee, "1FakePayeeAddress");
+    assert_eq!(r.payer, "1FakePayerAddress");
+    assert_eq!(r.receipt_data["confirmed"], true);
+    assert_eq!(r.receipt_data["blockHeight"], 850000);
+}
+
+#[test]
+fn test_ts_originated_termination_envelope() {
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000007",
+        "kind": "termination",
+        "threadId": "thread-0001",
+        "createdAt": 1700000030000,
+        "payload": {
+            "code": "user_cancelled",
+            "message": "User cancelled the payment",
+            "details": {
+                "reason": "changed_mind",
+                "timestamp": 1700000030000
+            }
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.kind, RemittanceKind::Termination);
+    assert_eq!(env.thread_id, "thread-0001");
+    assert_eq!(env.v, 1);
+
+    let t: Termination = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(t.code, "user_cancelled");
+    assert_eq!(t.message, "User cancelled the payment");
+    assert!(t.details.is_some());
+    assert_eq!(t.details.unwrap()["reason"], "changed_mind");
+}
+
+#[test]
+fn test_ts_originated_envelope_all_optional_fields_absent() {
+    // Minimal envelope: only the five required fields present.
+    // Proves that Option<T> fields on payload structs deserialize correctly
+    // when the corresponding JSON keys are absent.
+    let raw = r#"{
+        "v": 1,
+        "id": "a1b2c3d4-0000-0000-0000-000000000099",
+        "kind": "termination",
+        "threadId": "thread-minimal",
+        "createdAt": 1700000099000,
+        "payload": {
+            "code": "timeout",
+            "message": "Connection timed out"
+        }
+    }"#;
+
+    let env: RemittanceEnvelope = serde_json::from_str(raw).unwrap();
+    assert_eq!(env.v, 1);
+    assert_eq!(env.kind, RemittanceKind::Termination);
+    assert_eq!(env.thread_id, "thread-minimal");
+
+    let t: Termination = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(t.code, "timeout");
+    // `details` must be None when absent from JSON (not null, not an error)
+    assert!(t.details.is_none());
 }
 
 // ---------------------------------------------------------------------------
