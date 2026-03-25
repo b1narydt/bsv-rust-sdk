@@ -71,8 +71,8 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 ### BasicBRC29 Module
 
 - [x] **BRC29-01**: Brc29RemittanceModule implementing RemittanceModule trait with id="brc29.p2pkh"
-- [ ] **BRC29-02**: buildSettlement creating BRC-29 P2PKH payment via wallet.createAction with derived keys
-- [ ] **BRC29-03**: acceptSettlement internalizing transaction via wallet.internalizeAction with derivation params
+- [x] **BRC29-02**: buildSettlement creating BRC-29 P2PKH payment via wallet.createAction with derived keys
+- [x] **BRC29-03**: acceptSettlement internalizing transaction via wallet.internalizeAction with derivation params
 - [x] **BRC29-04**: Brc29OptionTerms, Brc29SettlementArtifact, Brc29ReceiptData types
 - [x] **BRC29-05**: Injectable NonceProvider and LockingScriptProvider traits for testability
 - [x] **BRC29-06**: Validation helpers (ensureValidOption, ensureValidSettlement, isAtomicBeef)
@@ -192,8 +192,8 @@ Deferred to future release.
 | MGR-21 | Phase 3 — RemittanceManager | Complete |
 | MGR-22 | Phase 3 — RemittanceManager | Complete |
 | BRC29-01 | Phase 4 — BasicBRC29 Module | Complete |
-| BRC29-02 | Phase 4 — BasicBRC29 Module | Pending |
-| BRC29-03 | Phase 4 — BasicBRC29 Module | Pending |
+| BRC29-02 | Phase 4 — BasicBRC29 Module | Complete |
+| BRC29-03 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-04 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-05 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-06 | Phase 4 — BasicBRC29 Module | Complete |

@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation Types** - All protocol types, enums, state machine, and wire-format serialization (completed 2026-03-24)
 - [x] **Phase 2: Interface Traits** - CommsLayer, IdentityLayer, and RemittanceModule trait definitions with erased-trait pattern (completed 2026-03-24)
 - [x] **Phase 3: RemittanceManager** - Full orchestrator with state machine enforcement, message routing, and persistence (completed 2026-03-24)
-- [ ] **Phase 4: BasicBRC29 Module** - Concrete BRC-29 P2PKH settlement module implementing RemittanceModule
+- [x] **Phase 4: BasicBRC29 Module** - Concrete BRC-29 P2PKH settlement module implementing RemittanceModule (completed 2026-03-25)
 - [ ] **Phase 5: Integration Tests** - Wire-format parity tests, state machine coverage, and end-to-end lifecycle tests
 
 ## Phase Details
@@ -77,7 +77,7 @@ Plans:
   2. `Brc29RemittanceModule::accept_settlement()` calls `wallet.internalize_action()` with correct derivation params and returns `Brc29ReceiptData`
   3. `Brc29RemittanceModule` registers in the manager's module registry under id `"brc29.p2pkh"` and responds to `pay()` calls
   4. Mock `NonceProvider` and `LockingScriptProvider` can be injected, making the module testable without a live wallet
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 04-01-PLAN.md — Module skeleton, types, config, injectable traits, validation helpers
@@ -117,5 +117,5 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 | 1. Foundation Types | 2/2 | Complete   | 2026-03-24 |
 | 2. Interface Traits | 2/2 | Complete   | 2026-03-24 |
 | 3. RemittanceManager | 3/3 | Complete   | 2026-03-24 |
-| 4. BasicBRC29 Module | 1/2 | In Progress|  |
+| 4. BasicBRC29 Module | 2/2 | Complete   | 2026-03-25 |
 | 5. Integration Tests | 0/TBD | Not started | - |
