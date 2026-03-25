@@ -97,11 +97,11 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 - [ ] **TEST-06**: State transition back-transitions from invoiced to identity states verified
 
 ### TS SDK Parity (identified via Phase 3 audit)
-- [ ] **PARITY-01**: wait_for_receipt/wait_for_settlement return Termination variant (not error) when thread terminates
+- [x] **PARITY-01**: wait_for_receipt/wait_for_settlement return Termination variant (not error) when thread terminates
 - [ ] **PARITY-02**: All public methods that send messages accept optional host_override parameter
-- [ ] **PARITY-03**: wait_for_state accepts optional timeout_ms, returns Timeout error on expiry
-- [ ] **PARITY-04**: find_invoices_payable and find_receivable_invoices accept optional counterparty filter
-- [ ] **PARITY-05**: RemittanceKind implements Display, sync_threads logs errors, handle_inbound_message is pub(crate)
+- [x] **PARITY-03**: wait_for_state accepts optional timeout_ms, returns Timeout error on expiry
+- [x] **PARITY-04**: find_invoices_payable and find_receivable_invoices accept optional counterparty filter
+- [x] **PARITY-05**: RemittanceKind implements Display, sync_threads logs errors, handle_inbound_message is pub(crate)
 
 ## v2 Requirements
 
@@ -204,11 +204,11 @@ Deferred to future release.
 | TEST-04 | Phase 5 — Integration Tests | Pending |
 | TEST-05 | Phase 5 — Integration Tests | Pending |
 | TEST-06 | Phase 5 — Integration Tests | Pending |
-| PARITY-01 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-01 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-02 | Phase 5 — Integration Tests & Parity | Pending |
-| PARITY-03 | Phase 5 — Integration Tests & Parity | Pending |
-| PARITY-04 | Phase 5 — Integration Tests & Parity | Pending |
-| PARITY-05 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-03 | Phase 5 — Integration Tests & Parity | Complete |
+| PARITY-04 | Phase 5 — Integration Tests & Parity | Complete |
+| PARITY-05 | Phase 5 — Integration Tests & Parity | Complete |
 
 **Coverage:**
 - v1 requirements: 70 total
