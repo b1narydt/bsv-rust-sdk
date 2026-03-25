@@ -17,6 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: RemittanceManager** - Full orchestrator with state machine enforcement, message routing, and persistence (completed 2026-03-24)
 - [x] **Phase 4: BasicBRC29 Module** - Concrete BRC-29 P2PKH settlement module implementing RemittanceModule (completed 2026-03-25)
 - [x] **Phase 5: Integration Tests** - Wire-format parity tests, state machine coverage, and end-to-end lifecycle tests (completed 2026-03-25)
+- [ ] **Phase 5.1: TS SDK Parity Fixes** - Protocol correctness fixes and BRC-29 config alignment from forensic TS SDK audit (INSERTED)
 
 ## Phase Details
 
@@ -116,7 +117,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not Phase 3 -- can be parallelized if desired, but sequential is safe)
+Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 -> 5.1 (Phase 4 depends on Phase 2, not Phase 3 -- can be parallelized if desired, but sequential is safe)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -125,3 +126,22 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 | 3. RemittanceManager | 3/3 | Complete   | 2026-03-24 |
 | 4. BasicBRC29 Module | 2/2 | Complete   | 2026-03-25 |
 | 5. Integration Tests | 4/4 | Complete   | 2026-03-25 |
+
+### Phase 05.1: TS SDK Parity Fixes (INSERTED)
+
+**Goal**: Every behavioral discrepancy found in the forensic TS SDK audit is resolved — identity-before-settlement guard, role inference, BRC-29 config parity, validation alignment, and default corrections
+**Depends on**: Phase 5
+**Requirements**: PARITY-06, PARITY-07, PARITY-08, PARITY-09, PARITY-10, PARITY-11, PARITY-12
+**Success Criteria** (what must be TRUE):
+  1. Inbound settlement on a thread configured with `makerRequestIdentity: "beforeSettlement"` is rejected with termination if identity has not completed
+  2. Inbound identity messages on new threads correctly infer maker/taker role using the same phase-based logic as TypeScript SDK
+  3. `Brc29RemittanceModuleConfig` includes `refund_fee_satoshis`, `min_refund_satoshis`, and `internalize_protocol` with TS-matching defaults (1000, 1000, `"wallet payment"`)
+  4. `ensure_valid_option` validates `outputIndex >= 0`, `protocolID` format, `labels` non-empty strings, and `description` non-empty when present
+  5. `ensure_valid_settlement` validates `outputIndex >= 0` when present
+  6. `receipt_provided` defaults to `true` and `identity_poll_interval_ms` defaults to `500`, matching TS SDK
+  7. `is_atomic_beef` validates byte values (0-255) not just non-empty
+**Plans:** 2/2 plans complete
+
+Plans:
+- [ ] 05.1-01-PLAN.md — Manager parity: identity-before-settlement guard, role inference, default corrections
+- [ ] 05.1-02-PLAN.md — BRC-29 parity: config fields, validation extensions, is_atomic_beef documentation

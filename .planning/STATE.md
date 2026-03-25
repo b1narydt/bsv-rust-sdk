@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-03-25T13:19:31.099Z"
+stopped_at: Completed 05.1-02-PLAN.md
+last_updated: "2026-03-25T16:16:36.378Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 13
-  completed_plans: 13
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 15
+  completed_plans: 15
   percent: 60
 ---
 
@@ -61,6 +61,8 @@ Progress: [████████░░] 60%
 | Phase 05-integrationtests-parityfixes P03 | 2 | 2 tasks | 3 files |
 | Phase 05-integrationtests-parityfixes P02 | 6 | 1 tasks | 2 files |
 | Phase 05-integrationtests-parityfixes P04 | 3 | 2 tasks | 1 files |
+| Phase 05.1-ts-sdk-parity-fixes P02 | 3 | 2 tasks | 2 files |
+| Phase 05.1-ts-sdk-parity-fixes P01 | 8 | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -104,6 +106,15 @@ Recent decisions affecting current work:
 - [Phase 05-integrationtests-parityfixes]: InvoiceHandle::pay adds host_override and passes through; ThreadHandle wrapper methods that only delegate to wait/get operations do not need host_override
 - [Phase 05-integrationtests-parityfixes]: test_full_lifecycle uses manual transitions for identity states then injects inbound Settlement via sync_threads — exercises real accept_settlement + auto-receipt code path without full identity mock complexity
 - [Phase 05-integrationtests-parityfixes]: TEST-04 confirmed satisfied by existing 38 BRC29 tests — MOCK_TX_BYTES (4-byte non-empty) satisfies is_atomic_beef; CapturingMockWallet returns tx bytes via create_action; internalize_action receives same bytes in accept_settlement
+- [Phase 05.1-ts-sdk-parity-fixes]: InternalizeProtocol wired into config only, not accept_settlement — BasketInsertion deferred pending basket name field design
+- [Phase 05.1-ts-sdk-parity-fixes]: u32 type for output_index eliminates runtime >= 0 check; documented instead of coded
+- [Phase 05.1-ts-sdk-parity-fixes]: identity guard reads my_role + has_identified from same lock scope as sender extraction — no double-lock
+- [Phase 05.1-ts-sdk-parity-fixes]: get_or_create_thread_from_inbound: Receipt/Termination => Taker, identity kinds => config-aware role inference (requester_role from options, Response => I am requester, Request/Ack => opposite)
+- [Phase 05.1-ts-sdk-parity-fixes]: receipt_provided default corrected to true, identity_poll_interval_ms to 500 — test_runtime_defaults updated to assert corrected TS-parity values
+
+### Roadmap Evolution
+
+- Phase 05.1 inserted after Phase 05: TS SDK Parity Fixes (URGENT) — forensic audit found identity-before-settlement guard missing, incomplete role inference for identity messages, BRC-29 config gaps, validation gaps, and default mismatches vs TypeScript SDK
 
 ### Pending Todos
 
@@ -117,6 +128,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T13:19:31.097Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-03-25T16:16:21.903Z
+Stopped at: Completed 05.1-02-PLAN.md
 Resume file: None
