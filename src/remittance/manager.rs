@@ -202,11 +202,13 @@ impl Default for RemittanceManagerRuntimeOptions {
     fn default() -> Self {
         Self {
             identity_options: None,
-            receipt_provided: false,
+            // TS SDK defaults receipt_provided=true — peer is expected to send one.
+            receipt_provided: true,
             auto_issue_receipt: true,
             invoice_expiry_seconds: 3600,
             identity_timeout_ms: 30_000,
-            identity_poll_interval_ms: 1_000,
+            // TS SDK uses 500ms poll interval.
+            identity_poll_interval_ms: 500,
         }
     }
 }
@@ -1434,19 +1436,48 @@ impl RemittanceManager {
         }
 
         // Determine our role based on message kind.
-        // Invoice/IdentityVerificationRequest → I am taker (they are initiating as maker).
-        // Settlement (unsolicited) → I am maker (they are sending without invoice).
-        // Other kinds should only arrive on existing threads.
+        // Invoice → I am taker (maker is initiating).
+        // Settlement (unsolicited) → I am maker (paying party sends without invoice).
+        // Receipt/Termination on new thread → I am taker (default — we did not create this).
+        // Identity messages → infer from config which party is the requester, then derive role.
         let my_role = match &env.kind {
-            RemittanceKind::Invoice | RemittanceKind::IdentityVerificationRequest => {
-                ThreadRole::Taker
-            }
+            RemittanceKind::Invoice => ThreadRole::Taker,
             RemittanceKind::Settlement => ThreadRole::Maker,
-            other => {
-                return Err(RemittanceError::Protocol(format!(
-                    "cannot create thread for inbound {:?} — no existing thread {}",
-                    other, env.thread_id
-                )));
+            RemittanceKind::Receipt | RemittanceKind::Termination => ThreadRole::Taker,
+            RemittanceKind::IdentityVerificationRequest
+            | RemittanceKind::IdentityVerificationResponse
+            | RemittanceKind::IdentityVerificationAcknowledgment => {
+                // Determine which role is the requester per config. When only the maker is
+                // configured to request, the requester_role is Maker; when only the taker is
+                // configured, requester_role is Taker; otherwise default to Maker.
+                let identity_opts = self.options.identity_options.as_ref();
+                let maker_requests = identity_opts
+                    .and_then(|o| o.maker_request_identity.as_ref())
+                    .map(|p| !matches!(p, IdentityPhase::Never))
+                    .unwrap_or(false);
+                let taker_requests = identity_opts
+                    .and_then(|o| o.taker_request_identity.as_ref())
+                    .map(|p| !matches!(p, IdentityPhase::Never))
+                    .unwrap_or(false);
+
+                let requester_role = if maker_requests && !taker_requests {
+                    ThreadRole::Maker
+                } else if taker_requests && !maker_requests {
+                    ThreadRole::Taker
+                } else {
+                    // Both or neither — default to Maker as requester.
+                    ThreadRole::Maker
+                };
+
+                // For a Response: the requester is receiving the response (I am the requester).
+                // For a Request or Acknowledgment: the other party is acting, so I am the opposite.
+                match &env.kind {
+                    RemittanceKind::IdentityVerificationResponse => requester_role,
+                    _ => match requester_role {
+                        ThreadRole::Maker => ThreadRole::Taker,
+                        ThreadRole::Taker => ThreadRole::Maker,
+                    },
+                }
             }
         };
 
@@ -1508,7 +1539,7 @@ impl RemittanceManager {
         env: RemittanceEnvelope,
     ) -> Result<(), RemittanceError> {
         // Extract sender from thread (counterparty field).
-        let (sender, invoice_opt, settlement_opt) = {
+        let (sender, invoice_opt, settlement_opt, my_role, has_identified) = {
             let guard = self.inner.lock().await;
             let thread = guard.threads.get(thread_id).ok_or_else(|| {
                 RemittanceError::Protocol(format!("thread not found: {}", thread_id))
@@ -1517,6 +1548,8 @@ impl RemittanceManager {
                 thread.counterparty.clone(),
                 thread.invoice.clone(),
                 thread.settlement.clone(),
+                thread.my_role.clone(),
+                thread.flags.has_identified,
             )
         };
 
@@ -1740,6 +1773,42 @@ impl RemittanceManager {
             }
 
             RemittanceKind::Settlement => {
+                // PARITY-06 / PARITY-12: If the maker required identity before settlement and
+                // identity has not been completed, reject the settlement with a termination.
+                // Only applies when I am the Maker — the party that issued the requirement.
+                let should_require_identity = matches!(my_role, ThreadRole::Maker)
+                    && matches!(
+                        self.options
+                            .identity_options
+                            .as_ref()
+                            .and_then(|o| o.maker_request_identity.as_ref()),
+                        Some(IdentityPhase::BeforeSettlement)
+                    )
+                    && !has_identified;
+
+                if should_require_identity {
+                    let termination = Termination {
+                        code: "identity.required".to_string(),
+                        message: "Identity verification is required before settlement".to_string(),
+                        details: None,
+                    };
+                    let payload = serde_json::to_value(&termination)?;
+                    let term_env = Self::make_envelope(
+                        RemittanceKind::Termination,
+                        thread_id,
+                        payload,
+                        self.now_internal(),
+                    );
+                    self.send_envelope(&sender, &term_env, None).await?;
+                    self.transition_thread_state(
+                        thread_id,
+                        RemittanceThreadState::Terminated,
+                        Some("identity required before settlement".to_string()),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
                 let settlement: Settlement = serde_json::from_value(env.payload.clone())
                     .map_err(|e| RemittanceError::Protocol(format!("bad Settlement: {}", e)))?;
 

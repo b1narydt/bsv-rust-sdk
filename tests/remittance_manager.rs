@@ -811,11 +811,12 @@ async fn test_get_thread_or_throw() {
 #[tokio::test]
 async fn test_runtime_defaults() {
     let opts = RemittanceManagerRuntimeOptions::default();
-    assert!(!opts.receipt_provided);
+    // receipt_provided and identity_poll_interval_ms corrected to match TS SDK (PARITY-10).
+    assert!(opts.receipt_provided);
     assert!(opts.auto_issue_receipt);
     assert_eq!(opts.invoice_expiry_seconds, 3600);
     assert_eq!(opts.identity_timeout_ms, 30_000);
-    assert_eq!(opts.identity_poll_interval_ms, 1_000);
+    assert_eq!(opts.identity_poll_interval_ms, 500);
 }
 
 #[tokio::test]
