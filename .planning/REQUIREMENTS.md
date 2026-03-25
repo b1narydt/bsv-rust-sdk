@@ -89,16 +89,16 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 
 ### Testing
 
-- [ ] **TEST-01**: State machine unit tests — all valid transitions pass, all invalid transitions return error
-- [ ] **TEST-02**: JSON serialization roundtrip tests for every type matching TS wire format
+- [x] **TEST-01**: State machine unit tests — all valid transitions pass, all invalid transitions return error
+- [x] **TEST-02**: JSON serialization roundtrip tests for every type matching TS wire format
 - [ ] **TEST-03**: Full thread lifecycle integration test (new → identity → invoice → settle → receipt)
 - [ ] **TEST-04**: BasicBRC29 buildSettlement and acceptSettlement unit tests with mock wallet
-- [ ] **TEST-05**: RemittanceEnvelope serialization matching exact TS JSON output
-- [ ] **TEST-06**: State transition back-transitions from invoiced to identity states verified
+- [x] **TEST-05**: RemittanceEnvelope serialization matching exact TS JSON output
+- [x] **TEST-06**: State transition back-transitions from invoiced to identity states verified
 
 ### TS SDK Parity (identified via Phase 3 audit)
 - [x] **PARITY-01**: wait_for_receipt/wait_for_settlement return Termination variant (not error) when thread terminates
-- [ ] **PARITY-02**: All public methods that send messages accept optional host_override parameter
+- [x] **PARITY-02**: All public methods that send messages accept optional host_override parameter
 - [x] **PARITY-03**: wait_for_state accepts optional timeout_ms, returns Timeout error on expiry
 - [x] **PARITY-04**: find_invoices_payable and find_receivable_invoices accept optional counterparty filter
 - [x] **PARITY-05**: RemittanceKind implements Display, sync_threads logs errors, handle_inbound_message is pub(crate)
@@ -198,14 +198,14 @@ Deferred to future release.
 | BRC29-05 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-06 | Phase 4 — BasicBRC29 Module | Complete |
 | BRC29-07 | Phase 4 — BasicBRC29 Module | Complete |
-| TEST-01 | Phase 5 — Integration Tests | Pending |
-| TEST-02 | Phase 5 — Integration Tests | Pending |
+| TEST-01 | Phase 5 — Integration Tests | Complete |
+| TEST-02 | Phase 5 — Integration Tests | Complete |
 | TEST-03 | Phase 5 — Integration Tests | Pending |
 | TEST-04 | Phase 5 — Integration Tests | Pending |
-| TEST-05 | Phase 5 — Integration Tests | Pending |
-| TEST-06 | Phase 5 — Integration Tests | Pending |
+| TEST-05 | Phase 5 — Integration Tests | Complete |
+| TEST-06 | Phase 5 — Integration Tests | Complete |
 | PARITY-01 | Phase 5 — Integration Tests & Parity | Complete |
-| PARITY-02 | Phase 5 — Integration Tests & Parity | Pending |
+| PARITY-02 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-03 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-04 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-05 | Phase 5 — Integration Tests & Parity | Complete |
