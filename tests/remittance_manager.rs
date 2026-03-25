@@ -879,7 +879,7 @@ async fn test_send_invoice_lifecycle() {
     manager.init().await.unwrap();
 
     let handle = manager
-        .send_invoice("counterparty", sample_invoice_input())
+        .send_invoice("counterparty", sample_invoice_input(), None)
         .await
         .expect("send_invoice should succeed");
 
@@ -906,7 +906,7 @@ async fn test_send_invoice_for_thread() {
     manager.insert_thread(thread).await;
 
     let handle = manager
-        .send_invoice_for_thread("existing-thread", sample_invoice_input())
+        .send_invoice_for_thread("existing-thread", sample_invoice_input(), None)
         .await
         .expect("send_invoice_for_thread should succeed");
 
@@ -954,7 +954,7 @@ async fn test_pay() {
     manager.insert_thread(thread).await;
 
     let handle = manager
-        .pay("t-pay", Some("mock"))
+        .pay("t-pay", Some("mock"), None)
         .await
         .expect("pay should succeed");
 
@@ -977,7 +977,7 @@ async fn test_unsolicited_settlement() {
     manager.init().await.unwrap();
 
     let handle = manager
-        .send_unsolicited_settlement("alice", "mock", "mock", serde_json::json!({"amount": 500}), None)
+        .send_unsolicited_settlement("alice", "mock", "mock", serde_json::json!({"amount": 500}), None, None)
         .await
         .expect("send_unsolicited_settlement should succeed");
 
@@ -1023,7 +1023,7 @@ async fn test_identity_exchange() {
 
     // send_invoice with identity options configured — should send identity request first.
     let _handle = manager
-        .send_invoice("counterparty", sample_invoice_input())
+        .send_invoice("counterparty", sample_invoice_input(), None)
         .await
         .expect("send_invoice should succeed even with identity exchange");
 
@@ -1051,7 +1051,7 @@ async fn test_compose_invoice_includes_module_options() {
 
     // send_invoice to trigger compose_invoice; then inspect the stored invoice.
     let handle = manager
-        .send_invoice("bob", sample_invoice_input())
+        .send_invoice("bob", sample_invoice_input(), None)
         .await
         .expect("send_invoice should succeed");
 
@@ -1089,7 +1089,7 @@ async fn test_preselect_option() {
     // Insert an Invoiced taker thread and pay without explicit option_id.
     manager.insert_thread(invoiced_taker_thread("t-preselect")).await;
     let handle = manager
-        .pay("t-preselect", None)  // no explicit option_id — should use default
+        .pay("t-preselect", None, None)  // no explicit option_id — should use default
         .await
         .expect("pay with preselected option should succeed");
 
@@ -1213,7 +1213,7 @@ async fn test_sync_threads() {
     let manager = make_manager_with_comms(Arc::clone(&comms));
     manager.init().await.unwrap();
 
-    manager.sync_threads().await.expect("sync_threads should succeed");
+    manager.sync_threads(None).await.expect("sync_threads should succeed");
 
     // Thread should have been created and transitioned to Invoiced.
     let thread = manager.get_thread(thread_id).await;
@@ -1233,7 +1233,7 @@ async fn test_start_listening() {
     let manager = make_manager_with_comms(Arc::clone(&comms));
     manager.init().await.unwrap();
 
-    manager.start_listening().await.expect("start_listening should succeed");
+    manager.start_listening(None).await.expect("start_listening should succeed");
 
     // Verify listen_for_live_messages was called.
     assert!(
@@ -1276,7 +1276,7 @@ async fn test_wait_for_receipt_notify() {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Process the queued receipt message to trigger Receipted transition.
-        let _ = manager_clone.sync_threads().await;
+        let _ = manager_clone.sync_threads(None).await;
     });
 
     // Wait for receipt (with timeout to prevent hanging).
@@ -1318,7 +1318,7 @@ async fn test_deduplication() {
     // Queue both messages (same message_id) and process via sync_threads.
     // sync_threads calls handle_inbound_message internally for each message.
     comms.set_queued_messages(vec![msg1, msg2]);
-    manager.sync_threads().await.unwrap();
+    manager.sync_threads(None).await.unwrap();
 
     // Thread should exist and be in Invoiced (not double-transitioned).
     let thread = manager.get_thread(thread_id).await.unwrap();
@@ -1372,7 +1372,7 @@ async fn test_inbound_invoice() {
     let msg = make_peer_message("inv-msg-001", "alice", &body);
 
     comms.set_queued_messages(vec![msg]);
-    manager.sync_threads().await.expect("sync_threads should succeed");
+    manager.sync_threads(None).await.expect("sync_threads should succeed");
 
     let thread = manager.get_thread(thread_id).await.expect("thread should have been created");
     // We are taker (they sent the invoice as maker).
@@ -1403,7 +1403,7 @@ async fn test_inbound_settlement_with_auto_receipt() {
     let msg = make_peer_message("settle-msg-001", "bob", &body);
 
     comms.set_queued_messages(vec![msg]);
-    manager.sync_threads().await.expect("sync_threads for settlement should succeed");
+    manager.sync_threads(None).await.expect("sync_threads for settlement should succeed");
 
     // accept_settlement should have been called on the module.
     assert!(

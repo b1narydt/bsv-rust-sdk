@@ -2305,7 +2305,8 @@ impl InvoiceHandle {
     pub async fn pay(
         &self,
         option_id: Option<&str>,
+        host_override: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
-        self.handle.manager.pay(&self.handle.thread_id, option_id, None).await
+        self.handle.manager.pay(&self.handle.thread_id, option_id, host_override).await
     }
 }

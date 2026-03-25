@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-25T13:07:43.986Z"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-03-25T13:12:13.186Z"
 last_activity: 2026-03-24 — Plan 02-01 executed
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 13
-  completed_plans: 10
+  completed_plans: 11
   percent: 60
 ---
 
@@ -58,6 +58,7 @@ Progress: [████████░░] 60%
 | Phase 04-basic-brc29-module P01 | 8 | 1 tasks | 4 files |
 | Phase 04-basic-brc29-module P02 | 6 | 2 tasks | 2 files |
 | Phase 05-integrationtests-parityfixes P01 | 15 | 1 tasks | 5 files |
+| Phase 05-integrationtests-parityfixes P03 | 2 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,8 @@ Recent decisions affecting current work:
 - [Phase 05-integrationtests-parityfixes]: WaitReceiptResult/WaitSettlementResult enums: wait methods return Terminated arm instead of erroring on counterparty termination — matches TS SDK semantics
 - [Phase 05-integrationtests-parityfixes]: handle_inbound_message is pub(crate): external callers use sync_threads (batch) or start_listening (live); all 5 test call sites migrated to sync_threads
 - [Phase 05-integrationtests-parityfixes]: find_invoices_payable/find_receivable_invoices return Vec<InvoiceHandle> with counterparty filter — InvoiceHandle provides pay() without requiring manager reference
+- [Phase 05-integrationtests-parityfixes]: test_all_invalid_transitions derives expected pairs from allowed_transitions() directly — test matrix stays in sync with future transition table changes
+- [Phase 05-integrationtests-parityfixes]: TS JSON literals use realistic UUIDs and timestamps to simulate real TypeScript SDK output — proves Rust deserialization handles actual wire data
 
 ### Pending Todos
 
@@ -108,6 +111,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T13:07:43.984Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-25T13:12:13.183Z
+Stopped at: Completed 05-03-PLAN.md
 Resume file: None
