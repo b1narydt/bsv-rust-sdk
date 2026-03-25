@@ -220,3 +220,116 @@ fn test_thread_state_display() {
     assert_eq!(RemittanceThreadState::Invoiced.to_string(), "invoiced");
     assert_eq!(RemittanceThreadState::Errored.to_string(), "errored");
 }
+
+// ---------------------------------------------------------------------------
+// Exhaustive 9x9 transition matrix (TEST-01, TEST-06)
+// ---------------------------------------------------------------------------
+
+/// All 9 states in a stable iteration order.
+fn all_states() -> Vec<RemittanceThreadState> {
+    use RemittanceThreadState::*;
+    vec![
+        New,
+        IdentityRequested,
+        IdentityResponded,
+        IdentityAcknowledged,
+        Invoiced,
+        Settled,
+        Receipted,
+        Terminated,
+        Errored,
+    ]
+}
+
+/// The canonical allowed-transition set expressed as (from, to) pairs.
+/// Derived directly from the `allowed_transitions` implementation so that
+/// any future change to the table propagates automatically.
+fn expected_valid_pairs() -> Vec<(RemittanceThreadState, RemittanceThreadState)> {
+    let states = all_states();
+    let mut pairs = Vec::new();
+    for from in &states {
+        for to in allowed_transitions(from) {
+            pairs.push((from.clone(), to.clone()));
+        }
+    }
+    pairs
+}
+
+#[test]
+fn test_all_invalid_transitions() {
+    let states = all_states();
+    let valid_pairs = expected_valid_pairs();
+
+    let mut checked = 0u32;
+    let mut valid_confirmed = 0u32;
+    let mut invalid_confirmed = 0u32;
+
+    for from in &states {
+        for to in &states {
+            let is_valid = valid_pairs
+                .iter()
+                .any(|(f, t)| f == from && t == to);
+            let result = is_valid_transition(from, to);
+
+            if is_valid {
+                assert!(
+                    result,
+                    "Expected valid transition {:?} -> {:?} to succeed",
+                    from, to
+                );
+                valid_confirmed += 1;
+            } else {
+                assert!(
+                    !result,
+                    "Expected invalid transition {:?} -> {:?} to return false",
+                    from, to
+                );
+                invalid_confirmed += 1;
+            }
+            checked += 1;
+        }
+    }
+
+    // Sanity: all 81 pairs checked
+    assert_eq!(checked, 81, "Expected exactly 81 (from, to) pairs");
+
+    // Sanity: sum of valid + invalid == 81
+    assert_eq!(valid_confirmed + invalid_confirmed, 81);
+}
+
+#[test]
+fn test_invoiced_back_transitions_exhaustive() {
+    use RemittanceThreadState::*;
+
+    // TEST-06: all three back-transitions from Invoiced must be valid.
+    // These are "back" transitions because Invoiced comes after the identity
+    // states in the normal flow, yet can regress to them.
+    assert!(
+        is_valid_transition(&Invoiced, &IdentityRequested),
+        "Invoiced -> IdentityRequested must be valid"
+    );
+    assert!(
+        is_valid_transition(&Invoiced, &IdentityResponded),
+        "Invoiced -> IdentityResponded must be valid"
+    );
+    assert!(
+        is_valid_transition(&Invoiced, &IdentityAcknowledged),
+        "Invoiced -> IdentityAcknowledged must be valid"
+    );
+
+    // States that are strictly later in the protocol (post-settlement) must NOT
+    // reach any identity state. New -> IdentityRequested is a forward transition
+    // and is intentionally excluded from this check.
+    let post_settlement = [Settled, Receipted, Terminated, Errored];
+    let identity_states = [IdentityRequested, IdentityResponded, IdentityAcknowledged];
+
+    for from in &post_settlement {
+        for to in &identity_states {
+            assert!(
+                !is_valid_transition(from, to),
+                "Post-settlement state {:?} must not transition to identity state {:?}",
+                from, to
+            );
+        }
+    }
+}
