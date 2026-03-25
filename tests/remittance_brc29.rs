@@ -13,8 +13,8 @@ use bsv::primitives::public_key::PublicKey;
 use bsv::remittance::modules::brc29::{
     Brc29OptionTerms, Brc29ReceiptData, Brc29RefundData, Brc29RemittanceModule,
     Brc29RemittanceModuleConfig, Brc29SettlementArtifact, Brc29SettlementCustomInstructions,
-    LockingScriptProvider, NonceProvider, ensure_valid_option, ensure_valid_settlement,
-    is_atomic_beef,
+    InternalizeProtocol, LockingScriptProvider, NonceProvider, ensure_valid_option,
+    ensure_valid_settlement, is_atomic_beef,
 };
 use bsv::remittance::RemittanceModule;
 use bsv::remittance::RemittanceError;
@@ -314,7 +314,7 @@ fn test_option_terms_wire_format_minimal() {
     assert_eq!(json["payee"], "02abcdef");
     // None fields must be absent
     assert!(json.get("outputIndex").is_none(), "outputIndex should be absent");
-    assert!(json.get("protocolId").is_none(), "protocolId should be absent");
+    assert!(json.get("protocolID").is_none(), "protocolID should be absent when None");
     assert!(json.get("labels").is_none(), "labels should be absent");
     assert!(json.get("description").is_none(), "description should be absent");
     // Roundtrip
@@ -337,6 +337,9 @@ fn test_option_terms_wire_format_full() {
     let json = serde_json::to_value(&opt).unwrap();
     assert_eq!(json["amountSatoshis"], 10_000);
     assert_eq!(json["outputIndex"], 1);
+    // TS field is protocolID (uppercase D), not protocolId
+    assert!(json.get("protocolID").is_some(), "field must be protocolID (uppercase D)");
+    assert!(json.get("protocolId").is_none(), "must NOT be protocolId (lowercase d)");
     // Roundtrip
     let rt: Brc29OptionTerms = serde_json::from_value(json).unwrap();
     assert_eq!(rt.output_index, Some(1));
@@ -853,6 +856,44 @@ async fn test_build_settlement_returns_terminate_when_get_public_key_errors() {
         }
         other => panic!("expected Terminate, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config extension tests — refund fields and InternalizeProtocol (PARITY-08)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_config_defaults_refund_fee() {
+    let cfg = Brc29RemittanceModuleConfig::default();
+    assert_eq!(cfg.refund_fee_satoshis, 1000);
+}
+
+#[test]
+fn test_config_defaults_min_refund() {
+    let cfg = Brc29RemittanceModuleConfig::default();
+    assert_eq!(cfg.min_refund_satoshis, 1000);
+}
+
+#[test]
+fn test_config_defaults_internalize_protocol() {
+    let cfg = Brc29RemittanceModuleConfig::default();
+    assert_eq!(cfg.internalize_protocol, InternalizeProtocol::WalletPayment);
+}
+
+#[test]
+fn test_internalize_protocol_serde_wallet_payment() {
+    let json = serde_json::to_string(&InternalizeProtocol::WalletPayment).unwrap();
+    assert_eq!(json, "\"wallet payment\"");
+    let rt: InternalizeProtocol = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt, InternalizeProtocol::WalletPayment);
+}
+
+#[test]
+fn test_internalize_protocol_serde_basket_insertion() {
+    let json = serde_json::to_string(&InternalizeProtocol::BasketInsertion).unwrap();
+    assert_eq!(json, "\"basket insertion\"");
+    let rt: InternalizeProtocol = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt, InternalizeProtocol::BasketInsertion);
 }
 
 // ---------------------------------------------------------------------------

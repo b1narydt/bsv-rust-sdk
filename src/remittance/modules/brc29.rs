@@ -31,6 +31,24 @@ use crate::wallet::interfaces::{
 use crate::wallet::types::{BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol};
 
 // ---------------------------------------------------------------------------
+// InternalizeProtocol enum — controls how the payee internalizes the output
+// ---------------------------------------------------------------------------
+
+/// How the wallet internalizes a received BRC-29 payment output.
+///
+/// Matches TS SDK `BasicBRC29` constructor option `internalizeProtocol`.
+/// Serializes to the exact strings used by the TS SDK wire format.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum InternalizeProtocol {
+    /// Standard wallet payment (default). Serializes as `"wallet payment"`.
+    #[serde(rename = "wallet payment")]
+    WalletPayment,
+    /// Basket insertion (advanced). Serializes as `"basket insertion"`.
+    #[serde(rename = "basket insertion")]
+    BasketInsertion,
+}
+
+// ---------------------------------------------------------------------------
 // Wire-format types (BRC29-04) — match TS SDK interface shapes exactly
 // ---------------------------------------------------------------------------
 
@@ -49,7 +67,9 @@ pub struct Brc29OptionTerms {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_index: Option<u32>,
     /// Optional override for the BRC-29 protocol identifier.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// TS field name is `protocolID` (uppercase D) — explicit rename needed
+    /// because `rename_all = "camelCase"` would produce `protocolId`.
+    #[serde(rename = "protocolID", skip_serializing_if = "Option::is_none")]
     pub protocol_id: Option<Protocol>,
     /// Optional label tags applied to the wallet action.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,16 +239,16 @@ pub struct Brc29RemittanceModuleConfig {
     pub description: String,
     /// Output description for the payment output. Default: `"Payment for remittance invoice"`.
     pub output_description: String,
-    /// Internalize protocol string. Default: `"wallet payment"`.
-    pub internalize_protocol: String,
-    /// Network fee estimate for refund calculations (satoshis). Default: `1000`.
-    pub refund_fee_satoshis: u64,
-    /// Minimum amount below which a refund is not worth building. Default: `1000`.
-    pub min_refund_satoshis: u64,
     /// Nonce provider used inside `build_settlement`. Default: `DefaultNonceProvider`.
     pub nonce_provider: Arc<dyn NonceProvider>,
     /// Locking script provider used inside `build_settlement`. Default: `DefaultLockingScriptProvider`.
     pub locking_script_provider: Arc<dyn LockingScriptProvider>,
+    /// Fee charged on refunds, in satoshis. TS default: 1000.
+    pub refund_fee_satoshis: u64,
+    /// Minimum refund amount in satoshis. TS default: 1000.
+    pub min_refund_satoshis: u64,
+    /// How the wallet internalizes the payment. TS default: "wallet payment".
+    pub internalize_protocol: InternalizeProtocol,
 }
 
 impl Default for Brc29RemittanceModuleConfig {
@@ -241,11 +261,11 @@ impl Default for Brc29RemittanceModuleConfig {
             labels: vec!["brc29".to_string()],
             description: "BRC-29 payment".to_string(),
             output_description: "Payment for remittance invoice".to_string(),
-            internalize_protocol: "wallet payment".to_string(),
-            refund_fee_satoshis: 1000,
-            min_refund_satoshis: 1000,
             nonce_provider: Arc::new(DefaultNonceProvider),
             locking_script_provider: Arc::new(DefaultLockingScriptProvider),
+            refund_fee_satoshis: 1000,
+            min_refund_satoshis: 1000,
+            internalize_protocol: InternalizeProtocol::WalletPayment,
         }
     }
 }
