@@ -897,6 +897,109 @@ fn test_internalize_protocol_serde_basket_insertion() {
 }
 
 // ---------------------------------------------------------------------------
+// Validation extension tests — protocol_id, labels, description (PARITY-09)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ensure_valid_option_empty_protocol_string() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: None,
+        protocol_id: Some(Protocol { security_level: 2, protocol: "".to_string() }),
+        labels: None,
+        description: None,
+    };
+    let err = ensure_valid_option(&opt).unwrap_err();
+    assert!(err.contains("protocolID") || err.contains("protocol"), "error: {err}");
+}
+
+#[test]
+fn test_ensure_valid_option_empty_label() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: None,
+        protocol_id: None,
+        labels: Some(vec!["valid".to_string(), "".to_string()]),
+        description: None,
+    };
+    let err = ensure_valid_option(&opt).unwrap_err();
+    assert!(err.contains("label") || err.contains("labels"), "error: {err}");
+}
+
+#[test]
+fn test_ensure_valid_option_whitespace_label() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: None,
+        protocol_id: None,
+        labels: Some(vec!["   ".to_string()]),
+        description: None,
+    };
+    let err = ensure_valid_option(&opt).unwrap_err();
+    assert!(err.contains("label") || err.contains("labels"), "error: {err}");
+}
+
+#[test]
+fn test_ensure_valid_option_empty_description() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: None,
+        protocol_id: None,
+        labels: None,
+        description: Some("".to_string()),
+    };
+    let err = ensure_valid_option(&opt).unwrap_err();
+    assert!(err.contains("description"), "error: {err}");
+}
+
+#[test]
+fn test_ensure_valid_option_whitespace_description() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: None,
+        protocol_id: None,
+        labels: None,
+        description: Some("   ".to_string()),
+    };
+    let err = ensure_valid_option(&opt).unwrap_err();
+    assert!(err.contains("description"), "error: {err}");
+}
+
+#[test]
+fn test_ensure_valid_option_valid_with_all_optional_fields() {
+    let opt = Brc29OptionTerms {
+        amount_satoshis: 5000,
+        payee: TEST_PUBKEY_HEX.to_string(),
+        output_index: Some(0),
+        protocol_id: Some(Protocol { security_level: 2, protocol: "3241645161d8".to_string() }),
+        labels: Some(vec!["brc29".to_string()]),
+        description: Some("valid description".to_string()),
+    };
+    assert!(ensure_valid_option(&opt).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// is_atomic_beef byte-range tests (PARITY-11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_atomic_beef_single_byte_min() {
+    // Byte value 0 is valid — min of u8 range
+    assert!(is_atomic_beef(&[0]));
+}
+
+#[test]
+fn test_is_atomic_beef_single_byte_max() {
+    // Byte value 255 is valid — max of u8 range
+    assert!(is_atomic_beef(&[255]));
+}
+
+// ---------------------------------------------------------------------------
 // accept_settlement tests (Task 2 — TDD)
 // ---------------------------------------------------------------------------
 

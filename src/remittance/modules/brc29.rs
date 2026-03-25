@@ -619,22 +619,51 @@ impl Brc29RemittanceModule {
 // Validation helpers (BRC29-06) — match TS validation logic
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if `tx` is non-empty (placeholder for future Atomic BEEF validation).
+/// Returns `true` if `tx` is a non-empty byte array where every byte is
+/// in the valid range 0-255.
+///
+/// In Rust, `&[u8]` enforces the 0-255 range by type; this function therefore
+/// checks non-emptiness only. This matches the TypeScript SDK `isAtomicBeef`
+/// semantics where the TS version also validates each byte is an integer in
+/// 0-255, which is trivially true for Rust `u8`.
 pub fn is_atomic_beef(tx: &[u8]) -> bool {
     !tx.is_empty()
 }
 
 /// Validates a `Brc29OptionTerms` before use in `build_settlement`.
 ///
-/// Mirrors TS validation in `BasicBRC29.buildSettlement`:
+/// Mirrors TS validation in `BasicBRC29.buildSettlement` (lines 304-324):
 /// - `amountSatoshis` must be a positive integer (> 0)
 /// - `payee` must be a non-empty, non-whitespace string
+/// - `protocolID`: if provided, the protocol string must be non-empty and non-whitespace
+/// - `labels`: if provided, every label must be a non-empty, non-whitespace string
+/// - `description`: if provided, must be a non-empty, non-whitespace string
+///
+/// Note: `outputIndex: Option<u32>` is always >= 0 by the Rust type system — no
+/// runtime check is needed, matching the TS `outputIndex >= 0` check trivially.
 pub fn ensure_valid_option(option: &Brc29OptionTerms) -> Result<(), String> {
     if option.amount_satoshis == 0 {
         return Err("BRC-29 option amount must be a positive integer".into());
     }
     if option.payee.is_empty() || option.payee.trim().is_empty() {
         return Err("BRC-29 option payee is required".into());
+    }
+    if let Some(pid) = &option.protocol_id {
+        if pid.protocol.trim().is_empty() {
+            return Err(
+                "BRC-29 option protocolID must have a non-empty protocol string".into(),
+            );
+        }
+    }
+    if let Some(labels) = &option.labels {
+        if labels.iter().any(|l| l.trim().is_empty()) {
+            return Err("BRC-29 option labels must be a list of non-empty strings".into());
+        }
+    }
+    if let Some(desc) = &option.description {
+        if desc.trim().is_empty() {
+            return Err("BRC-29 option description must be a non-empty string".into());
+        }
     }
     Ok(())
 }
@@ -645,6 +674,9 @@ pub fn ensure_valid_option(option: &Brc29OptionTerms) -> Result<(), String> {
 /// - `transaction` must be a non-empty byte array (is_atomic_beef check)
 /// - `derivationPrefix` and `derivationSuffix` must be non-empty, non-whitespace
 /// - `amountSatoshis` must be a positive integer (> 0)
+///
+/// outputIndex validation: Rust's `u32` type guarantees non-negative values,
+/// matching the TS runtime check for `outputIndex >= 0`. No runtime code needed.
 pub fn ensure_valid_settlement(artifact: &Brc29SettlementArtifact) -> Result<(), String> {
     if !is_atomic_beef(&artifact.transaction) {
         return Err(
