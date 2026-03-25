@@ -36,7 +36,15 @@ pub use manager::{
     ComposeInvoiceInput, IdentityPhase, IdentityRuntimeOptions, InvoiceHandle, MessageDirection,
     ProtocolLogEntry, RemittanceEvent, RemittanceManager, RemittanceManagerConfig,
     RemittanceManagerRuntimeOptions, RemittanceManagerState, StateLogEntry, Thread, ThreadError,
-    ThreadFlags, ThreadHandle, ThreadIdentity, ThreadRole,
+    ThreadFlags, ThreadHandle, ThreadIdentity, ThreadRole, WaitReceiptResult, WaitSettlementResult,
+};
+
+// Phase 4 BRC-29 module re-exports
+#[cfg(feature = "network")]
+pub use modules::brc29::{
+    Brc29OptionTerms, Brc29ReceiptData, Brc29RefundData, Brc29RemittanceModule,
+    Brc29RemittanceModuleConfig, Brc29SettlementArtifact, Brc29SettlementCustomInstructions,
+    LockingScriptProvider, NonceProvider,
 };
 
 // Core enums and state machine

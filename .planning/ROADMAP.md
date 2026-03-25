@@ -105,7 +105,13 @@ Plans:
   - GAP-06: Display impl for RemittanceKind
   - GAP-07: handle_inbound_message visibility to pub(crate)
   - GAP-08: sync_threads log errors via config.logger instead of swallowing
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Parity fixes: WaitResult enums, timeout_ms, find_invoices signature, Display, visibility, logging
+- [ ] 05-02-PLAN.md — host_override parameter threading on all public methods
+- [ ] 05-03-PLAN.md — Exhaustive state machine tests and TS-originated JSON deserialization tests
+- [ ] 05-04-PLAN.md — Full lifecycle integration test and BRC29 test realism audit
 
 ## Progress
 
@@ -118,4 +124,4 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 | 2. Interface Traits | 2/2 | Complete   | 2026-03-24 |
 | 3. RemittanceManager | 3/3 | Complete   | 2026-03-24 |
 | 4. BasicBRC29 Module | 2/2 | Complete   | 2026-03-25 |
-| 5. Integration Tests | 0/TBD | Not started | - |
+| 5. Integration Tests | 0/4 | Not started | - |

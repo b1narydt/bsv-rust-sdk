@@ -1,3 +1,4 @@
+#![cfg(feature = "network")]
 //! Unit tests for RemittanceManager core functionality.
 //!
 //! Kept as an integration test file to avoid pre-existing wallet module
@@ -936,9 +937,9 @@ async fn test_find_invoices_payable() {
     manager.insert_thread(t2).await;
     manager.insert_thread(t3).await;
 
-    let payable = manager.find_invoices_payable().await;
+    let payable = manager.find_invoices_payable(None).await;
     assert_eq!(payable.len(), 1, "only 1 thread should be payable, got {:?}", payable.len());
-    assert_eq!(payable[0].thread_id, "t-payable");
+    assert_eq!(payable[0].handle.thread_id(), "t-payable");
 }
 
 #[tokio::test]
@@ -975,9 +976,8 @@ async fn test_unsolicited_settlement() {
     let manager = make_manager_with_tracked_module(Arc::clone(&comms), Arc::clone(&called_flag));
     manager.init().await.unwrap();
 
-    let amount = Amount { value: "500".to_string(), unit: sat_unit() };
     let handle = manager
-        .send_unsolicited_settlement("alice", "mock", "mock", amount)
+        .send_unsolicited_settlement("alice", "mock", "mock", serde_json::json!({"amount": 500}), None)
         .await
         .expect("send_unsolicited_settlement should succeed");
 
@@ -1265,30 +1265,37 @@ async fn test_wait_for_receipt_notify() {
         .await
         .unwrap();
 
-    // Clone manager for spawned task.
+    // Queue a Receipt message via comms and trigger via sync_threads in a spawned task.
+    let body = make_receipt_envelope(thread_id);
+    let msg = make_peer_message("rcpt-001", "alice", &body);
+    comms.set_queued_messages(vec![msg]);
+
     let manager_clone = manager.clone();
-    let tid = thread_id.to_string();
     tokio::spawn(async move {
         // Small delay to ensure wait_for_receipt is already waiting.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Send a Receipt message to trigger Receipted transition.
-        let body = make_receipt_envelope(&tid);
-        let msg = make_peer_message("rcpt-001", "alice", &body);
-        let _ = manager_clone.handle_inbound_message(msg).await;
+        // Process the queued receipt message to trigger Receipted transition.
+        let _ = manager_clone.sync_threads().await;
     });
 
     // Wait for receipt (with timeout to prevent hanging).
     let result = timeout(
         Duration::from_secs(2),
-        manager.wait_for_receipt(thread_id),
+        manager.wait_for_receipt(thread_id, None),
     )
     .await
     .expect("wait_for_receipt should complete within 2 seconds")
     .expect("wait_for_receipt should succeed");
 
+    let receipt = match result {
+        bsv::remittance::manager::WaitReceiptResult::Receipt(r) => r,
+        bsv::remittance::manager::WaitReceiptResult::Terminated(_) => {
+            panic!("expected Receipt, got Terminated");
+        }
+    };
     assert_eq!(
-        result.receipt_data,
+        receipt.receipt_data,
         serde_json::json!({ "confirmed": true }),
         "receipt_data should match"
     );
@@ -1308,8 +1315,10 @@ async fn test_deduplication() {
     let manager = make_manager_with_comms(Arc::clone(&comms));
     manager.init().await.unwrap();
 
-    manager.handle_inbound_message(msg1).await.unwrap();
-    manager.handle_inbound_message(msg2).await.unwrap();
+    // Queue both messages (same message_id) and process via sync_threads.
+    // sync_threads calls handle_inbound_message internally for each message.
+    comms.set_queued_messages(vec![msg1, msg2]);
+    manager.sync_threads().await.unwrap();
 
     // Thread should exist and be in Invoiced (not double-transitioned).
     let thread = manager.get_thread(thread_id).await.unwrap();
@@ -1362,7 +1371,8 @@ async fn test_inbound_invoice() {
     let body = make_invoice_envelope(thread_id, invoice);
     let msg = make_peer_message("inv-msg-001", "alice", &body);
 
-    manager.handle_inbound_message(msg).await.expect("handle_inbound_message should succeed");
+    comms.set_queued_messages(vec![msg]);
+    manager.sync_threads().await.expect("sync_threads should succeed");
 
     let thread = manager.get_thread(thread_id).await.expect("thread should have been created");
     // We are taker (they sent the invoice as maker).
@@ -1392,7 +1402,8 @@ async fn test_inbound_settlement_with_auto_receipt() {
     let body = make_settlement_envelope(thread_id);
     let msg = make_peer_message("settle-msg-001", "bob", &body);
 
-    manager.handle_inbound_message(msg).await.expect("handle_inbound_message for settlement should succeed");
+    comms.set_queued_messages(vec![msg]);
+    manager.sync_threads().await.expect("sync_threads for settlement should succeed");
 
     // accept_settlement should have been called on the module.
     assert!(

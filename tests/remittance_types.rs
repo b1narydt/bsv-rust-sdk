@@ -1,3 +1,4 @@
+#![cfg(feature = "network")]
 //! Integration tests for remittance core types.
 //!
 //! Tests serialization, state transitions, and LoggerLike trait.
@@ -195,6 +196,18 @@ fn test_logger_like_is_object_safe() {
     dyn_logger.log(&[&"test message"]);
     dyn_logger.warn(&[&"warning"]);
     dyn_logger.error(&[&"error"]);
+}
+
+#[test]
+fn test_kind_display() {
+    use RemittanceKind::*;
+    assert_eq!(Invoice.to_string(), "invoice");
+    assert_eq!(IdentityVerificationRequest.to_string(), "identityVerificationRequest");
+    assert_eq!(IdentityVerificationResponse.to_string(), "identityVerificationResponse");
+    assert_eq!(IdentityVerificationAcknowledgment.to_string(), "identityVerificationAcknowledgment");
+    assert_eq!(Settlement.to_string(), "settlement");
+    assert_eq!(Receipt.to_string(), "receipt");
+    assert_eq!(Termination.to_string(), "termination");
 }
 
 #[test]

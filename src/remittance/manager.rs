@@ -49,6 +49,22 @@ pub enum ThreadRole {
     Taker,
 }
 
+/// Result of waiting for a receipt, allowing for graceful termination handling.
+pub enum WaitReceiptResult {
+    /// The thread reached Receipted state and a receipt was available.
+    Receipt(Receipt),
+    /// The counterparty terminated the thread before a receipt was issued.
+    Terminated(Termination),
+}
+
+/// Result of waiting for a settlement, allowing for graceful termination handling.
+pub enum WaitSettlementResult {
+    /// The thread reached Settled state and a settlement was available.
+    Settlement(Settlement),
+    /// The counterparty terminated the thread before settlement occurred.
+    Terminated(Termination),
+}
+
 /// Direction of a protocol log entry relative to this node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MessageDirection {
@@ -726,23 +742,28 @@ impl RemittanceManager {
     // ModuleContext factory
     // -----------------------------------------------------------------------
 
-    /// Build a ModuleContext with a static now function pointer.
+    /// Build a ModuleContext that shares the manager's clock and wallet.
     ///
-    /// `ModuleContext.now` is `fn() -> u64` (function pointer — cannot capture env).
-    /// We use a module-level static function that reads `SystemTime::now()`.
-    /// Tests that need a deterministic clock override by injecting a `config.now`
-    /// closure at construction time — this method is used only for live flows.
+    /// If `config.now` is set (e.g. for tests), modules see the same overridden
+    /// clock as the manager itself.
     fn make_module_context(&self) -> ModuleContext {
-        fn default_now() -> u64 {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-        }
+        let now_fn: Arc<dyn Fn() -> u64 + Send + Sync> = match &self.config.now {
+            Some(f) => {
+                // Wrap the config closure in an Arc so ModuleContext can clone it.
+                let cfg = Arc::clone(&self.config);
+                Arc::new(move || (cfg.now.as_ref().unwrap())())
+            }
+            None => Arc::new(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            }),
+        };
         ModuleContext {
             wallet: Arc::clone(&self.wallet),
             originator: self.config.originator.clone(),
-            now: default_now,
+            now: now_fn,
             logger: self.config.logger.clone(),
         }
     }
@@ -1115,7 +1136,9 @@ impl RemittanceManager {
     }
 
     /// Return all threads where this node is the taker and the state is Invoiced.
-    pub async fn find_invoices_payable(&self) -> Vec<Thread> {
+    ///
+    /// If `counterparty` is Some, only threads with that counterparty are returned.
+    pub async fn find_invoices_payable(&self, counterparty: Option<&str>) -> Vec<InvoiceHandle> {
         let guard = self.inner.lock().await;
         guard
             .threads
@@ -1123,13 +1146,21 @@ impl RemittanceManager {
             .filter(|t| {
                 matches!(t.my_role, ThreadRole::Taker)
                     && t.state == RemittanceThreadState::Invoiced
+                    && counterparty.map_or(true, |c| t.counterparty == c)
             })
-            .cloned()
+            .map(|t| InvoiceHandle {
+                handle: ThreadHandle {
+                    manager: self.clone(),
+                    thread_id: t.thread_id.clone(),
+                },
+            })
             .collect()
     }
 
     /// Return all threads where this node is the maker and the state is Invoiced.
-    pub async fn find_receivable_invoices(&self) -> Vec<Thread> {
+    ///
+    /// If `counterparty` is Some, only threads with that counterparty are returned.
+    pub async fn find_receivable_invoices(&self, counterparty: Option<&str>) -> Vec<InvoiceHandle> {
         let guard = self.inner.lock().await;
         guard
             .threads
@@ -1137,8 +1168,14 @@ impl RemittanceManager {
             .filter(|t| {
                 matches!(t.my_role, ThreadRole::Maker)
                     && t.state == RemittanceThreadState::Invoiced
+                    && counterparty.map_or(true, |c| t.counterparty == c)
             })
-            .cloned()
+            .map(|t| InvoiceHandle {
+                handle: ThreadHandle {
+                    manager: self.clone(),
+                    thread_id: t.thread_id.clone(),
+                },
+            })
             .collect()
     }
 
@@ -1164,6 +1201,16 @@ impl RemittanceManager {
         let invoice = thread.invoice.as_ref().ok_or_else(|| {
             RemittanceError::Protocol(format!("thread {} has no invoice", thread_id))
         })?;
+
+        // Reject expired invoices.
+        if let Some(expires_at) = invoice.expires_at {
+            if self.now_internal() > expires_at {
+                return Err(RemittanceError::Protocol(format!(
+                    "invoice on thread {} has expired",
+                    thread_id
+                )));
+            }
+        }
 
         // Determine option_id to use.
         let default_option_id = {
@@ -1312,7 +1359,7 @@ impl RemittanceManager {
     // -----------------------------------------------------------------------
 
     /// Parse an inbound PeerMessage, deduplicate, and dispatch to the correct handler.
-    pub async fn handle_inbound_message(&self, msg: PeerMessage) -> Result<(), RemittanceError> {
+    pub(crate) async fn handle_inbound_message(&self, msg: PeerMessage) -> Result<(), RemittanceError> {
         // Parse envelope from message body.
         let envelope: RemittanceEnvelope = serde_json::from_str(&msg.body)
             .map_err(|e| RemittanceError::Protocol(format!("invalid envelope: {}", e)))?;
@@ -1948,8 +1995,9 @@ impl RemittanceManager {
         for msg in messages {
             // Errors on individual messages are logged, not fatal.
             if let Err(e) = self.handle_inbound_message(msg).await {
-                // In production, this would log via self.config.logger.
-                let _ = e; // suppress unused warning
+                if let Some(logger) = &self.config.logger {
+                    logger.error(&[&"sync_threads: error processing message", &e.to_string()]);
+                }
             }
         }
         Ok(())
@@ -1980,50 +2028,81 @@ impl RemittanceManager {
     ///
     /// Uses `tokio::sync::Notify` to avoid busy-polling. The lost-wakeup
     /// prevention pattern registers the `notified()` future before re-checking
-    /// state under lock.
+    /// state under lock. If `timeout_ms` is Some, returns `RemittanceError::Timeout`
+    /// if the target state is not reached within the given duration.
     pub async fn wait_for_state(
         &self,
         thread_id: &str,
         target: RemittanceThreadState,
+        timeout_ms: Option<u64>,
     ) -> Result<Thread, RemittanceError> {
-        loop {
-            // Register notify handle under lock, then check state.
-            let notify = {
-                let mut nmap = self.notifiers.lock().await;
-                nmap.entry(thread_id.to_string())
-                    .or_insert_with(|| Arc::new(Notify::new()))
-                    .clone()
-            };
+        let fut = async {
+            loop {
+                // Register notify handle under lock, then check state.
+                let notify = {
+                    let mut nmap = self.notifiers.lock().await;
+                    nmap.entry(thread_id.to_string())
+                        .or_insert_with(|| Arc::new(Notify::new()))
+                        .clone()
+                };
 
-            // CRITICAL: Create notified future before releasing any lock that
-            // guards state, to prevent lost wakeups.
-            let notified = notify.notified();
+                // CRITICAL: Create notified future before releasing any lock that
+                // guards state, to prevent lost wakeups.
+                let notified = notify.notified();
 
-            // Re-check state under inner lock.
-            {
-                let inner = self.inner.lock().await;
-                if let Some(thread) = inner.threads.get(thread_id) {
-                    if thread.state == target || is_terminal_state(&thread.state) {
-                        return Ok(thread.clone());
+                // Re-check state under inner lock.
+                {
+                    let inner = self.inner.lock().await;
+                    if let Some(thread) = inner.threads.get(thread_id) {
+                        if thread.state == target || is_terminal_state(&thread.state) {
+                            return Ok(thread.clone());
+                        }
+                    } else {
+                        return Err(RemittanceError::Protocol(format!(
+                            "thread not found: {}",
+                            thread_id
+                        )));
                     }
-                } else {
-                    return Err(RemittanceError::Protocol(format!(
-                        "thread not found: {}",
-                        thread_id
-                    )));
                 }
-            }
 
-            notified.await;
+                notified.await;
+            }
+        };
+
+        if let Some(ms) = timeout_ms {
+            tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                .await
+                .map_err(|_| RemittanceError::Timeout(format!(
+                    "wait_for_state timed out after {}ms waiting for thread {} to reach {:?}",
+                    ms, thread_id, target
+                )))?
+        } else {
+            fut.await
         }
     }
 
     /// Wait until a thread reaches `Receipted` state and return the receipt.
-    pub async fn wait_for_receipt(&self, thread_id: &str) -> Result<Receipt, RemittanceError> {
+    ///
+    /// If the thread reaches `Terminated` state first, returns `WaitReceiptResult::Terminated`.
+    /// If `timeout_ms` is Some, returns `RemittanceError::Timeout` on expiry.
+    pub async fn wait_for_receipt(
+        &self,
+        thread_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<WaitReceiptResult, RemittanceError> {
         let thread = self
-            .wait_for_state(thread_id, RemittanceThreadState::Receipted)
+            .wait_for_state(thread_id, RemittanceThreadState::Receipted, timeout_ms)
             .await?;
-        thread.receipt.ok_or_else(|| {
+        if thread.state == RemittanceThreadState::Terminated {
+            return Ok(WaitReceiptResult::Terminated(
+                thread.termination.unwrap_or(Termination {
+                    code: "terminated".into(),
+                    message: "counterparty terminated".into(),
+                    details: None,
+                }),
+            ));
+        }
+        thread.receipt.map(WaitReceiptResult::Receipt).ok_or_else(|| {
             RemittanceError::Protocol(format!(
                 "thread {} reached Receipted state but has no receipt",
                 thread_id
@@ -2031,18 +2110,38 @@ impl RemittanceManager {
         })
     }
 
-    /// Wait until a thread reaches `IdentityAcknowledged` state.
-    pub async fn wait_for_identity(&self, thread_id: &str) -> Result<Thread, RemittanceError> {
-        self.wait_for_state(thread_id, RemittanceThreadState::IdentityAcknowledged)
+    /// Wait until the thread has completed identity exchange.
+    pub async fn wait_for_identity(
+        &self,
+        thread_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<Thread, RemittanceError> {
+        self.wait_for_state(thread_id, RemittanceThreadState::IdentityAcknowledged, timeout_ms)
             .await
     }
 
     /// Wait until a thread reaches `Settled` state and return the settlement.
-    pub async fn wait_for_settlement(&self, thread_id: &str) -> Result<Settlement, RemittanceError> {
+    ///
+    /// If the thread reaches `Terminated` state first, returns `WaitSettlementResult::Terminated`.
+    /// If `timeout_ms` is Some, returns `RemittanceError::Timeout` on expiry.
+    pub async fn wait_for_settlement(
+        &self,
+        thread_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<WaitSettlementResult, RemittanceError> {
         let thread = self
-            .wait_for_state(thread_id, RemittanceThreadState::Settled)
+            .wait_for_state(thread_id, RemittanceThreadState::Settled, timeout_ms)
             .await?;
-        thread.settlement.ok_or_else(|| {
+        if thread.state == RemittanceThreadState::Terminated {
+            return Ok(WaitSettlementResult::Terminated(
+                thread.termination.unwrap_or(Termination {
+                    code: "terminated".into(),
+                    message: "counterparty terminated".into(),
+                    details: None,
+                }),
+            ));
+        }
+        thread.settlement.map(WaitSettlementResult::Settlement).ok_or_else(|| {
             RemittanceError::Protocol(format!(
                 "thread {} reached Settled state but has no settlement",
                 thread_id
@@ -2054,12 +2153,16 @@ impl RemittanceManager {
     ///
     /// Creates a new taker thread, verifies the module allows unsolicited
     /// settlements, calls `build_settlement_erased` with no invoice, and sends.
+    ///
+    /// `option` is the module-specific option data (e.g. payment terms) passed
+    /// through to `build_settlement`. `note` is an optional human-readable note.
     pub async fn send_unsolicited_settlement(
         &self,
         counterparty: &str,
         module_id: &str,
         option_id: &str,
-        _amount: Amount,
+        option: serde_json::Value,
+        note: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
         let thread = self.create_thread(counterparty, ThreadRole::Taker).await?;
         let thread_id = thread.thread_id.clone();
@@ -2078,7 +2181,7 @@ impl RemittanceManager {
 
         let ctx = self.make_module_context();
         let result = module
-            .build_settlement_erased(&thread_id, None, &serde_json::json!({}), None, &ctx)
+            .build_settlement_erased(&thread_id, None, &option, note, &ctx)
             .await?;
 
         let my_key = {
@@ -2096,7 +2199,7 @@ impl RemittanceManager {
             sender: my_key,
             created_at: now,
             artifact,
-            note: None,
+            note: note.map(|s| s.to_string()),
         };
 
         let payload = serde_json::to_value(&settlement)?;
@@ -2156,23 +2259,24 @@ impl ThreadHandle {
     pub async fn wait_for_state(
         &self,
         state: RemittanceThreadState,
+        timeout_ms: Option<u64>,
     ) -> Result<Thread, RemittanceError> {
-        self.manager.wait_for_state(&self.thread_id, state).await
+        self.manager.wait_for_state(&self.thread_id, state, timeout_ms).await
     }
 
     /// Wait until the thread has completed identity exchange.
-    pub async fn wait_for_identity(&self) -> Result<Thread, RemittanceError> {
-        self.manager.wait_for_identity(&self.thread_id).await
+    pub async fn wait_for_identity(&self, timeout_ms: Option<u64>) -> Result<Thread, RemittanceError> {
+        self.manager.wait_for_identity(&self.thread_id, timeout_ms).await
     }
 
     /// Wait until the thread has a confirmed settlement.
-    pub async fn wait_for_settlement(&self) -> Result<Settlement, RemittanceError> {
-        self.manager.wait_for_settlement(&self.thread_id).await
+    pub async fn wait_for_settlement(&self, timeout_ms: Option<u64>) -> Result<WaitSettlementResult, RemittanceError> {
+        self.manager.wait_for_settlement(&self.thread_id, timeout_ms).await
     }
 
     /// Wait until the thread has been receipted.
-    pub async fn wait_for_receipt(&self) -> Result<Receipt, RemittanceError> {
-        self.manager.wait_for_receipt(&self.thread_id).await
+    pub async fn wait_for_receipt(&self, timeout_ms: Option<u64>) -> Result<WaitReceiptResult, RemittanceError> {
+        self.manager.wait_for_receipt(&self.thread_id, timeout_ms).await
     }
 }
 

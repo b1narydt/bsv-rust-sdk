@@ -81,6 +81,21 @@ pub enum RemittanceKind {
     Termination,
 }
 
+impl std::fmt::Display for RemittanceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Invoice => "invoice",
+            Self::IdentityVerificationRequest => "identityVerificationRequest",
+            Self::IdentityVerificationResponse => "identityVerificationResponse",
+            Self::IdentityVerificationAcknowledgment => "identityVerificationAcknowledgment",
+            Self::Settlement => "settlement",
+            Self::Receipt => "receipt",
+            Self::Termination => "termination",
+        };
+        f.write_str(s)
+    }
+}
+
 /// Returns the valid successor states for a given remittance thread state.
 ///
 /// The transition table matches the TypeScript SDK's `REMITTANCE_STATE_TRANSITIONS`.
@@ -346,7 +361,7 @@ pub struct RemittanceEnvelope {
 pub struct ModuleContext {
     pub wallet: Arc<dyn crate::wallet::interfaces::WalletInterface>,
     pub originator: Option<String>,
-    pub now: fn() -> u64,
+    pub now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub logger: Option<Arc<dyn LoggerLike>>,
 }
 
