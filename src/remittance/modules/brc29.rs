@@ -24,8 +24,11 @@ use crate::remittance::remittance_module::{
 use crate::remittance::types::{Invoice, ModuleContext, Settlement, Termination};
 use crate::script::templates::p2pkh::P2PKH;
 use crate::script::ScriptTemplateLock;
-use crate::wallet::interfaces::WalletInterface;
-use crate::wallet::types::Protocol;
+use crate::wallet::interfaces::{
+    CreateActionArgs, CreateActionOptions, CreateActionOutput, GetPublicKeyArgs,
+    InternalizeActionArgs, InternalizeOutput, Payment, WalletInterface,
+};
+use crate::wallet::types::{BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol};
 
 // ---------------------------------------------------------------------------
 // Wire-format types (BRC29-04) — match TS SDK interface shapes exactly
@@ -303,24 +306,110 @@ impl RemittanceModule for Brc29RemittanceModule {
 
     async fn build_settlement(
         &self,
-        _thread_id: &str,
+        thread_id: &str,
         _invoice: Option<&Invoice>,
-        _option: &Brc29OptionTerms,
-        _note: Option<&str>,
-        _ctx: &ModuleContext,
+        option: &Brc29OptionTerms,
+        note: Option<&str>,
+        ctx: &ModuleContext,
     ) -> Result<BuildSettlementResult<Brc29SettlementArtifact>, RemittanceError> {
-        todo!("Plan 02")
+        // TS buildSettlement wraps everything in try/catch and returns Terminate on any error.
+        // Rust: use an inner async closure that returns Result, then map Err to Terminate.
+        match self.build_settlement_inner(thread_id, option, note, ctx).await {
+            Ok(result) => Ok(result),
+            Err(e) => Ok(BuildSettlementResult::Terminate {
+                termination: Termination {
+                    code: "brc29.build_failed".to_string(),
+                    message: e.to_string(),
+                    details: None,
+                },
+            }),
+        }
     }
 
     async fn accept_settlement(
         &self,
         _thread_id: &str,
         _invoice: Option<&Invoice>,
-        _settlement: &Brc29SettlementArtifact,
-        _sender: &str,
-        _ctx: &ModuleContext,
+        settlement: &Brc29SettlementArtifact,
+        sender: &str,
+        ctx: &ModuleContext,
     ) -> Result<AcceptSettlementResult<Brc29ReceiptData>, RemittanceError> {
-        todo!("Plan 02")
+        // Validate settlement before calling wallet
+        if let Err(msg) = ensure_valid_settlement(settlement) {
+            return Ok(AcceptSettlementResult::Terminate {
+                termination: Termination {
+                    code: "brc29.internalize_failed".to_string(),
+                    message: msg,
+                    details: None,
+                },
+            });
+        }
+
+        // Parse sender identity key
+        let sender_pk = match PublicKey::from_string(sender) {
+            Ok(pk) => pk,
+            Err(e) => {
+                return Ok(AcceptSettlementResult::Terminate {
+                    termination: Termination {
+                        code: "brc29.internalize_failed".to_string(),
+                        message: format!("invalid sender key: {e}"),
+                        details: None,
+                    },
+                });
+            }
+        };
+
+        let output_index = settlement.output_index.unwrap_or(0);
+
+        // Call internalize_action — catch errors, do NOT propagate via ?
+        let internalize_result = ctx
+            .wallet
+            .internalize_action(
+                InternalizeActionArgs {
+                    tx: settlement.transaction.clone(),
+                    description: "BRC-29 payment received".to_string(),
+                    labels: self.config.labels.clone(),
+                    seek_permission: BooleanDefaultTrue(Some(true)),
+                    outputs: vec![InternalizeOutput::WalletPayment {
+                        output_index,
+                        payment: Payment {
+                            derivation_prefix: settlement
+                                .custom_instructions
+                                .derivation_prefix
+                                .as_bytes()
+                                .to_vec(),
+                            derivation_suffix: settlement
+                                .custom_instructions
+                                .derivation_suffix
+                                .as_bytes()
+                                .to_vec(),
+                            sender_identity_key: sender_pk,
+                        },
+                    }],
+                },
+                ctx.originator.as_deref(),
+            )
+            .await;
+
+        match internalize_result {
+            Ok(result) => Ok(AcceptSettlementResult::Accept {
+                receipt_data: Some(Brc29ReceiptData {
+                    internalize_result: Some(
+                        serde_json::to_value(&result)
+                            .unwrap_or(serde_json::Value::Null),
+                    ),
+                    rejected_reason: None,
+                    refund: None,
+                }),
+            }),
+            Err(e) => Ok(AcceptSettlementResult::Terminate {
+                termination: Termination {
+                    code: "brc29.internalize_failed".to_string(),
+                    message: e.to_string(),
+                    details: None,
+                },
+            }),
+        }
     }
 
     async fn process_receipt(
@@ -346,6 +435,163 @@ impl RemittanceModule for Brc29RemittanceModule {
     ) -> Result<(), RemittanceError> {
         // TS BasicBRC29 does not implement processTermination — no-op.
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// build_settlement_inner — inner implementation called by the trait method
+// ---------------------------------------------------------------------------
+
+impl Brc29RemittanceModule {
+    /// Inner implementation of build_settlement. Returns Err on any failure;
+    /// the caller maps Err to Terminate with code "brc29.build_failed".
+    async fn build_settlement_inner(
+        &self,
+        thread_id: &str,
+        option: &Brc29OptionTerms,
+        note: Option<&str>,
+        ctx: &ModuleContext,
+    ) -> Result<BuildSettlementResult<Brc29SettlementArtifact>, RemittanceError> {
+        // Step 1: Validate option — return Terminate directly (not Err), matches TS behavior
+        if let Err(msg) = ensure_valid_option(option) {
+            return Ok(BuildSettlementResult::Terminate {
+                termination: Termination {
+                    code: "brc29.invalid_option".to_string(),
+                    message: msg,
+                    details: None,
+                },
+            });
+        }
+
+        // Step 2: Create two nonces (one for derivationPrefix, one for derivationSuffix)
+        let derivation_prefix = self
+            .config
+            .nonce_provider
+            .create_nonce(&ctx.wallet, ctx.originator.as_deref())
+            .await?;
+        let derivation_suffix = self
+            .config
+            .nonce_provider
+            .create_nonce(&ctx.wallet, ctx.originator.as_deref())
+            .await?;
+
+        // Step 3: Determine protocol_id (option override or config default)
+        let protocol_id = option
+            .protocol_id
+            .clone()
+            .unwrap_or_else(|| self.config.protocol_id.clone());
+
+        // Step 4: Derive payee public key and call get_public_key
+        let key_id = format!("{} {}", derivation_prefix, derivation_suffix);
+        let payee_pk = PublicKey::from_string(&option.payee)
+            .map_err(|e| RemittanceError::Protocol(format!("invalid payee key: {e}")))?;
+        let pk_result = ctx
+            .wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(protocol_id),
+                    key_id: Some(key_id),
+                    counterparty: Some(Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(payee_pk),
+                    }),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                ctx.originator.as_deref(),
+            )
+            .await?;
+
+        // Step 5: Get locking script hex from provider and decode to bytes
+        let script_hex = self
+            .config
+            .locking_script_provider
+            .get_locking_script(&pk_result.public_key.to_der_hex())
+            .await?;
+        let script_bytes = crate::primitives::utils::from_hex(&script_hex)
+            .map_err(|e| RemittanceError::Protocol(format!("invalid locking script hex: {e}")))?;
+
+        // Step 6: Build custom instructions JSON (camelCase, matching TS wire format)
+        let custom_json = serde_json::to_string(&CustomInstructionsPayload {
+            derivation_prefix: &derivation_prefix,
+            derivation_suffix: &derivation_suffix,
+            payee: &option.payee,
+            thread_id,
+            note,
+        })
+        .map_err(|e| RemittanceError::Protocol(format!("custom instructions JSON error: {e}")))?;
+
+        // Step 7: Resolve description and labels (option overrides config defaults)
+        let description = option
+            .description
+            .clone()
+            .unwrap_or_else(|| self.config.description.clone());
+        let labels = option
+            .labels
+            .clone()
+            .unwrap_or_else(|| self.config.labels.clone());
+
+        // Step 8: Call create_action with P2PKH output and randomize_outputs=false
+        let action_result = ctx
+            .wallet
+            .create_action(
+                CreateActionArgs {
+                    description,
+                    labels,
+                    outputs: vec![CreateActionOutput {
+                        locking_script: Some(script_bytes),
+                        satoshis: option.amount_satoshis,
+                        output_description: self.config.output_description.clone(),
+                        basket: None,
+                        custom_instructions: Some(custom_json),
+                        tags: vec![],
+                    }],
+                    options: Some(CreateActionOptions {
+                        randomize_outputs: BooleanDefaultTrue(Some(false)),
+                        ..Default::default()
+                    }),
+                    input_beef: None,
+                    inputs: vec![],
+                    lock_time: None,
+                    version: None,
+                    reference: None,
+                },
+                ctx.originator.as_deref(),
+            )
+            .await?;
+
+        // Step 9: Extract transaction bytes (tx ?? signableTransaction?.tx — matching TS)
+        let tx = action_result
+            .tx
+            .or_else(|| action_result.signable_transaction.map(|st| st.tx));
+        let tx = match tx {
+            Some(tx) if is_atomic_beef(&tx) => tx,
+            _ => {
+                return Ok(BuildSettlementResult::Terminate {
+                    termination: Termination {
+                        code: "brc29.missing_tx".to_string(),
+                        message: "wallet returned no transaction".to_string(),
+                        details: None,
+                    },
+                });
+            }
+        };
+
+        // Step 10: Return settlement artifact
+        Ok(BuildSettlementResult::Settle {
+            artifact: Brc29SettlementArtifact {
+                custom_instructions: Brc29SettlementCustomInstructions {
+                    derivation_prefix,
+                    derivation_suffix,
+                },
+                transaction: tx,
+                amount_satoshis: option.amount_satoshis,
+                output_index: Some(option.output_index.unwrap_or(0)),
+            },
+        })
     }
 }
 
