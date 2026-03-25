@@ -1581,3 +1581,374 @@ async fn test_full_lifecycle_new_through_receipted() {
     });
     assert!(receipt_sent, "a receipt message should have been sent outbound");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 05.1 plan 01 — PARITY-06, PARITY-07, PARITY-10 tests
+// ---------------------------------------------------------------------------
+
+/// Build a manager configured with makerRequestIdentity=BeforeSettlement.
+fn make_manager_with_identity_before_settlement(comms: Arc<MockComms>) -> RemittanceManager {
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms;
+    RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(IdentityRuntimeOptions {
+                    maker_request_identity: Some(IdentityPhase::BeforeSettlement),
+                    taker_request_identity: None,
+                }),
+                receipt_provided: true,
+                auto_issue_receipt: false,
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModule)],
+    )
+}
+
+/// Build a maker thread in Invoiced state with has_identified=false.
+fn invoiced_maker_thread_unidentified(thread_id: &str) -> Thread {
+    let invoice = Invoice {
+        kind: RemittanceKind::Invoice,
+        expires_at: Some(9_999_999),
+        options: {
+            let mut m = HashMap::new();
+            m.insert("mock".to_string(), serde_json::json!({ "minAmount": 50 }));
+            m
+        },
+        base: InstrumentBase {
+            thread_id: thread_id.to_string(),
+            payee: "alice".to_string(),
+            payer: "bob".to_string(),
+            note: None,
+            line_items: vec![],
+            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            invoice_number: "INV-GUARD".to_string(),
+            created_at: 1_000_000,
+            arbitrary: None,
+        },
+    };
+    Thread {
+        thread_id: thread_id.to_string(),
+        counterparty: "bob".to_string(),
+        my_role: ThreadRole::Maker,
+        their_role: ThreadRole::Taker,
+        created_at: 0,
+        updated_at: 0,
+        state: RemittanceThreadState::Invoiced,
+        state_log: vec![],
+        processed_message_ids: vec![],
+        protocol_log: vec![],
+        identity: ThreadIdentity::default(),
+        flags: ThreadFlags { has_invoiced: true, has_identified: false, ..Default::default() },
+        invoice: Some(invoice),
+        settlement: None,
+        receipt: None,
+        termination: None,
+        last_error: None,
+    }
+}
+
+/// Build a maker thread in Invoiced state with has_identified=true.
+fn invoiced_maker_thread_identified(thread_id: &str) -> Thread {
+    let mut t = invoiced_maker_thread_unidentified(thread_id);
+    t.flags.has_identified = true;
+    t
+}
+
+/// Build a taker thread in Invoiced state with has_identified=false.
+fn invoiced_taker_thread_unidentified(thread_id: &str) -> Thread {
+    let mut t = invoiced_maker_thread_unidentified(thread_id);
+    t.my_role = ThreadRole::Taker;
+    t.their_role = ThreadRole::Maker;
+    t.counterparty = "alice".to_string();
+    t
+}
+
+// PARITY-06 + PARITY-12: Guard fires when maker has not identified and config requires it.
+#[tokio::test]
+async fn test_identity_before_settlement_guard() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_identity_before_settlement(comms.clone());
+
+    let thread_id = "guard-test-01";
+    manager.insert_thread(invoiced_maker_thread_unidentified(thread_id)).await;
+
+    // Queue inbound settlement.
+    let body = make_settlement_envelope(thread_id);
+    let msg = make_peer_message("guard-msg-01", "bob", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Thread must be Terminated — settlement was blocked.
+    assert_eq!(
+        t.state,
+        RemittanceThreadState::Terminated,
+        "thread should be Terminated when identity required but not completed; got {:?}",
+        t.state
+    );
+
+    // A Termination message must have been sent.
+    let sent = comms.sent.lock().unwrap();
+    let term_sent = sent.iter().any(|(_, _, body)| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            v.get("kind").and_then(|k| k.as_str()) == Some("termination")
+        } else {
+            false
+        }
+    });
+    assert!(term_sent, "a termination message should have been sent when identity guard fires");
+}
+
+// PARITY-06 + PARITY-12: Guard does not fire when has_identified=true.
+#[tokio::test]
+async fn test_identity_before_settlement_guard_passes_when_identified() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_identity_before_settlement(comms.clone());
+
+    let thread_id = "guard-test-02";
+    manager.insert_thread(invoiced_maker_thread_identified(thread_id)).await;
+
+    // Queue inbound settlement.
+    let body = make_settlement_envelope(thread_id);
+    let msg = make_peer_message("guard-msg-02", "bob", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Settlement was accepted — thread should be Settled (auto_issue_receipt=false).
+    assert_eq!(
+        t.state,
+        RemittanceThreadState::Settled,
+        "thread should be Settled when identity is completed; got {:?}",
+        t.state
+    );
+}
+
+// PARITY-12: Guard does not fire when my_role=Taker (only Maker role is guarded).
+#[tokio::test]
+async fn test_identity_before_settlement_guard_taker_skips() {
+    let comms = Arc::new(MockComms::new());
+    let manager = make_manager_with_identity_before_settlement(comms.clone());
+
+    let thread_id = "guard-test-03";
+    manager.insert_thread(invoiced_taker_thread_unidentified(thread_id)).await;
+
+    // Queue inbound settlement (taker receiving settlement is unusual but allowed by guard logic).
+    let body = make_settlement_envelope(thread_id);
+    let msg = make_peer_message("guard-msg-03", "alice", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Taker is never blocked by maker identity guard — settlement proceeds.
+    assert_ne!(
+        t.state,
+        RemittanceThreadState::Terminated,
+        "taker thread should NOT be terminated by maker identity guard; got {:?}",
+        t.state
+    );
+}
+
+// PARITY-07: Inbound IdentityVerificationRequest on unknown thread with makerRequestIdentity set
+// => creates thread with my_role=Taker (I am the responder, maker requested).
+#[tokio::test]
+async fn test_role_inference_identity_request() {
+    let comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms.clone();
+    let manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(IdentityRuntimeOptions {
+                    maker_request_identity: Some(IdentityPhase::BeforeSettlement),
+                    taker_request_identity: None,
+                }),
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModule)],
+    );
+
+    let thread_id = "role-infer-req-01";
+    let request = IdentityVerificationRequest {
+        kind: RemittanceKind::IdentityVerificationRequest,
+        thread_id: thread_id.to_string(),
+        request: bsv::remittance::types::IdentityRequest { types: HashMap::new(), certifiers: vec![] },
+    };
+    let payload = serde_json::to_value(&request).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "role-env-01".to_string(),
+        kind: RemittanceKind::IdentityVerificationRequest,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    let body = serde_json::to_string(&env).unwrap();
+    let msg = make_peer_message("role-msg-01", "alice", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Maker requested identity, so inbound request means I am the responder/taker.
+    assert!(
+        matches!(t.my_role, ThreadRole::Taker),
+        "my_role should be Taker when makerRequestIdentity is set and inbound is a Request; got {:?}",
+        t.my_role
+    );
+}
+
+// PARITY-07: Inbound IdentityVerificationResponse on unknown thread with makerRequestIdentity set
+// => creates thread with my_role=Maker (I requested, they responded).
+#[tokio::test]
+async fn test_role_inference_identity_response() {
+    let comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms.clone();
+    let manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(IdentityRuntimeOptions {
+                    maker_request_identity: Some(IdentityPhase::BeforeSettlement),
+                    taker_request_identity: None,
+                }),
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModule)],
+    );
+
+    let thread_id = "role-infer-resp-01";
+    let response = IdentityVerificationResponse {
+        kind: RemittanceKind::IdentityVerificationResponse,
+        thread_id: thread_id.to_string(),
+        certificates: vec![],
+    };
+    let payload = serde_json::to_value(&response).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "role-env-02".to_string(),
+        kind: RemittanceKind::IdentityVerificationResponse,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    let body = serde_json::to_string(&env).unwrap();
+    let msg = make_peer_message("role-msg-02", "alice", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Maker requested identity and I am the maker — inbound response means I am Maker.
+    assert!(
+        matches!(t.my_role, ThreadRole::Maker),
+        "my_role should be Maker when makerRequestIdentity is set and inbound is a Response; got {:?}",
+        t.my_role
+    );
+}
+
+// PARITY-07: Inbound Receipt or Termination on unknown thread defaults to my_role=Taker.
+#[tokio::test]
+async fn test_role_inference_receipt_termination() {
+    let comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms.clone();
+    let manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: None,
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModule)],
+    );
+
+    // Test Termination on unknown thread (Receipt is harder to test without a prior settlement).
+    let thread_id = "role-infer-term-01";
+    use bsv::remittance::types::Termination;
+    let termination = Termination {
+        code: "test".to_string(),
+        message: "test termination".to_string(),
+        details: None,
+    };
+    let payload = serde_json::to_value(&termination).unwrap();
+    let env = RemittanceEnvelope {
+        v: 1,
+        id: "role-env-03".to_string(),
+        kind: RemittanceKind::Termination,
+        thread_id: thread_id.to_string(),
+        created_at: 1_000_000,
+        payload,
+    };
+    let body = serde_json::to_string(&env).unwrap();
+    let msg = make_peer_message("role-msg-03", "alice", &body);
+    comms.set_queued_messages(vec![msg]);
+
+    manager.sync_threads(None).await.expect("sync should not error");
+
+    let t = manager.get_thread(thread_id).await.unwrap();
+    // Inbound Termination on unknown thread defaults to Taker.
+    assert!(
+        matches!(t.my_role, ThreadRole::Taker),
+        "my_role should be Taker for inbound Termination on unknown thread; got {:?}",
+        t.my_role
+    );
+}
+
+// PARITY-10: Default options must match TypeScript SDK defaults.
+#[tokio::test]
+async fn test_runtime_options_defaults() {
+    let opts = RemittanceManagerRuntimeOptions::default();
+    assert!(
+        opts.receipt_provided,
+        "receipt_provided should default to true (TS SDK parity)"
+    );
+    assert_eq!(
+        opts.identity_poll_interval_ms, 500,
+        "identity_poll_interval_ms should default to 500ms (TS SDK parity)"
+    );
+}
