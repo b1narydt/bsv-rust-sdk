@@ -77,17 +77,34 @@ Plans:
   2. `Brc29RemittanceModule::accept_settlement()` calls `wallet.internalize_action()` with correct derivation params and returns `Brc29ReceiptData`
   3. `Brc29RemittanceModule` registers in the manager's module registry under id `"brc29.p2pkh"` and responds to `pay()` calls
   4. Mock `NonceProvider` and `LockingScriptProvider` can be injected, making the module testable without a live wallet
-**Plans**: TBD
+**Plans:** 2 plans
 
-### Phase 5: Integration Tests
-**Goal**: Wire-format parity with TypeScript SDK is verified by deserializing raw TypeScript-originated JSON and the full thread lifecycle runs end-to-end with a mock transport
+Plans:
+- [ ] 04-01-PLAN.md — Module skeleton, types, config, injectable traits, validation helpers
+- [ ] 04-02-PLAN.md — build_settlement and accept_settlement implementations with mock wallet tests
+
+### Phase 5: Integration Tests & Parity Fixes
+**Goal**: Wire-format parity with TypeScript SDK is verified by deserializing raw TypeScript-originated JSON, the full thread lifecycle runs end-to-end with a mock transport, and remaining TS SDK parity gaps are closed
 **Depends on**: Phase 4
-**Requirements**: TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, TEST-06
+**Requirements**: TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, TEST-06, PARITY-01, PARITY-02, PARITY-03, PARITY-04, PARITY-05
 **Success Criteria** (what must be TRUE):
   1. Raw TypeScript-originated JSON for all 7 message kinds deserializes into Rust types without error
   2. Every `RemittanceThreadState` transition in the `allowed_transitions()` table is exercised by a passing test; every invalid transition produces an error
   3. A full `New -> identityRequested -> identityResponded -> identityAcknowledged -> invoiced -> settled -> receipted` lifecycle completes using mock CommsLayer and mock wallet
   4. `BasicBRC29` `build_settlement` and `accept_settlement` unit tests pass with a mock wallet returning realistic BEEF artifacts
+  5. `wait_for_receipt()` returns `Termination` (not an error) when counterparty terminates instead of receipting
+  6. `wait_for_state()` accepts optional `timeout_ms` and returns `RemittanceError::Timeout` on expiry
+  7. All public methods that send messages accept optional `host_override: Option<&str>`
+**Parity gaps** (from Phase 3 audit — see `.planning/phases/03-remittancemanager/PARITY-GAPS.md`):
+  - BUG-03: wait_for_receipt/wait_for_settlement return error on Terminated → return enum
+  - GAP-01: Auto-wait for receipt after pay based on `receiptProvided` config
+  - GAP-02: Thread hostOverride through all public method signatures
+  - GAP-03: Add timeout_ms to wait methods
+  - GAP-04: findInvoices counterparty filter parameter
+  - GAP-05: findInvoices return `Vec<InvoiceHandle>` instead of `Vec<Thread>`
+  - GAP-06: Display impl for RemittanceKind
+  - GAP-07: handle_inbound_message visibility to pub(crate)
+  - GAP-08: sync_threads log errors via config.logger instead of swallowing
 **Plans**: TBD
 
 ## Progress
@@ -100,5 +117,5 @@ Phases execute in order: 1 -> 2 -> 3 -> 4 -> 5 (Phase 4 depends on Phase 2, not 
 | 1. Foundation Types | 2/2 | Complete   | 2026-03-24 |
 | 2. Interface Traits | 2/2 | Complete   | 2026-03-24 |
 | 3. RemittanceManager | 3/3 | Complete   | 2026-03-24 |
-| 4. BasicBRC29 Module | 0/TBD | Not started | - |
+| 4. BasicBRC29 Module | 0/2 | Not started | - |
 | 5. Integration Tests | 0/TBD | Not started | - |

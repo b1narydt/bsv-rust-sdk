@@ -14,6 +14,8 @@ pub mod identity_layer;
 pub mod remittance_module;
 #[cfg(feature = "network")]
 pub mod manager;
+#[cfg(feature = "network")]
+pub mod modules;
 
 pub use error::RemittanceError;
 
