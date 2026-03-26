@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-26
+
+### Added
+
+- **Complete remittance protocol module** — Full port of the TypeScript SDK's
+  remittance system with wire-format parity, gated behind the `network` feature.
+
+- **RemittanceManager** — 20+ public async methods covering the full payment
+  lifecycle: `send_invoice`, `pay`, `sync_threads`, `start_listening`,
+  `wait_for_receipt`, `wait_for_state`, `wait_for_identity`,
+  `wait_for_settlement`, `send_unsolicited_settlement`, with event system
+  (subscribe + unsubscribe), state persistence, and message deduplication.
+
+- **BRC-29 module** (`Brc29RemittanceModule`) — P2PKH settlement module with
+  `build_settlement` (nonce generation, derived keys, wallet.createAction) and
+  `accept_settlement` (wallet.internalizeAction with WalletPayment and
+  BasketInsertion support). Configurable via `Brc29RemittanceModuleConfig`
+  with 9 fields matching TS SDK defaults.
+
+- **Trait interfaces** — `CommsLayer` (message transport), `IdentityLayer`
+  (certificate exchange), `RemittanceModule` (typed) with `ErasedRemittanceModule`
+  (type-erased via blanket impl for heterogeneous module registry).
+
+- **9-state thread machine** — New, IdentityRequested, IdentityResponded,
+  IdentityAcknowledged, Invoiced, Settled, Receipted, Terminated, Errored
+  with validated transitions matching TypeScript SDK exactly.
+
+- **Identity exchange** — Identity-before-settlement and identity-before-invoicing
+  guards, phase-aware role inference for identity messages on new threads,
+  full request/response/acknowledgment flow.
+
+- **Wire format parity** — All protocol types serialize to identical JSON as
+  the TypeScript SDK (camelCase fields, protocolID casing, optional field
+  omission). Verified with TS-originated JSON deserialization test vectors.
+
+- **ThreadHandle and InvoiceHandle** — Ergonomic wrappers with `wait_for_state`,
+  `wait_for_receipt`, `wait_for_identity`, `wait_for_settlement`, and
+  `InvoiceHandle.pay()`.
+
+- **InternalizeProtocol enum** — `WalletPayment` and `BasketInsertion` variants
+  with serde support, wired into `accept_settlement` dispatch.
+
+- **Validation helpers** — `ensure_valid_option` (amount, payee, protocolID,
+  labels, description), `ensure_valid_settlement` (transaction, derivation,
+  amount), `is_atomic_beef`.
+
+### Fixed
+
+- **Pre-existing wallet compilation errors** — Wrapped `None` values in
+  `BooleanDefaultTrue`/`BooleanDefaultFalse` newtypes in `substrates/tests.rs`
+  and `token_lifecycle` example. Fixed `std::sync::Mutex` lock call in
+  `auth/transports/http.rs` that was incorrectly awaited as async. Unblocks
+  `cargo test --features network` for the full test suite.
+
+- **`receipt_provided` default** — Changed from `false` to `true` to match
+  TypeScript SDK.
+
+- **`identity_poll_interval_ms` default** — Changed from `1000` to `500` to
+  match TypeScript SDK.
+
+### Tests
+
+- 96 new remittance tests (52 BRC-29, 36 manager, 7 module, 6 trait) plus
+  29 wire format and 13 type/state transition tests.
+- Full end-to-end narrative test (invoice → settlement → receipt).
+- Identity-before-invoicing integration test.
+- Module-refuses-settlement termination flow test.
+- Event listener subscribe/unsubscribe test.
+- TS-originated JSON deserialization vectors for all 7 message types.
+- Exhaustive 9x9 state transition matrix test.
+- Total suite: 1,196 tests pass, 0 fail.
+
 ## [0.1.75] - 2026-03-19
 
 ### Fixed
