@@ -15,7 +15,7 @@ To enable async HTTP and WebSocket functionality (wallet services, overlay netwo
 
 ```toml
 [dependencies]
-bsv-sdk = { version = "0.1.75", features = ["network"] }
+bsv-sdk = { version = "0.2.0", features = ["network"] }
 ```
 
 ## Quick Start
