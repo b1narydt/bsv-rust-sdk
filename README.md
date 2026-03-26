@@ -8,7 +8,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bsv-sdk = "0.1.75"
+bsv-sdk = "0.2.0"
 ```
 
 To enable async HTTP and WebSocket functionality (wallet services, overlay networks):
@@ -48,6 +48,7 @@ fn main() {
 | `auth` | BRC-31 authenticated transport, certificates, peer communication | `Peer`, `AuthFetch`, `Certificate`, `Transport` |
 | `compat` | Compatibility modules: BIP32, BIP39, BSM, ECIES | `ExtendedKey`, `Mnemonic`, `Bsm`, `ElectrumEcies`, `BitcoreEcies` |
 | `services` | Overlay network services: lookup, broadcast, identity | `LookupResolver`, `TopicBroadcaster`, `IdentityClient`, `GlobalKVStore` |
+| `remittance` | Peer-to-peer remittance protocol with BRC-29 settlement | `RemittanceManager`, `BasicBRC29Module`, `Thread`, `CommsLayer` |
 
 ## Examples
 
