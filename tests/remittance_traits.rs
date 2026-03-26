@@ -1,3 +1,4 @@
+#![cfg(feature = "network")]
 //! Object-safety and behaviour tests for the CommsLayer and IdentityLayer traits.
 //!
 //! Kept as an integration test file (rather than inline #[cfg(test)]) because

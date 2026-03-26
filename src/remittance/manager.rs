@@ -363,7 +363,8 @@ struct ManagerInner {
     threads: HashMap<ThreadId, Thread>,
     default_payment_option_id: Option<String>,
     my_identity_key: Option<String>,
-    event_listeners: Vec<Arc<dyn Fn(RemittanceEvent) + Send + Sync>>,
+    event_listeners: Vec<(usize, Arc<dyn Fn(RemittanceEvent) + Send + Sync>)>,
+    next_listener_id: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +414,7 @@ impl RemittanceManager {
             default_payment_option_id: None,
             my_identity_key: None,
             event_listeners: Vec::new(),
+            next_listener_id: 0,
         };
 
         let config_arc = Arc::new(config);
@@ -441,7 +443,9 @@ impl RemittanceManager {
             // SAFETY: new() is called before any other async access; we can block_on or use
             // try_lock here. Since no tasks are running yet, try_lock always succeeds.
             if let Ok(mut guard) = manager.inner.try_lock() {
-                guard.event_listeners.push(listener);
+                let id = guard.next_listener_id;
+                guard.next_listener_id += 1;
+                guard.event_listeners.push((id, listener));
             }
         }
 
@@ -599,19 +603,38 @@ impl RemittanceManager {
     // -----------------------------------------------------------------------
 
     /// Register a listener that receives every future event.
-    pub async fn on_event(&self, listener: Arc<dyn Fn(RemittanceEvent) + Send + Sync>) {
+    ///
+    /// Returns a listener ID that can be passed to [`remove_event_listener`] to
+    /// unsubscribe — mirroring the TS SDK's `onEvent` which returns an
+    /// unsubscribe function.
+    pub async fn on_event(&self, listener: Arc<dyn Fn(RemittanceEvent) + Send + Sync>) -> usize {
         let mut guard = self.inner.lock().await;
-        guard.event_listeners.push(listener);
+        let id = guard.next_listener_id;
+        guard.next_listener_id += 1;
+        guard.event_listeners.push((id, listener));
+        id
+    }
+
+    /// Remove a previously registered event listener by its ID.
+    ///
+    /// Returns `true` if a listener with the given ID was found and removed.
+    pub async fn remove_event_listener(&self, listener_id: usize) -> bool {
+        let mut guard = self.inner.lock().await;
+        let len_before = guard.event_listeners.len();
+        guard.event_listeners.retain(|(id, _)| *id != listener_id);
+        guard.event_listeners.len() < len_before
     }
 
     /// Deliver `event` to all registered listeners.
-    pub(crate) async fn emit_event(&self, event: RemittanceEvent) {
+    ///
+    /// Public so that downstream code and integration tests can synthesise events.
+    pub async fn emit_event(&self, event: RemittanceEvent) {
         // Clone the listener list so we can call outside the lock.
-        let listeners: Vec<Arc<dyn Fn(RemittanceEvent) + Send + Sync>> = {
+        let listeners: Vec<(usize, Arc<dyn Fn(RemittanceEvent) + Send + Sync>)> = {
             let guard = self.inner.lock().await;
             guard.event_listeners.clone()
         };
-        for listener in listeners {
+        for (_id, listener) in listeners {
             listener(event.clone());
         }
     }

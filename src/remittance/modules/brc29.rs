@@ -27,6 +27,7 @@ use crate::script::ScriptTemplateLock;
 use crate::wallet::interfaces::{
     CreateActionArgs, CreateActionOptions, CreateActionOutput, GetPublicKeyArgs,
     InternalizeActionArgs, InternalizeOutput, Payment, WalletInterface,
+    BasketInsertion,
 };
 use crate::wallet::types::{BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol};
 
@@ -390,21 +391,39 @@ impl RemittanceModule for Brc29RemittanceModule {
                     description: "BRC-29 payment received".to_string(),
                     labels: self.config.labels.clone(),
                     seek_permission: BooleanDefaultTrue(Some(true)),
-                    outputs: vec![InternalizeOutput::WalletPayment {
-                        output_index,
-                        payment: Payment {
-                            derivation_prefix: settlement
-                                .custom_instructions
-                                .derivation_prefix
-                                .as_bytes()
-                                .to_vec(),
-                            derivation_suffix: settlement
-                                .custom_instructions
-                                .derivation_suffix
-                                .as_bytes()
-                                .to_vec(),
-                            sender_identity_key: sender_pk,
-                        },
+                    outputs: vec![match self.config.internalize_protocol {
+                        InternalizeProtocol::WalletPayment => {
+                            InternalizeOutput::WalletPayment {
+                                output_index,
+                                payment: Payment {
+                                    derivation_prefix: settlement
+                                        .custom_instructions
+                                        .derivation_prefix
+                                        .as_bytes()
+                                        .to_vec(),
+                                    derivation_suffix: settlement
+                                        .custom_instructions
+                                        .derivation_suffix
+                                        .as_bytes()
+                                        .to_vec(),
+                                    sender_identity_key: sender_pk,
+                                },
+                            }
+                        }
+                        InternalizeProtocol::BasketInsertion => {
+                            InternalizeOutput::BasketInsertion {
+                                output_index,
+                                insertion: BasketInsertion {
+                                    basket: "brc29".to_string(),
+                                    custom_instructions: Some(format!(
+                                        "prefix={},suffix={}",
+                                        settlement.custom_instructions.derivation_prefix,
+                                        settlement.custom_instructions.derivation_suffix,
+                                    )),
+                                    tags: vec![],
+                                },
+                            }
+                        }
                     }],
                 },
                 ctx.originator.as_deref(),

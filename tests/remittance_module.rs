@@ -1,3 +1,4 @@
+#![cfg(feature = "network")]
 //! Object-safety and behaviour tests for RemittanceModule and ErasedRemittanceModule.
 //!
 //! Kept as an integration test file (rather than inline #[cfg(test)]) because
@@ -77,7 +78,7 @@ fn mock_ctx() -> ModuleContext {
     ModuleContext {
         wallet: Arc::new(MockWallet),
         originator: None,
-        now: || 0u64,
+        now: Arc::new(|| 0u64),
         logger: None,
     }
 }

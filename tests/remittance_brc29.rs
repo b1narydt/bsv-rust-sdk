@@ -1105,3 +1105,50 @@ async fn test_accept_settlement_returns_terminate_when_internalize_errors() {
         other => panic!("expected Terminate, got {:?}", other),
     }
 }
+
+#[tokio::test]
+async fn test_accept_settlement_basket_insertion_uses_config_protocol() {
+    let wallet = Arc::new(CapturingMockWallet::new());
+    let nonce_provider = Arc::new(IncrementingNonceProvider::new());
+    let locking_script_provider = Arc::new(MockLockingScriptProvider);
+    let config = Brc29RemittanceModuleConfig {
+        nonce_provider,
+        locking_script_provider,
+        internalize_protocol: InternalizeProtocol::BasketInsertion,
+        ..Default::default()
+    };
+    let module = Brc29RemittanceModule::new(config);
+    let ctx = make_ctx(wallet.clone() as Arc<dyn WalletInterface>);
+    let artifact = make_valid_artifact();
+
+    let result = module.accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+        .await
+        .unwrap();
+
+    // Result must be Accept
+    match result {
+        bsv::remittance::remittance_module::AcceptSettlementResult::Accept { receipt_data } => {
+            let rd = receipt_data.expect("receipt_data must be Some");
+            let ir = rd.internalize_result.expect("internalize_result must be set");
+            assert_eq!(ir["accepted"], true);
+        }
+        other => panic!("expected Accept, got {:?}", other),
+    }
+
+    // Check captured internalize_action args use BasketInsertion variant
+    let calls = wallet.internalize_action_calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "internalize_action called exactly once");
+    let args = &calls[0];
+    assert_eq!(args.outputs.len(), 1);
+    if let bsv::wallet::interfaces::InternalizeOutput::BasketInsertion { output_index, insertion } = &args.outputs[0] {
+        assert_eq!(*output_index, 0);
+        assert_eq!(insertion.basket, "brc29");
+        assert!(insertion.tags.is_empty(), "tags should be empty");
+        // custom_instructions should contain derivation info
+        let ci = insertion.custom_instructions.as_ref().expect("custom_instructions must be set");
+        assert!(ci.contains("prefix-abc"), "custom_instructions must contain derivation_prefix");
+        assert!(ci.contains("suffix-xyz"), "custom_instructions must contain derivation_suffix");
+    } else {
+        panic!("expected BasketInsertion variant, got WalletPayment");
+    }
+}

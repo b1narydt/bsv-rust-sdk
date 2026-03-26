@@ -1953,3 +1953,511 @@ async fn test_runtime_options_defaults() {
         "identity_poll_interval_ms should default to 500ms (TS SDK parity)"
     );
 }
+
+// PARITY-11: on_event returns a listener ID; remove_event_listener unsubscribes.
+#[tokio::test]
+async fn test_on_event_unsubscribe() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let manager = make_manager();
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    // Register a listener that increments a counter on each event.
+    let counter = Arc::clone(&call_count);
+    let listener_id = manager
+        .on_event(Arc::new(move |_event| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }))
+        .await;
+
+    // Emit an event — listener should fire.
+    manager
+        .emit_event(RemittanceEvent::ThreadCreated {
+            thread_id: "test-unsub".into(),
+            thread: sample_thread("test-unsub"),
+        })
+        .await;
+    assert_eq!(call_count.load(Ordering::SeqCst), 1, "listener should fire once");
+
+    // Unsubscribe.
+    let removed = manager.remove_event_listener(listener_id).await;
+    assert!(removed, "remove_event_listener should return true for a valid ID");
+
+    // Emit another event — listener should NOT fire.
+    manager
+        .emit_event(RemittanceEvent::ThreadCreated {
+            thread_id: "test-unsub-2".into(),
+            thread: sample_thread("test-unsub-2"),
+        })
+        .await;
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "listener should not fire after unsubscribe"
+    );
+
+    // Removing the same ID again should return false.
+    let removed_again = manager.remove_event_listener(listener_id).await;
+    assert!(!removed_again, "double-remove should return false");
+}
+
+// ---------------------------------------------------------------------------
+// TS SDK parity tests — end-to-end narrative, identity before invoicing,
+// and module-level termination
+// ---------------------------------------------------------------------------
+
+// MockModuleTerminator — build_settlement always returns Terminate.
+struct MockModuleTerminator;
+
+#[async_trait]
+impl RemittanceModule for MockModuleTerminator {
+    type OptionTerms = serde_json::Value;
+    type SettlementArtifact = serde_json::Value;
+    type ReceiptData = serde_json::Value;
+
+    fn id(&self) -> &str { "terminator" }
+    fn name(&self) -> &str { "Terminator Module" }
+    fn allow_unsolicited_settlements(&self) -> bool { false }
+    fn supports_create_option(&self) -> bool { true }
+
+    async fn create_option(
+        &self,
+        _thread_id: &str,
+        _invoice: &Invoice,
+        _ctx: &ModuleContext,
+    ) -> Result<serde_json::Value, RemittanceError> {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn build_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _option: &serde_json::Value,
+        _note: Option<&str>,
+        _ctx: &ModuleContext,
+    ) -> Result<BuildSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(BuildSettlementResult::Terminate {
+            termination: bsv::remittance::types::Termination {
+                code: "rejected".to_string(),
+                message: "No thanks".to_string(),
+                details: None,
+            },
+        })
+    }
+
+    async fn accept_settlement(
+        &self,
+        _thread_id: &str,
+        _invoice: Option<&Invoice>,
+        _settlement: &serde_json::Value,
+        _sender: &str,
+        _ctx: &ModuleContext,
+    ) -> Result<AcceptSettlementResult<serde_json::Value>, RemittanceError> {
+        Ok(AcceptSettlementResult::Accept { receipt_data: None })
+    }
+}
+
+/// TS SDK parity: "processes an invoice, settlement, and receipt end-to-end"
+///
+/// Full narrative: maker sends invoice -> taker syncs and receives it ->
+/// taker pays -> maker syncs and receives settlement (auto-receipt fires) ->
+/// taker syncs and receives receipt.
+#[tokio::test]
+async fn test_end_to_end_invoice_settlement_receipt() {
+    // --- Set up the maker manager (auto_issue_receipt=true) ---
+    let maker_comms = Arc::new(MockComms::new());
+    let maker_accept_called = Arc::new(AtomicBool::new(false));
+    let maker_manager = make_manager_with_receipt_module(
+        Arc::clone(&maker_comms),
+        Arc::clone(&maker_accept_called),
+    );
+    maker_manager.init().await.unwrap();
+
+    // --- Set up the taker manager (tracks build_settlement via MockModuleTracked) ---
+    let taker_comms = Arc::new(MockComms::new());
+    let taker_build_called = Arc::new(AtomicBool::new(false));
+    let taker_manager = make_manager_with_tracked_module(
+        Arc::clone(&taker_comms),
+        Arc::clone(&taker_build_called),
+    );
+    taker_manager.init().await.unwrap();
+
+    // --- Step 1: Maker sends invoice ---
+    let invoice_handle = maker_manager
+        .send_invoice("taker-key", sample_invoice_input(), None)
+        .await
+        .expect("maker.send_invoice should succeed");
+
+    let thread_id = invoice_handle.handle.thread_id().to_string();
+
+    // Verify maker's thread is Invoiced.
+    let maker_thread = maker_manager.get_thread(&thread_id).await.unwrap();
+    assert_eq!(maker_thread.state, RemittanceThreadState::Invoiced);
+    assert!(maker_thread.invoice.is_some());
+
+    // --- Step 2: Taker syncs and receives the invoice ---
+    // Simulate: extract the invoice message sent by maker and queue it for taker.
+    let maker_sent = maker_comms.sent.lock().unwrap().clone();
+    assert!(!maker_sent.is_empty(), "maker should have sent at least one message");
+
+    // Find the invoice envelope in maker's sent messages.
+    let invoice_body = maker_sent
+        .iter()
+        .find(|(_, _, body)| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                == Some("invoice".to_string())
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("maker should have sent an invoice message");
+
+    let taker_invoice_msg = make_peer_message("e2e-inv-001", "maker-key", &invoice_body);
+    taker_comms.set_queued_messages(vec![taker_invoice_msg]);
+    taker_manager.sync_threads(None).await.expect("taker sync for invoice should succeed");
+
+    // Taker should now have the thread in Invoiced state.
+    let taker_thread = taker_manager.get_thread(&thread_id).await
+        .expect("taker should have the thread after syncing invoice");
+    assert_eq!(taker_thread.state, RemittanceThreadState::Invoiced);
+    assert!(taker_thread.invoice.is_some());
+
+    // --- Step 3: Taker pays ---
+    let pay_handle = taker_manager
+        .pay(&thread_id, Some("mock"), None)
+        .await
+        .expect("taker.pay should succeed");
+
+    let taker_thread = pay_handle.get_thread().await.unwrap();
+    assert_eq!(taker_thread.state, RemittanceThreadState::Settled);
+    assert!(taker_thread.settlement.is_some());
+    assert!(taker_thread.flags.has_paid);
+
+    // --- Step 4: Maker syncs and receives settlement (auto-receipt fires) ---
+    let taker_sent = taker_comms.sent.lock().unwrap().clone();
+    let settlement_body = taker_sent
+        .iter()
+        .find(|(_, _, body)| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                == Some("settlement".to_string())
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("taker should have sent a settlement message");
+
+    // Maker needs the thread in correct state to accept settlement.
+    // The maker thread from send_invoice is already Invoiced/Maker — perfect.
+    let maker_settle_msg = make_peer_message("e2e-settle-001", "taker-key", &settlement_body);
+    maker_comms.set_queued_messages(vec![maker_settle_msg]);
+    maker_manager.sync_threads(None).await.expect("maker sync for settlement should succeed");
+
+    // accept_settlement should have been called.
+    assert!(
+        maker_accept_called.load(Ordering::SeqCst),
+        "maker's module.accept_settlement should have been called"
+    );
+
+    // Maker should be Receipted (auto_issue_receipt=true).
+    let maker_thread = maker_manager.get_thread(&thread_id).await.unwrap();
+    assert_eq!(
+        maker_thread.state,
+        RemittanceThreadState::Receipted,
+        "maker should be Receipted after auto-receipt"
+    );
+    assert!(maker_thread.settlement.is_some());
+    assert!(maker_thread.receipt.is_some());
+
+    // --- Step 5: Taker syncs and receives receipt ---
+    let maker_sent_after = maker_comms.sent.lock().unwrap().clone();
+    let receipt_body = maker_sent_after
+        .iter()
+        .find(|(_, _, body)| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                == Some("receipt".to_string())
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("maker should have sent a receipt message");
+
+    let taker_receipt_msg = make_peer_message("e2e-rcpt-001", "maker-key", &receipt_body);
+    taker_comms.set_queued_messages(vec![taker_receipt_msg]);
+    taker_manager.sync_threads(None).await.expect("taker sync for receipt should succeed");
+
+    let taker_final = taker_manager.get_thread(&thread_id).await.unwrap();
+    assert_eq!(
+        taker_final.state,
+        RemittanceThreadState::Receipted,
+        "taker should be Receipted after receiving receipt"
+    );
+    assert!(taker_final.receipt.is_some(), "taker should have receipt stored");
+}
+
+/// TS SDK parity: "waits for identity verification before invoicing when required"
+///
+/// Configures makerRequestIdentity=BeforeInvoicing, sends invoice, verifies
+/// identity request is sent first and the taker thread gets hasIdentified=true
+/// after syncing the identity exchange messages.
+#[tokio::test]
+async fn test_identity_before_invoicing_full_flow() {
+    let maker_comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = maker_comms.clone();
+    let maker_manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(IdentityRuntimeOptions {
+                    maker_request_identity: Some(IdentityPhase::BeforeInvoicing),
+                    taker_request_identity: None,
+                }),
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleWithOptions)],
+    );
+    maker_manager.init().await.unwrap();
+
+    // --- Maker sends invoice (identity exchange happens first internally) ---
+    let invoice_handle = maker_manager
+        .send_invoice("taker-key", sample_invoice_input(), None)
+        .await
+        .expect("send_invoice with identity should succeed");
+
+    let thread_id = invoice_handle.handle.thread_id().to_string();
+
+    // Verify at least 2 messages were sent: identity request first, then invoice.
+    let sent = maker_comms.sent.lock().unwrap().clone();
+    assert!(
+        sent.len() >= 2,
+        "expected at least 2 messages (identity request + invoice), got {}",
+        sent.len()
+    );
+
+    // First message should be identityVerificationRequest.
+    let first_body: serde_json::Value = serde_json::from_str(&sent[0].2).unwrap();
+    assert_eq!(
+        first_body.get("kind").and_then(|v| v.as_str()),
+        Some("identityVerificationRequest"),
+        "first message should be identityVerificationRequest"
+    );
+
+    // --- Set up taker manager with same identity config ---
+    let taker_comms = Arc::new(MockComms::new());
+    let taker_comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = taker_comms.clone();
+    let taker_manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: Some(RemittanceManagerRuntimeOptions {
+                identity_options: Some(IdentityRuntimeOptions {
+                    maker_request_identity: Some(IdentityPhase::BeforeInvoicing),
+                    taker_request_identity: None,
+                }),
+                ..Default::default()
+            }),
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        taker_comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleWithOptions)],
+    );
+    taker_manager.init().await.unwrap();
+
+    // --- Step 1: Taker syncs maker's messages (identity request + invoice) ---
+    // The taker processes the identity request (auto-responds via MockIdentity)
+    // and the invoice.
+    let taker_msgs: Vec<PeerMessage> = sent
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, body))| make_peer_message(&format!("id-inv-msg-{}", i), "maker-key", body))
+        .collect();
+    taker_comms.set_queued_messages(taker_msgs);
+    taker_manager.sync_threads(None).await.expect("taker sync should succeed");
+
+    // Taker should have responded to identity request (IdentityResponded state)
+    // and received the invoice. hasIdentified is NOT yet true because the taker
+    // has not received the maker's acknowledgment yet.
+    let taker_thread = taker_manager.get_thread(&thread_id).await
+        .expect("taker should have the thread after syncing");
+    assert!(taker_thread.invoice.is_some(), "taker should have received the invoice");
+
+    // Taker should have sent an identity response back.
+    let taker_sent = taker_comms.sent.lock().unwrap().clone();
+    let response_body = taker_sent
+        .iter()
+        .find(|(_, _, body)| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                == Some("identityVerificationResponse".to_string())
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("taker should have sent an identityVerificationResponse");
+
+    // --- Step 2: Maker syncs taker's identity response -> sends acknowledgment ---
+    let maker_resp_msg = make_peer_message("id-resp-001", "taker-key", &response_body);
+    maker_comms.set_queued_messages(vec![maker_resp_msg]);
+    maker_manager.sync_threads(None).await.expect("maker sync for identity response should succeed");
+
+    // Maker should now have has_identified=true.
+    let maker_thread = maker_manager.get_thread(&thread_id).await.unwrap();
+    assert!(
+        maker_thread.flags.has_identified,
+        "maker's hasIdentified flag should be true after processing identity response"
+    );
+
+    // Maker should have sent an acknowledgment.
+    let maker_sent_after = maker_comms.sent.lock().unwrap().clone();
+    let ack_body = maker_sent_after
+        .iter()
+        .find(|(_, _, body)| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                == Some("identityVerificationAcknowledgment".to_string())
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("maker should have sent an identityVerificationAcknowledgment");
+
+    // --- Step 3: Taker syncs maker's acknowledgment -> hasIdentified=true ---
+    let taker_ack_msg = make_peer_message("id-ack-001", "maker-key", &ack_body);
+    taker_comms.set_queued_messages(vec![taker_ack_msg]);
+    taker_manager.sync_threads(None).await.expect("taker sync for acknowledgment should succeed");
+
+    let taker_final = taker_manager.get_thread(&thread_id).await.unwrap();
+    assert!(
+        taker_final.flags.has_identified,
+        "taker's hasIdentified flag should be true after identity exchange; got {:?}",
+        taker_final.flags
+    );
+    assert!(
+        taker_final.invoice.is_some(),
+        "taker should still have the invoice"
+    );
+}
+
+/// TS SDK parity: "sends termination when a module refuses to build a settlement"
+///
+/// Module's buildSettlement returns { action: 'terminate', termination },
+/// verify the thread is terminated and a termination message is sent.
+#[tokio::test]
+async fn test_module_refuses_settlement_sends_termination() {
+    let comms = Arc::new(MockComms::new());
+    let comms_dyn: Arc<dyn bsv::remittance::comms_layer::CommsLayer> = comms.clone();
+    let manager = RemittanceManager::new(
+        RemittanceManagerConfig {
+            message_box: None,
+            originator: None,
+            logger: None,
+            options: None,
+            on_event: None,
+            state_saver: None,
+            state_loader: None,
+            now: Some(Box::new(|| 1_000_000u64)),
+            thread_id_factory: None,
+        },
+        Arc::new(MockWallet),
+        comms_dyn,
+        Some(Arc::new(MockIdentity)),
+        vec![Box::new(MockModuleTerminator)],
+    );
+    manager.init().await.unwrap();
+
+    // Insert a taker thread in Invoiced state with the terminator module option.
+    let invoice = Invoice {
+        kind: RemittanceKind::Invoice,
+        expires_at: Some(2_000_000),
+        options: {
+            let mut map = HashMap::new();
+            map.insert("terminator".to_string(), serde_json::json!({}));
+            map
+        },
+        base: InstrumentBase {
+            thread_id: "term-test".to_string(),
+            payee: "alice".to_string(),
+            payer: "bob".to_string(),
+            note: None,
+            line_items: vec![],
+            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            invoice_number: "INV-TERM".to_string(),
+            created_at: 1_000_000,
+            arbitrary: None,
+        },
+    };
+    let thread = Thread {
+        thread_id: "term-test".to_string(),
+        counterparty: "alice".to_string(),
+        my_role: ThreadRole::Taker,
+        their_role: ThreadRole::Maker,
+        created_at: 0,
+        updated_at: 0,
+        state: RemittanceThreadState::Invoiced,
+        state_log: vec![],
+        processed_message_ids: vec![],
+        protocol_log: vec![],
+        identity: ThreadIdentity::default(),
+        flags: ThreadFlags { has_invoiced: true, ..Default::default() },
+        invoice: Some(invoice),
+        settlement: None,
+        receipt: None,
+        termination: None,
+        last_error: None,
+    };
+    manager.insert_thread(thread).await;
+
+    // Pay with the terminator module — should terminate instead of settling.
+    let handle = manager
+        .pay("term-test", Some("terminator"), None)
+        .await
+        .expect("pay should succeed even when module terminates");
+
+    let thread = handle.get_thread().await.unwrap();
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Terminated,
+        "thread should be Terminated when module refuses settlement; got {:?}",
+        thread.state
+    );
+    assert!(
+        thread.termination.is_some(),
+        "termination should be stored on thread"
+    );
+
+    // Verify the termination details match what the module returned.
+    let termination = thread.termination.as_ref().unwrap();
+    assert_eq!(termination.code, "rejected");
+    assert_eq!(termination.message, "No thanks");
+
+    // Verify a termination message was sent to the counterparty.
+    let sent = comms.sent.lock().unwrap().clone();
+    let term_sent = sent.iter().any(|(_, _, body)| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            v.get("kind").and_then(|k| k.as_str()) == Some("termination")
+        } else {
+            false
+        }
+    });
+    assert!(
+        term_sent,
+        "a termination message should have been sent to the counterparty"
+    );
+}
