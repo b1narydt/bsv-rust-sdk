@@ -171,7 +171,7 @@ pub trait RemittanceModule: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Erased return structs (pub(crate) — internal to the crate)
+// Erased return structs
 // ---------------------------------------------------------------------------
 
 /// Type-erased result of `build_settlement` — carries `serde_json::Value`
@@ -193,7 +193,7 @@ pub struct AcceptSettlementErased {
 }
 
 // ---------------------------------------------------------------------------
-// Object-safe erased trait (pub(crate) — internal to the crate)
+// Object-safe erased trait
 // ---------------------------------------------------------------------------
 
 /// Object-safe mirror of `RemittanceModule`, with associated types replaced by

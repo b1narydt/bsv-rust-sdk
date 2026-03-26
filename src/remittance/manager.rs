@@ -2199,6 +2199,7 @@ impl RemittanceManager {
     /// Wait until a thread reaches `Receipted` state and return the receipt.
     ///
     /// If the thread reaches `Terminated` state first, returns `WaitReceiptResult::Terminated`.
+    /// If the thread reaches `Errored` state, returns the error from `last_error`.
     /// If `timeout_ms` is Some, returns `RemittanceError::Timeout` on expiry.
     pub async fn wait_for_receipt(
         &self,
@@ -2215,6 +2216,16 @@ impl RemittanceManager {
                     message: "counterparty terminated".into(),
                     details: None,
                 },
+            )));
+        }
+        if thread.state == RemittanceThreadState::Errored {
+            let msg = thread
+                .last_error
+                .map(|e| e.message)
+                .unwrap_or_else(|| "unknown error".into());
+            return Err(RemittanceError::Protocol(format!(
+                "thread {} entered Errored state: {}",
+                thread_id, msg
             )));
         }
         thread
@@ -2245,6 +2256,7 @@ impl RemittanceManager {
     /// Wait until a thread reaches `Settled` state and return the settlement.
     ///
     /// If the thread reaches `Terminated` state first, returns `WaitSettlementResult::Terminated`.
+    /// If the thread reaches `Errored` state, returns the error from `last_error`.
     /// If `timeout_ms` is Some, returns `RemittanceError::Timeout` on expiry.
     pub async fn wait_for_settlement(
         &self,
@@ -2262,6 +2274,16 @@ impl RemittanceManager {
                     details: None,
                 }),
             ));
+        }
+        if thread.state == RemittanceThreadState::Errored {
+            let msg = thread
+                .last_error
+                .map(|e| e.message)
+                .unwrap_or_else(|| "unknown error".into());
+            return Err(RemittanceError::Protocol(format!(
+                "thread {} entered Errored state: {}",
+                thread_id, msg
+            )));
         }
         thread
             .settlement
