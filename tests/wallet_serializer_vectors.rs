@@ -885,6 +885,7 @@ test_args_vector!(
         offset: Some(0),
         privileged: BooleanDefaultFalse(Some(true)),
         privileged_reason: Some("list-cert-reason".to_string()),
+        partial: None,
     }
 );
 

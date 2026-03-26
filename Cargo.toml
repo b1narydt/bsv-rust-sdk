@@ -1,6 +1,6 @@
 [package]
 name = "bsv-sdk"
-version = "0.1.75"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.87"
 description = "Pure Rust implementation of the BSV Blockchain SDK"
@@ -18,7 +18,7 @@ name = "bsv"
 getrandom = "0.2"
 thiserror = "2.0"
 async-trait = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }

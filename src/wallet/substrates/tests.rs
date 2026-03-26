@@ -826,15 +826,15 @@ mod json_round_trip {
         let args = ListActionsArgs {
             labels: vec!["payment".to_string()],
             label_query_mode: Some(QueryMode::Any),
-            include_labels: None,
-            include_inputs: Some(true),
-            include_input_source_locking_scripts: None,
-            include_input_unlocking_scripts: None,
-            include_outputs: None,
-            include_output_locking_scripts: None,
+            include_labels: BooleanDefaultFalse(None),
+            include_inputs: BooleanDefaultFalse(Some(true)),
+            include_input_source_locking_scripts: BooleanDefaultFalse(None),
+            include_input_unlocking_scripts: BooleanDefaultFalse(None),
+            include_outputs: BooleanDefaultFalse(None),
+            include_output_locking_scripts: BooleanDefaultFalse(None),
             limit: Some(25),
             offset: None,
-            seek_permission: None,
+            seek_permission: BooleanDefaultTrue(None),
         };
 
         let json = serde_json::to_string(&args).unwrap();

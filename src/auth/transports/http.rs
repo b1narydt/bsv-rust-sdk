@@ -772,7 +772,7 @@ mod tests {
 
         // Take the receiver before sending
         let mut rx = {
-            let mut guard = transport.incoming_rx.lock().await;
+            let mut guard = transport.incoming_rx.lock().unwrap();
             guard.take().unwrap()
         };
 

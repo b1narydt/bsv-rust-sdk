@@ -1252,7 +1252,6 @@ mod tests {
             keyring_for_subject: Some(HashMap::new()),
             privileged: false,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_acquire_certificate_args(&args).is_ok());
     }
@@ -1272,7 +1271,6 @@ mod tests {
             keyring_for_subject: Some(HashMap::new()),
             privileged: false,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_acquire_certificate_args(&args).is_err());
     }
@@ -1292,7 +1290,6 @@ mod tests {
             keyring_for_subject: None,
             privileged: false,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_acquire_certificate_args(&args).is_ok());
     }
@@ -1312,7 +1309,6 @@ mod tests {
             keyring_for_subject: None,
             privileged: false,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_acquire_certificate_args(&args).is_err());
     }
@@ -1366,7 +1362,6 @@ mod tests {
             verifier: test_pubkey(),
             privileged: BooleanDefaultFalse(None),
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_prove_certificate_args(&args).is_ok());
     }
@@ -1388,7 +1383,6 @@ mod tests {
             verifier: test_pubkey(),
             privileged: BooleanDefaultFalse(None),
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_prove_certificate_args(&args).is_err());
     }
@@ -1453,7 +1447,6 @@ mod tests {
             verifier: test_pubkey(),
             privileged: None,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_reveal_counterparty_key_linkage_args(&args).is_ok());
     }
@@ -1469,7 +1462,6 @@ mod tests {
             key_id: "my-key".to_string(),
             privileged: None,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_reveal_specific_key_linkage_args(&args).is_ok());
     }
@@ -1483,7 +1475,6 @@ mod tests {
             key_id: "".to_string(),
             privileged: None,
             privileged_reason: None,
-            partial: None,
         };
         assert!(validate_reveal_specific_key_linkage_args(&args).is_err());
     }
