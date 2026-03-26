@@ -17,6 +17,7 @@ use bsv::script::Script;
 use bsv::wallet::interfaces::{
     CreateActionArgs, CreateActionInput, CreateActionOutput, ListOutputsArgs, OutputInclude,
 };
+use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 use bsv::wallet::substrates::http_wallet_json::HttpWalletJson;
 use bsv::wallet::WalletInterface;
 
@@ -86,12 +87,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tags: Vec::new(),
                 tag_query_mode: None,
                 include: Some(OutputInclude::EntireTransactions),
-                include_custom_instructions: None,
-                include_tags: None,
-                include_labels: None,
+                include_custom_instructions: BooleanDefaultFalse(None),
+                include_tags: BooleanDefaultFalse(None),
+                include_labels: BooleanDefaultFalse(None),
                 limit: None,
                 offset: None,
-                seek_permission: None,
+                seek_permission: BooleanDefaultTrue(None),
             },
             None,
         )

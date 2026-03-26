@@ -104,13 +104,13 @@ Requirements for full parity with TypeScript SDK `src/remittance/`.
 - [x] **PARITY-05**: RemittanceKind implements Display, sync_threads logs errors, handle_inbound_message is pub(crate)
 
 ### TS SDK Parity (identified via Phase 5.1 forensic audit)
-- [ ] **PARITY-06**: Identity-before-settlement guard — reject inbound settlement with termination when identity was required but not completed (TS `shouldRequireIdentityBeforeSettlement`)
-- [ ] **PARITY-07**: Role inference for inbound identity messages — phase-based maker/taker logic matching TS `getOrCreateThreadFromInboundEnvelope` lines 975-1015
+- [x] **PARITY-06**: Identity-before-settlement guard — reject inbound settlement with termination when identity was required but not completed (TS `shouldRequireIdentityBeforeSettlement`)
+- [x] **PARITY-07**: Role inference for inbound identity messages — phase-based maker/taker logic matching TS `getOrCreateThreadFromInboundEnvelope` lines 975-1015
 - [x] **PARITY-08**: BRC-29 config fields — add `refund_fee_satoshis` (default 1000), `min_refund_satoshis` (default 1000), `internalize_protocol` (default "wallet payment") to `Brc29RemittanceModuleConfig`
 - [x] **PARITY-09**: BRC-29 validation — `ensure_valid_option` validates `outputIndex`, `protocolID`, `labels`, `description`; `ensure_valid_settlement` validates `outputIndex`
-- [ ] **PARITY-10**: `receipt_provided` default `true` (not `false`) and `identity_poll_interval_ms` default `500` (not `1000`)
+- [x] **PARITY-10**: `receipt_provided` default `true` (not `false`) and `identity_poll_interval_ms` default `500` (not `1000`)
 - [x] **PARITY-11**: `is_atomic_beef` validates each byte in 0-255 range (not just non-empty check)
-- [ ] **PARITY-12**: `has_identified` flag and `identity` sub-struct on Thread — tracks identity exchange state for settlement guard
+- [x] **PARITY-12**: `has_identified` flag and `identity` sub-struct on Thread — tracks identity exchange state for settlement guard
 
 ## v2 Requirements
 
@@ -218,13 +218,13 @@ Deferred to future release.
 | PARITY-03 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-04 | Phase 5 — Integration Tests & Parity | Complete |
 | PARITY-05 | Phase 5 — Integration Tests & Parity | Complete |
-| PARITY-06 | Phase 5.1 — TS SDK Parity Fixes | Pending |
-| PARITY-07 | Phase 5.1 — TS SDK Parity Fixes | Pending |
+| PARITY-06 | Phase 5.1 — TS SDK Parity Fixes | Complete |
+| PARITY-07 | Phase 5.1 — TS SDK Parity Fixes | Complete |
 | PARITY-08 | Phase 5.1 — TS SDK Parity Fixes | Complete |
 | PARITY-09 | Phase 5.1 — TS SDK Parity Fixes | Complete |
-| PARITY-10 | Phase 5.1 — TS SDK Parity Fixes | Pending |
+| PARITY-10 | Phase 5.1 — TS SDK Parity Fixes | Complete |
 | PARITY-11 | Phase 5.1 — TS SDK Parity Fixes | Complete |
-| PARITY-12 | Phase 5.1 — TS SDK Parity Fixes | Pending |
+| PARITY-12 | Phase 5.1 — TS SDK Parity Fixes | Complete |
 
 **Coverage:**
 - v1 requirements: 77 total
