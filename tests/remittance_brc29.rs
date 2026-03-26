@@ -11,31 +11,30 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bsv::primitives::public_key::PublicKey;
 use bsv::remittance::modules::brc29::{
-    Brc29OptionTerms, Brc29ReceiptData, Brc29RefundData, Brc29RemittanceModule,
-    Brc29RemittanceModuleConfig, Brc29SettlementArtifact, Brc29SettlementCustomInstructions,
-    InternalizeProtocol, LockingScriptProvider, NonceProvider, ensure_valid_option,
-    ensure_valid_settlement, is_atomic_beef,
+    ensure_valid_option, ensure_valid_settlement, is_atomic_beef, Brc29OptionTerms,
+    Brc29ReceiptData, Brc29RefundData, Brc29RemittanceModule, Brc29RemittanceModuleConfig,
+    Brc29SettlementArtifact, Brc29SettlementCustomInstructions, InternalizeProtocol,
+    LockingScriptProvider, NonceProvider,
 };
-use bsv::remittance::RemittanceModule;
-use bsv::remittance::RemittanceError;
 use bsv::remittance::types::ModuleContext;
-use bsv::wallet::types::{CounterpartyType, Protocol};
+use bsv::remittance::RemittanceError;
+use bsv::remittance::RemittanceModule;
 use bsv::wallet::error::WalletError;
 use bsv::wallet::interfaces::{
-    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult,
-    Certificate, CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult,
-    CreateSignatureArgs, CreateSignatureResult, DecryptArgs, DecryptResult,
-    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult,
-    EncryptArgs, EncryptResult, GetHeaderArgs, GetHeaderResult, GetHeightResult,
-    GetNetworkResult, GetPublicKeyArgs, GetPublicKeyResult, GetVersionResult,
-    InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
-    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
-    ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
-    RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
-    RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
+    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult, Certificate,
+    CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult, CreateSignatureArgs,
+    CreateSignatureResult, DecryptArgs, DecryptResult, DiscoverByAttributesArgs,
+    DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
+    GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
+    GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
+    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
+    ListOutputsArgs, ListOutputsResult, ProveCertificateArgs, ProveCertificateResult,
+    RelinquishCertificateArgs, RelinquishCertificateResult, RelinquishOutputArgs,
+    RelinquishOutputResult, RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
     RevealSpecificKeyLinkageArgs, RevealSpecificKeyLinkageResult, SignActionArgs, SignActionResult,
     VerifyHmacArgs, VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletInterface,
 };
+use bsv::wallet::types::{CounterpartyType, Protocol};
 
 // ---------------------------------------------------------------------------
 // MockWallet for provider injection tests (simple, no capturing)
@@ -45,34 +44,185 @@ struct MockWallet;
 
 #[async_trait]
 impl WalletInterface for MockWallet {
-    async fn create_action(&self, _a: CreateActionArgs, _o: Option<&str>) -> Result<CreateActionResult, WalletError> { unimplemented!() }
-    async fn sign_action(&self, _a: SignActionArgs, _o: Option<&str>) -> Result<SignActionResult, WalletError> { unimplemented!() }
-    async fn abort_action(&self, _a: AbortActionArgs, _o: Option<&str>) -> Result<AbortActionResult, WalletError> { unimplemented!() }
-    async fn list_actions(&self, _a: ListActionsArgs, _o: Option<&str>) -> Result<ListActionsResult, WalletError> { unimplemented!() }
-    async fn internalize_action(&self, _a: InternalizeActionArgs, _o: Option<&str>) -> Result<InternalizeActionResult, WalletError> { unimplemented!() }
-    async fn list_outputs(&self, _a: ListOutputsArgs, _o: Option<&str>) -> Result<ListOutputsResult, WalletError> { unimplemented!() }
-    async fn relinquish_output(&self, _a: RelinquishOutputArgs, _o: Option<&str>) -> Result<RelinquishOutputResult, WalletError> { unimplemented!() }
-    async fn get_public_key(&self, _a: GetPublicKeyArgs, _o: Option<&str>) -> Result<GetPublicKeyResult, WalletError> { unimplemented!() }
-    async fn reveal_counterparty_key_linkage(&self, _a: RevealCounterpartyKeyLinkageArgs, _o: Option<&str>) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn reveal_specific_key_linkage(&self, _a: RevealSpecificKeyLinkageArgs, _o: Option<&str>) -> Result<RevealSpecificKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn encrypt(&self, _a: EncryptArgs, _o: Option<&str>) -> Result<EncryptResult, WalletError> { unimplemented!() }
-    async fn decrypt(&self, _a: DecryptArgs, _o: Option<&str>) -> Result<DecryptResult, WalletError> { unimplemented!() }
-    async fn create_hmac(&self, _a: CreateHmacArgs, _o: Option<&str>) -> Result<CreateHmacResult, WalletError> { unimplemented!() }
-    async fn verify_hmac(&self, _a: VerifyHmacArgs, _o: Option<&str>) -> Result<VerifyHmacResult, WalletError> { unimplemented!() }
-    async fn create_signature(&self, _a: CreateSignatureArgs, _o: Option<&str>) -> Result<CreateSignatureResult, WalletError> { unimplemented!() }
-    async fn verify_signature(&self, _a: VerifySignatureArgs, _o: Option<&str>) -> Result<VerifySignatureResult, WalletError> { unimplemented!() }
-    async fn acquire_certificate(&self, _a: AcquireCertificateArgs, _o: Option<&str>) -> Result<Certificate, WalletError> { unimplemented!() }
-    async fn list_certificates(&self, _a: ListCertificatesArgs, _o: Option<&str>) -> Result<ListCertificatesResult, WalletError> { unimplemented!() }
-    async fn prove_certificate(&self, _a: ProveCertificateArgs, _o: Option<&str>) -> Result<ProveCertificateResult, WalletError> { unimplemented!() }
-    async fn relinquish_certificate(&self, _a: RelinquishCertificateArgs, _o: Option<&str>) -> Result<RelinquishCertificateResult, WalletError> { unimplemented!() }
-    async fn discover_by_identity_key(&self, _a: DiscoverByIdentityKeyArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn discover_by_attributes(&self, _a: DiscoverByAttributesArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn wait_for_authentication(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> { unimplemented!() }
-    async fn get_header_for_height(&self, _a: GetHeaderArgs, _o: Option<&str>) -> Result<GetHeaderResult, WalletError> { unimplemented!() }
-    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> { unimplemented!() }
-    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> { unimplemented!() }
+    async fn create_action(
+        &self,
+        _a: CreateActionArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn sign_action(
+        &self,
+        _a: SignActionArgs,
+        _o: Option<&str>,
+    ) -> Result<SignActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn abort_action(
+        &self,
+        _a: AbortActionArgs,
+        _o: Option<&str>,
+    ) -> Result<AbortActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_actions(
+        &self,
+        _a: ListActionsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListActionsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn internalize_action(
+        &self,
+        _a: InternalizeActionArgs,
+        _o: Option<&str>,
+    ) -> Result<InternalizeActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_outputs(
+        &self,
+        _a: ListOutputsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListOutputsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_output(
+        &self,
+        _a: RelinquishOutputArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishOutputResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_public_key(
+        &self,
+        _a: GetPublicKeyArgs,
+        _o: Option<&str>,
+    ) -> Result<GetPublicKeyResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        _a: RevealCounterpartyKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_specific_key_linkage(
+        &self,
+        _a: RevealSpecificKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn encrypt(
+        &self,
+        _a: EncryptArgs,
+        _o: Option<&str>,
+    ) -> Result<EncryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn decrypt(
+        &self,
+        _a: DecryptArgs,
+        _o: Option<&str>,
+    ) -> Result<DecryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_hmac(
+        &self,
+        _a: CreateHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_hmac(
+        &self,
+        _a: VerifyHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifyHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_signature(
+        &self,
+        _a: CreateSignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateSignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_signature(
+        &self,
+        _a: VerifySignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifySignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn acquire_certificate(
+        &self,
+        _a: AcquireCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<Certificate, WalletError> {
+        unimplemented!()
+    }
+    async fn list_certificates(
+        &self,
+        _a: ListCertificatesArgs,
+        _o: Option<&str>,
+    ) -> Result<ListCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn prove_certificate(
+        &self,
+        _a: ProveCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<ProveCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_certificate(
+        &self,
+        _a: RelinquishCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_identity_key(
+        &self,
+        _a: DiscoverByIdentityKeyArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_attributes(
+        &self,
+        _a: DiscoverByAttributesArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn wait_for_authentication(
+        &self,
+        _o: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_header_for_height(
+        &self,
+        _a: GetHeaderArgs,
+        _o: Option<&str>,
+    ) -> Result<GetHeaderResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> {
+        unimplemented!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,8 +259,7 @@ impl CapturingMockWallet {
 }
 
 /// Test public key hex (compressed secp256k1 generator point).
-const TEST_PUBKEY_HEX: &str =
-    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+const TEST_PUBKEY_HEX: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
 /// A fake Atomic BEEF — non-empty bytes recognized by is_atomic_beef placeholder.
 const MOCK_TX_BYTES: &[u8] = &[0xEF, 0xBE, 0xAD, 0xDE];
@@ -170,31 +319,164 @@ impl WalletInterface for CapturingMockWallet {
         Ok(InternalizeActionResult { accepted: true })
     }
 
-    async fn sign_action(&self, _a: SignActionArgs, _o: Option<&str>) -> Result<SignActionResult, WalletError> { unimplemented!() }
-    async fn abort_action(&self, _a: AbortActionArgs, _o: Option<&str>) -> Result<AbortActionResult, WalletError> { unimplemented!() }
-    async fn list_actions(&self, _a: ListActionsArgs, _o: Option<&str>) -> Result<ListActionsResult, WalletError> { unimplemented!() }
-    async fn list_outputs(&self, _a: ListOutputsArgs, _o: Option<&str>) -> Result<ListOutputsResult, WalletError> { unimplemented!() }
-    async fn relinquish_output(&self, _a: RelinquishOutputArgs, _o: Option<&str>) -> Result<RelinquishOutputResult, WalletError> { unimplemented!() }
-    async fn reveal_counterparty_key_linkage(&self, _a: RevealCounterpartyKeyLinkageArgs, _o: Option<&str>) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn reveal_specific_key_linkage(&self, _a: RevealSpecificKeyLinkageArgs, _o: Option<&str>) -> Result<RevealSpecificKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn encrypt(&self, _a: EncryptArgs, _o: Option<&str>) -> Result<EncryptResult, WalletError> { unimplemented!() }
-    async fn decrypt(&self, _a: DecryptArgs, _o: Option<&str>) -> Result<DecryptResult, WalletError> { unimplemented!() }
-    async fn create_hmac(&self, _a: CreateHmacArgs, _o: Option<&str>) -> Result<CreateHmacResult, WalletError> { unimplemented!() }
-    async fn verify_hmac(&self, _a: VerifyHmacArgs, _o: Option<&str>) -> Result<VerifyHmacResult, WalletError> { unimplemented!() }
-    async fn create_signature(&self, _a: CreateSignatureArgs, _o: Option<&str>) -> Result<CreateSignatureResult, WalletError> { unimplemented!() }
-    async fn verify_signature(&self, _a: VerifySignatureArgs, _o: Option<&str>) -> Result<VerifySignatureResult, WalletError> { unimplemented!() }
-    async fn acquire_certificate(&self, _a: AcquireCertificateArgs, _o: Option<&str>) -> Result<Certificate, WalletError> { unimplemented!() }
-    async fn list_certificates(&self, _a: ListCertificatesArgs, _o: Option<&str>) -> Result<ListCertificatesResult, WalletError> { unimplemented!() }
-    async fn prove_certificate(&self, _a: ProveCertificateArgs, _o: Option<&str>) -> Result<ProveCertificateResult, WalletError> { unimplemented!() }
-    async fn relinquish_certificate(&self, _a: RelinquishCertificateArgs, _o: Option<&str>) -> Result<RelinquishCertificateResult, WalletError> { unimplemented!() }
-    async fn discover_by_identity_key(&self, _a: DiscoverByIdentityKeyArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn discover_by_attributes(&self, _a: DiscoverByAttributesArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn wait_for_authentication(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> { unimplemented!() }
-    async fn get_header_for_height(&self, _a: GetHeaderArgs, _o: Option<&str>) -> Result<GetHeaderResult, WalletError> { unimplemented!() }
-    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> { unimplemented!() }
-    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> { unimplemented!() }
+    async fn sign_action(
+        &self,
+        _a: SignActionArgs,
+        _o: Option<&str>,
+    ) -> Result<SignActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn abort_action(
+        &self,
+        _a: AbortActionArgs,
+        _o: Option<&str>,
+    ) -> Result<AbortActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_actions(
+        &self,
+        _a: ListActionsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListActionsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_outputs(
+        &self,
+        _a: ListOutputsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListOutputsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_output(
+        &self,
+        _a: RelinquishOutputArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishOutputResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        _a: RevealCounterpartyKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_specific_key_linkage(
+        &self,
+        _a: RevealSpecificKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn encrypt(
+        &self,
+        _a: EncryptArgs,
+        _o: Option<&str>,
+    ) -> Result<EncryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn decrypt(
+        &self,
+        _a: DecryptArgs,
+        _o: Option<&str>,
+    ) -> Result<DecryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_hmac(
+        &self,
+        _a: CreateHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_hmac(
+        &self,
+        _a: VerifyHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifyHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_signature(
+        &self,
+        _a: CreateSignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateSignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_signature(
+        &self,
+        _a: VerifySignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifySignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn acquire_certificate(
+        &self,
+        _a: AcquireCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<Certificate, WalletError> {
+        unimplemented!()
+    }
+    async fn list_certificates(
+        &self,
+        _a: ListCertificatesArgs,
+        _o: Option<&str>,
+    ) -> Result<ListCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn prove_certificate(
+        &self,
+        _a: ProveCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<ProveCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_certificate(
+        &self,
+        _a: RelinquishCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_identity_key(
+        &self,
+        _a: DiscoverByIdentityKeyArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_attributes(
+        &self,
+        _a: DiscoverByAttributesArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn wait_for_authentication(
+        &self,
+        _o: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_header_for_height(
+        &self,
+        _a: GetHeaderArgs,
+        _o: Option<&str>,
+    ) -> Result<GetHeaderResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> {
+        unimplemented!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +506,9 @@ struct IncrementingNonceProvider {
 
 impl IncrementingNonceProvider {
     fn new() -> Self {
-        Self { counter: Arc::new(Mutex::new(0)) }
+        Self {
+            counter: Arc::new(Mutex::new(0)),
+        }
     }
 }
 
@@ -245,10 +529,7 @@ struct MockLockingScriptProvider;
 
 #[async_trait]
 impl LockingScriptProvider for MockLockingScriptProvider {
-    async fn get_locking_script(
-        &self,
-        _public_key_hex: &str,
-    ) -> Result<String, RemittanceError> {
+    async fn get_locking_script(&self, _public_key_hex: &str) -> Result<String, RemittanceError> {
         Ok("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac".to_string())
     }
 }
@@ -313,10 +594,19 @@ fn test_option_terms_wire_format_minimal() {
     assert_eq!(json["amountSatoshis"], 5000);
     assert_eq!(json["payee"], "02abcdef");
     // None fields must be absent
-    assert!(json.get("outputIndex").is_none(), "outputIndex should be absent");
-    assert!(json.get("protocolID").is_none(), "protocolID should be absent when None");
+    assert!(
+        json.get("outputIndex").is_none(),
+        "outputIndex should be absent"
+    );
+    assert!(
+        json.get("protocolID").is_none(),
+        "protocolID should be absent when None"
+    );
     assert!(json.get("labels").is_none(), "labels should be absent");
-    assert!(json.get("description").is_none(), "description should be absent");
+    assert!(
+        json.get("description").is_none(),
+        "description should be absent"
+    );
     // Roundtrip
     let rt: Brc29OptionTerms = serde_json::from_value(json).unwrap();
     assert_eq!(rt.amount_satoshis, 5000);
@@ -330,7 +620,10 @@ fn test_option_terms_wire_format_full() {
         amount_satoshis: 10_000,
         payee: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".to_string(),
         output_index: Some(1),
-        protocol_id: Some(Protocol { security_level: 2, protocol: "3241645161d8".to_string() }),
+        protocol_id: Some(Protocol {
+            security_level: 2,
+            protocol: "3241645161d8".to_string(),
+        }),
         labels: Some(vec!["brc29".to_string()]),
         description: Some("test payment".to_string()),
     };
@@ -338,8 +631,14 @@ fn test_option_terms_wire_format_full() {
     assert_eq!(json["amountSatoshis"], 10_000);
     assert_eq!(json["outputIndex"], 1);
     // TS field is protocolID (uppercase D), not protocolId
-    assert!(json.get("protocolID").is_some(), "field must be protocolID (uppercase D)");
-    assert!(json.get("protocolId").is_none(), "must NOT be protocolId (lowercase d)");
+    assert!(
+        json.get("protocolID").is_some(),
+        "field must be protocolID (uppercase D)"
+    );
+    assert!(
+        json.get("protocolId").is_none(),
+        "must NOT be protocolId (lowercase d)"
+    );
     // Roundtrip
     let rt: Brc29OptionTerms = serde_json::from_value(json).unwrap();
     assert_eq!(rt.output_index, Some(1));
@@ -369,7 +668,10 @@ fn test_settlement_artifact_wire_format() {
     assert_eq!(json["transaction"][0], 0xef);
     assert_eq!(json["transaction"][1], 0xbe);
     assert_eq!(json["amountSatoshis"], 5000);
-    assert!(json.get("outputIndex").is_none(), "optional outputIndex absent when None");
+    assert!(
+        json.get("outputIndex").is_none(),
+        "optional outputIndex absent when None"
+    );
     // Roundtrip
     let rt: Brc29SettlementArtifact = serde_json::from_value(json).unwrap();
     assert_eq!(rt.transaction, vec![0xef, 0xbe, 0xad, 0xde]);
@@ -441,7 +743,10 @@ fn test_receipt_data_wire_format_with_refund() {
     let receipt = Brc29ReceiptData {
         internalize_result: Some(serde_json::json!({"accepted": true})),
         rejected_reason: None,
-        refund: Some(Brc29RefundData { token: artifact, fee_satoshis: 500 }),
+        refund: Some(Brc29RefundData {
+            token: artifact,
+            fee_satoshis: 500,
+        }),
     };
     let json = serde_json::to_value(&receipt).unwrap();
     assert_eq!(json["internalizeResult"]["accepted"], true);
@@ -578,7 +883,10 @@ fn test_ensure_valid_settlement_rejects_empty_transaction() {
         output_index: None,
     };
     let err = ensure_valid_settlement(&artifact).unwrap_err();
-    assert!(err.contains("transaction") || err.contains("non-empty"), "error: {err}");
+    assert!(
+        err.contains("transaction") || err.contains("non-empty"),
+        "error: {err}"
+    );
 }
 
 #[test]
@@ -623,7 +931,10 @@ fn test_ensure_valid_settlement_rejects_zero_amount() {
         output_index: None,
     };
     let err = ensure_valid_settlement(&artifact).unwrap_err();
-    assert!(err.contains("amount") || err.contains("positive"), "error: {err}");
+    assert!(
+        err.contains("amount") || err.contains("positive"),
+        "error: {err}"
+    );
 }
 
 #[test]
@@ -703,7 +1014,8 @@ async fn test_build_settlement_success_creates_two_nonces() {
     let (module, ctx) = make_capturing_module(wallet.clone());
     let option = make_valid_option();
 
-    let result = module.build_settlement("thread-001", None, &option, None, &ctx)
+    let result = module
+        .build_settlement("thread-001", None, &option, None, &ctx)
         .await
         .unwrap();
 
@@ -711,8 +1023,14 @@ async fn test_build_settlement_success_creates_two_nonces() {
     match result {
         bsv::remittance::remittance_module::BuildSettlementResult::Settle { artifact } => {
             // Two distinct nonces stored in artifact
-            assert_eq!(artifact.custom_instructions.derivation_prefix, "mock-nonce-1");
-            assert_eq!(artifact.custom_instructions.derivation_suffix, "mock-nonce-2");
+            assert_eq!(
+                artifact.custom_instructions.derivation_prefix,
+                "mock-nonce-1"
+            );
+            assert_eq!(
+                artifact.custom_instructions.derivation_suffix,
+                "mock-nonce-2"
+            );
             // Transaction bytes match mock
             assert_eq!(artifact.transaction, MOCK_TX_BYTES);
             // Amount matches option
@@ -728,12 +1046,17 @@ async fn test_build_settlement_calls_get_public_key_with_correct_args() {
     let (module, ctx) = make_capturing_module(wallet.clone());
     let option = make_valid_option();
 
-    module.build_settlement("thread-001", None, &option, None, &ctx)
+    module
+        .build_settlement("thread-001", None, &option, None, &ctx)
         .await
         .unwrap();
 
     let calls = wallet.get_public_key_calls.lock().unwrap();
-    assert_eq!(calls.len(), 1, "get_public_key should be called exactly once");
+    assert_eq!(
+        calls.len(),
+        1,
+        "get_public_key should be called exactly once"
+    );
     let args = &calls[0];
     // identity_key must be false (derives child key, not identity key)
     assert!(!args.identity_key, "identity_key must be false");
@@ -748,9 +1071,15 @@ async fn test_build_settlement_calls_get_public_key_with_correct_args() {
     assert_eq!(pid.security_level, 2);
     assert_eq!(pid.protocol, "3241645161d8");
     // counterparty must be Other with the payee public key
-    let cp = args.counterparty.as_ref().expect("counterparty must be set");
+    let cp = args
+        .counterparty
+        .as_ref()
+        .expect("counterparty must be set");
     assert_eq!(cp.counterparty_type, CounterpartyType::Other);
-    let cp_pk = cp.public_key.as_ref().expect("counterparty public_key must be set");
+    let cp_pk = cp
+        .public_key
+        .as_ref()
+        .expect("counterparty public_key must be set");
     assert_eq!(cp_pk.to_der_hex(), TEST_PUBKEY_HEX);
 }
 
@@ -760,22 +1089,34 @@ async fn test_build_settlement_calls_create_action_with_correct_args() {
     let (module, ctx) = make_capturing_module(wallet.clone());
     let option = make_valid_option();
 
-    module.build_settlement("thread-001", None, &option, Some("test note"), &ctx)
+    module
+        .build_settlement("thread-001", None, &option, Some("test note"), &ctx)
         .await
         .unwrap();
 
     let calls = wallet.create_action_calls.lock().unwrap();
-    assert_eq!(calls.len(), 1, "create_action should be called exactly once");
+    assert_eq!(
+        calls.len(),
+        1,
+        "create_action should be called exactly once"
+    );
     let args = &calls[0];
 
     // Outputs: exactly one output
     assert_eq!(args.outputs.len(), 1);
     let output = &args.outputs[0];
-    assert_eq!(output.satoshis, 5000, "satoshis must match option.amount_satoshis");
+    assert_eq!(
+        output.satoshis, 5000,
+        "satoshis must match option.amount_satoshis"
+    );
 
     // custom_instructions must be valid JSON with camelCase fields
-    let ci_str = output.custom_instructions.as_ref().expect("custom_instructions must be set");
-    let ci: serde_json::Value = serde_json::from_str(ci_str).expect("custom_instructions must be valid JSON");
+    let ci_str = output
+        .custom_instructions
+        .as_ref()
+        .expect("custom_instructions must be set");
+    let ci: serde_json::Value =
+        serde_json::from_str(ci_str).expect("custom_instructions must be valid JSON");
     assert_eq!(ci["derivationPrefix"], "mock-nonce-1");
     assert_eq!(ci["derivationSuffix"], "mock-nonce-2");
     assert_eq!(ci["payee"], TEST_PUBKEY_HEX);
@@ -783,7 +1124,10 @@ async fn test_build_settlement_calls_create_action_with_correct_args() {
     assert_eq!(ci["note"], "test note");
 
     // locking_script must be present (bytes decoded from the mock hex)
-    assert!(output.locking_script.is_some(), "locking_script must be set");
+    assert!(
+        output.locking_script.is_some(),
+        "locking_script must be set"
+    );
 
     // options.randomize_outputs must be false
     let opts = args.options.as_ref().expect("options must be set");
@@ -804,7 +1148,8 @@ async fn test_build_settlement_returns_terminate_for_zero_amount() {
         ..make_valid_option()
     };
 
-    let result = module.build_settlement("thread-001", None, &option, None, &ctx)
+    let result = module
+        .build_settlement("thread-001", None, &option, None, &ctx)
         .await
         .unwrap();
 
@@ -825,7 +1170,8 @@ async fn test_build_settlement_returns_terminate_when_wallet_returns_no_tx() {
     let (module, ctx) = make_capturing_module(wallet);
     let option = make_valid_option();
 
-    let result = module.build_settlement("thread-001", None, &option, None, &ctx)
+    let result = module
+        .build_settlement("thread-001", None, &option, None, &ctx)
         .await
         .unwrap();
 
@@ -846,7 +1192,8 @@ async fn test_build_settlement_returns_terminate_when_get_public_key_errors() {
     let (module, ctx) = make_capturing_module(wallet);
     let option = make_valid_option();
 
-    let result = module.build_settlement("thread-001", None, &option, None, &ctx)
+    let result = module
+        .build_settlement("thread-001", None, &option, None, &ctx)
         .await
         .unwrap();
 
@@ -906,12 +1253,18 @@ fn test_ensure_valid_option_empty_protocol_string() {
         amount_satoshis: 5000,
         payee: TEST_PUBKEY_HEX.to_string(),
         output_index: None,
-        protocol_id: Some(Protocol { security_level: 2, protocol: "".to_string() }),
+        protocol_id: Some(Protocol {
+            security_level: 2,
+            protocol: "".to_string(),
+        }),
         labels: None,
         description: None,
     };
     let err = ensure_valid_option(&opt).unwrap_err();
-    assert!(err.contains("protocolID") || err.contains("protocol"), "error: {err}");
+    assert!(
+        err.contains("protocolID") || err.contains("protocol"),
+        "error: {err}"
+    );
 }
 
 #[test]
@@ -925,7 +1278,10 @@ fn test_ensure_valid_option_empty_label() {
         description: None,
     };
     let err = ensure_valid_option(&opt).unwrap_err();
-    assert!(err.contains("label") || err.contains("labels"), "error: {err}");
+    assert!(
+        err.contains("label") || err.contains("labels"),
+        "error: {err}"
+    );
 }
 
 #[test]
@@ -939,7 +1295,10 @@ fn test_ensure_valid_option_whitespace_label() {
         description: None,
     };
     let err = ensure_valid_option(&opt).unwrap_err();
-    assert!(err.contains("label") || err.contains("labels"), "error: {err}");
+    assert!(
+        err.contains("label") || err.contains("labels"),
+        "error: {err}"
+    );
 }
 
 #[test]
@@ -976,7 +1335,10 @@ fn test_ensure_valid_option_valid_with_all_optional_fields() {
         amount_satoshis: 5000,
         payee: TEST_PUBKEY_HEX.to_string(),
         output_index: Some(0),
-        protocol_id: Some(Protocol { security_level: 2, protocol: "3241645161d8".to_string() }),
+        protocol_id: Some(Protocol {
+            security_level: 2,
+            protocol: "3241645161d8".to_string(),
+        }),
         labels: Some(vec!["brc29".to_string()]),
         description: Some("valid description".to_string()),
     };
@@ -1021,7 +1383,8 @@ async fn test_accept_settlement_success_calls_internalize_with_correct_args() {
     let (module, ctx) = make_capturing_module(wallet.clone());
     let artifact = make_valid_artifact();
 
-    let result = module.accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+    let result = module
+        .accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
         .await
         .unwrap();
 
@@ -1030,7 +1393,9 @@ async fn test_accept_settlement_success_calls_internalize_with_correct_args() {
         bsv::remittance::remittance_module::AcceptSettlementResult::Accept { receipt_data } => {
             let rd = receipt_data.expect("receipt_data must be Some");
             // internalize_result must be present and have accepted=true
-            let ir = rd.internalize_result.expect("internalize_result must be set");
+            let ir = rd
+                .internalize_result
+                .expect("internalize_result must be set");
             assert_eq!(ir["accepted"], true);
         }
         other => panic!("expected Accept, got {:?}", other),
@@ -1047,7 +1412,11 @@ async fn test_accept_settlement_success_calls_internalize_with_correct_args() {
 
     // outputs: one WalletPayment
     assert_eq!(args.outputs.len(), 1);
-    if let bsv::wallet::interfaces::InternalizeOutput::WalletPayment { output_index, payment } = &args.outputs[0] {
+    if let bsv::wallet::interfaces::InternalizeOutput::WalletPayment {
+        output_index,
+        payment,
+    } = &args.outputs[0]
+    {
         assert_eq!(*output_index, 0);
         // derivation_prefix as bytes
         assert_eq!(payment.derivation_prefix, b"prefix-abc".to_vec());
@@ -1064,11 +1433,12 @@ async fn test_accept_settlement_returns_terminate_for_empty_transaction() {
     let wallet = Arc::new(CapturingMockWallet::new());
     let (module, ctx) = make_capturing_module(wallet.clone());
     let artifact = Brc29SettlementArtifact {
-        transaction: vec![],  // invalid — triggers ensure_valid_settlement
+        transaction: vec![], // invalid — triggers ensure_valid_settlement
         ..make_valid_artifact()
     };
 
-    let result = module.accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+    let result = module
+        .accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
         .await
         .unwrap();
 
@@ -1081,7 +1451,10 @@ async fn test_accept_settlement_returns_terminate_for_empty_transaction() {
 
     // Wallet must NOT have been called (validation failed before wallet call)
     let calls = wallet.internalize_action_calls.lock().unwrap();
-    assert!(calls.is_empty(), "internalize_action must not be called when validation fails");
+    assert!(
+        calls.is_empty(),
+        "internalize_action must not be called when validation fails"
+    );
 }
 
 #[tokio::test]
@@ -1094,9 +1467,10 @@ async fn test_accept_settlement_returns_terminate_when_internalize_errors() {
     let artifact = make_valid_artifact();
 
     // The error must be CAUGHT — result must be Ok(Terminate), NOT Err
-    let result = module.accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+    let result = module
+        .accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
         .await
-        .unwrap();  // must be Ok, not Err
+        .unwrap(); // must be Ok, not Err
 
     match result {
         bsv::remittance::remittance_module::AcceptSettlementResult::Terminate { termination } => {
@@ -1121,7 +1495,8 @@ async fn test_accept_settlement_basket_insertion_uses_config_protocol() {
     let ctx = make_ctx(wallet.clone() as Arc<dyn WalletInterface>);
     let artifact = make_valid_artifact();
 
-    let result = module.accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+    let result = module
+        .accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
         .await
         .unwrap();
 
@@ -1129,7 +1504,9 @@ async fn test_accept_settlement_basket_insertion_uses_config_protocol() {
     match result {
         bsv::remittance::remittance_module::AcceptSettlementResult::Accept { receipt_data } => {
             let rd = receipt_data.expect("receipt_data must be Some");
-            let ir = rd.internalize_result.expect("internalize_result must be set");
+            let ir = rd
+                .internalize_result
+                .expect("internalize_result must be set");
             assert_eq!(ir["accepted"], true);
         }
         other => panic!("expected Accept, got {:?}", other),
@@ -1140,14 +1517,27 @@ async fn test_accept_settlement_basket_insertion_uses_config_protocol() {
     assert_eq!(calls.len(), 1, "internalize_action called exactly once");
     let args = &calls[0];
     assert_eq!(args.outputs.len(), 1);
-    if let bsv::wallet::interfaces::InternalizeOutput::BasketInsertion { output_index, insertion } = &args.outputs[0] {
+    if let bsv::wallet::interfaces::InternalizeOutput::BasketInsertion {
+        output_index,
+        insertion,
+    } = &args.outputs[0]
+    {
         assert_eq!(*output_index, 0);
         assert_eq!(insertion.basket, "brc29");
         assert!(insertion.tags.is_empty(), "tags should be empty");
         // custom_instructions should contain derivation info
-        let ci = insertion.custom_instructions.as_ref().expect("custom_instructions must be set");
-        assert!(ci.contains("prefix-abc"), "custom_instructions must contain derivation_prefix");
-        assert!(ci.contains("suffix-xyz"), "custom_instructions must contain derivation_suffix");
+        let ci = insertion
+            .custom_instructions
+            .as_ref()
+            .expect("custom_instructions must be set");
+        assert!(
+            ci.contains("prefix-abc"),
+            "custom_instructions must contain derivation_prefix"
+        );
+        assert!(
+            ci.contains("suffix-xyz"),
+            "custom_instructions must contain derivation_suffix"
+        );
     } else {
         panic!("expected BasketInsertion variant, got WalletPayment");
     }

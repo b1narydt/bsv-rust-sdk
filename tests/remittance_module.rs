@@ -16,22 +16,21 @@ use bsv::remittance::remittance_module::{
     AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
 };
 use bsv::remittance::types::{
-    Amount, InstrumentBase, Invoice, ModuleContext, RemittanceKind, Settlement, Termination,
-    sat_unit,
+    sat_unit, Amount, InstrumentBase, Invoice, ModuleContext, RemittanceKind, Settlement,
+    Termination,
 };
 use bsv::wallet::error::WalletError;
 use bsv::wallet::interfaces::{
-    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult,
-    Certificate, CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult,
-    CreateSignatureArgs, CreateSignatureResult, DecryptArgs, DecryptResult,
-    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult,
-    EncryptArgs, EncryptResult, GetHeaderArgs, GetHeaderResult, GetHeightResult,
-    GetNetworkResult, GetPublicKeyArgs, GetPublicKeyResult, GetVersionResult,
-    InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
-    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
-    ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
-    RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
-    RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
+    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult, Certificate,
+    CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult, CreateSignatureArgs,
+    CreateSignatureResult, DecryptArgs, DecryptResult, DiscoverByAttributesArgs,
+    DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
+    GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
+    GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
+    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
+    ListOutputsArgs, ListOutputsResult, ProveCertificateArgs, ProveCertificateResult,
+    RelinquishCertificateArgs, RelinquishCertificateResult, RelinquishOutputArgs,
+    RelinquishOutputResult, RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
     RevealSpecificKeyLinkageArgs, RevealSpecificKeyLinkageResult, SignActionArgs, SignActionResult,
     VerifyHmacArgs, VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletInterface,
 };
@@ -44,34 +43,194 @@ struct MockWallet;
 
 #[async_trait]
 impl WalletInterface for MockWallet {
-    async fn create_action(&self, _args: CreateActionArgs, _originator: Option<&str>) -> Result<CreateActionResult, WalletError> { unimplemented!() }
-    async fn sign_action(&self, _args: SignActionArgs, _originator: Option<&str>) -> Result<SignActionResult, WalletError> { unimplemented!() }
-    async fn abort_action(&self, _args: AbortActionArgs, _originator: Option<&str>) -> Result<AbortActionResult, WalletError> { unimplemented!() }
-    async fn list_actions(&self, _args: ListActionsArgs, _originator: Option<&str>) -> Result<ListActionsResult, WalletError> { unimplemented!() }
-    async fn internalize_action(&self, _args: InternalizeActionArgs, _originator: Option<&str>) -> Result<InternalizeActionResult, WalletError> { unimplemented!() }
-    async fn list_outputs(&self, _args: ListOutputsArgs, _originator: Option<&str>) -> Result<ListOutputsResult, WalletError> { unimplemented!() }
-    async fn relinquish_output(&self, _args: RelinquishOutputArgs, _originator: Option<&str>) -> Result<RelinquishOutputResult, WalletError> { unimplemented!() }
-    async fn get_public_key(&self, _args: GetPublicKeyArgs, _originator: Option<&str>) -> Result<GetPublicKeyResult, WalletError> { unimplemented!() }
-    async fn reveal_counterparty_key_linkage(&self, _args: RevealCounterpartyKeyLinkageArgs, _originator: Option<&str>) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn reveal_specific_key_linkage(&self, _args: RevealSpecificKeyLinkageArgs, _originator: Option<&str>) -> Result<RevealSpecificKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn encrypt(&self, _args: EncryptArgs, _originator: Option<&str>) -> Result<EncryptResult, WalletError> { unimplemented!() }
-    async fn decrypt(&self, _args: DecryptArgs, _originator: Option<&str>) -> Result<DecryptResult, WalletError> { unimplemented!() }
-    async fn create_hmac(&self, _args: CreateHmacArgs, _originator: Option<&str>) -> Result<CreateHmacResult, WalletError> { unimplemented!() }
-    async fn verify_hmac(&self, _args: VerifyHmacArgs, _originator: Option<&str>) -> Result<VerifyHmacResult, WalletError> { unimplemented!() }
-    async fn create_signature(&self, _args: CreateSignatureArgs, _originator: Option<&str>) -> Result<CreateSignatureResult, WalletError> { unimplemented!() }
-    async fn verify_signature(&self, _args: VerifySignatureArgs, _originator: Option<&str>) -> Result<VerifySignatureResult, WalletError> { unimplemented!() }
-    async fn acquire_certificate(&self, _args: AcquireCertificateArgs, _originator: Option<&str>) -> Result<Certificate, WalletError> { unimplemented!() }
-    async fn list_certificates(&self, _args: ListCertificatesArgs, _originator: Option<&str>) -> Result<ListCertificatesResult, WalletError> { unimplemented!() }
-    async fn prove_certificate(&self, _args: ProveCertificateArgs, _originator: Option<&str>) -> Result<ProveCertificateResult, WalletError> { unimplemented!() }
-    async fn relinquish_certificate(&self, _args: RelinquishCertificateArgs, _originator: Option<&str>) -> Result<RelinquishCertificateResult, WalletError> { unimplemented!() }
-    async fn discover_by_identity_key(&self, _args: DiscoverByIdentityKeyArgs, _originator: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn discover_by_attributes(&self, _args: DiscoverByAttributesArgs, _originator: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn is_authenticated(&self, _originator: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn wait_for_authentication(&self, _originator: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn get_height(&self, _originator: Option<&str>) -> Result<GetHeightResult, WalletError> { unimplemented!() }
-    async fn get_header_for_height(&self, _args: GetHeaderArgs, _originator: Option<&str>) -> Result<GetHeaderResult, WalletError> { unimplemented!() }
-    async fn get_network(&self, _originator: Option<&str>) -> Result<GetNetworkResult, WalletError> { unimplemented!() }
-    async fn get_version(&self, _originator: Option<&str>) -> Result<GetVersionResult, WalletError> { unimplemented!() }
+    async fn create_action(
+        &self,
+        _args: CreateActionArgs,
+        _originator: Option<&str>,
+    ) -> Result<CreateActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn sign_action(
+        &self,
+        _args: SignActionArgs,
+        _originator: Option<&str>,
+    ) -> Result<SignActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn abort_action(
+        &self,
+        _args: AbortActionArgs,
+        _originator: Option<&str>,
+    ) -> Result<AbortActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_actions(
+        &self,
+        _args: ListActionsArgs,
+        _originator: Option<&str>,
+    ) -> Result<ListActionsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn internalize_action(
+        &self,
+        _args: InternalizeActionArgs,
+        _originator: Option<&str>,
+    ) -> Result<InternalizeActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_outputs(
+        &self,
+        _args: ListOutputsArgs,
+        _originator: Option<&str>,
+    ) -> Result<ListOutputsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_output(
+        &self,
+        _args: RelinquishOutputArgs,
+        _originator: Option<&str>,
+    ) -> Result<RelinquishOutputResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_public_key(
+        &self,
+        _args: GetPublicKeyArgs,
+        _originator: Option<&str>,
+    ) -> Result<GetPublicKeyResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        _args: RevealCounterpartyKeyLinkageArgs,
+        _originator: Option<&str>,
+    ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_specific_key_linkage(
+        &self,
+        _args: RevealSpecificKeyLinkageArgs,
+        _originator: Option<&str>,
+    ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn encrypt(
+        &self,
+        _args: EncryptArgs,
+        _originator: Option<&str>,
+    ) -> Result<EncryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn decrypt(
+        &self,
+        _args: DecryptArgs,
+        _originator: Option<&str>,
+    ) -> Result<DecryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_hmac(
+        &self,
+        _args: CreateHmacArgs,
+        _originator: Option<&str>,
+    ) -> Result<CreateHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_hmac(
+        &self,
+        _args: VerifyHmacArgs,
+        _originator: Option<&str>,
+    ) -> Result<VerifyHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_signature(
+        &self,
+        _args: CreateSignatureArgs,
+        _originator: Option<&str>,
+    ) -> Result<CreateSignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_signature(
+        &self,
+        _args: VerifySignatureArgs,
+        _originator: Option<&str>,
+    ) -> Result<VerifySignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn acquire_certificate(
+        &self,
+        _args: AcquireCertificateArgs,
+        _originator: Option<&str>,
+    ) -> Result<Certificate, WalletError> {
+        unimplemented!()
+    }
+    async fn list_certificates(
+        &self,
+        _args: ListCertificatesArgs,
+        _originator: Option<&str>,
+    ) -> Result<ListCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn prove_certificate(
+        &self,
+        _args: ProveCertificateArgs,
+        _originator: Option<&str>,
+    ) -> Result<ProveCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_certificate(
+        &self,
+        _args: RelinquishCertificateArgs,
+        _originator: Option<&str>,
+    ) -> Result<RelinquishCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_identity_key(
+        &self,
+        _args: DiscoverByIdentityKeyArgs,
+        _originator: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_attributes(
+        &self,
+        _args: DiscoverByAttributesArgs,
+        _originator: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn is_authenticated(
+        &self,
+        _originator: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn wait_for_authentication(
+        &self,
+        _originator: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_height(&self, _originator: Option<&str>) -> Result<GetHeightResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_header_for_height(
+        &self,
+        _args: GetHeaderArgs,
+        _originator: Option<&str>,
+    ) -> Result<GetHeaderResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_network(
+        &self,
+        _originator: Option<&str>,
+    ) -> Result<GetNetworkResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_version(
+        &self,
+        _originator: Option<&str>,
+    ) -> Result<GetVersionResult, WalletError> {
+        unimplemented!()
+    }
 }
 
 fn mock_ctx() -> ModuleContext {
@@ -178,11 +337,16 @@ fn erased_module_is_object_safe() {
 fn erased_module_in_hashmap() {
     // Verify a concrete module stored behind Arc compiles in a HashMap.
     // (ErasedRemittanceModule itself is pub(crate); this tests the typed path.)
-    let mut map: HashMap<String, Arc<dyn RemittanceModule<
-        OptionTerms = serde_json::Value,
-        SettlementArtifact = serde_json::Value,
-        ReceiptData = serde_json::Value,
-    >>> = HashMap::new();
+    let mut map: HashMap<
+        String,
+        Arc<
+            dyn RemittanceModule<
+                OptionTerms = serde_json::Value,
+                SettlementArtifact = serde_json::Value,
+                ReceiptData = serde_json::Value,
+            >,
+        >,
+    > = HashMap::new();
     map.insert("mock".to_string(), Arc::new(MockModule));
     let retrieved = map.get("mock").unwrap();
     assert_eq!(retrieved.id(), "mock");
@@ -231,7 +395,10 @@ fn accept_settlement_result_variants() {
         },
     };
     assert!(matches!(accept, AcceptSettlementResult::Accept { .. }));
-    assert!(matches!(terminate, AcceptSettlementResult::Terminate { .. }));
+    assert!(matches!(
+        terminate,
+        AcceptSettlementResult::Terminate { .. }
+    ));
 }
 
 #[tokio::test]

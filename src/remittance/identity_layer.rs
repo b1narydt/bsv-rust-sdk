@@ -14,8 +14,8 @@ use async_trait::async_trait;
 
 use crate::remittance::error::RemittanceError;
 use crate::remittance::types::{
-    IdentityVerificationAcknowledgment, IdentityVerificationRequest,
-    IdentityVerificationResponse, ModuleContext, Termination,
+    IdentityVerificationAcknowledgment, IdentityVerificationRequest, IdentityVerificationResponse,
+    ModuleContext, Termination,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,9 @@ use crate::remittance::types::{
 #[derive(Debug)]
 pub enum RespondToRequestResult {
     /// The local wallet can satisfy the request; includes the certificate response.
-    Respond { response: IdentityVerificationResponse },
+    Respond {
+        response: IdentityVerificationResponse,
+    },
     /// The local wallet refuses to satisfy the request; includes a termination reason.
     Terminate { termination: Termination },
 }
@@ -177,7 +179,10 @@ mod tests {
         };
 
         assert!(matches!(respond, RespondToRequestResult::Respond { .. }));
-        assert!(matches!(terminate, RespondToRequestResult::Terminate { .. }));
+        assert!(matches!(
+            terminate,
+            RespondToRequestResult::Terminate { .. }
+        ));
     }
 
     #[test]

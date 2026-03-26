@@ -46,10 +46,7 @@ impl CommsLayer for MockComms {
         Ok(vec![])
     }
 
-    async fn acknowledge_message(
-        &self,
-        _message_ids: &[String],
-    ) -> Result<(), RemittanceError> {
+    async fn acknowledge_message(&self, _message_ids: &[String]) -> Result<(), RemittanceError> {
         Ok(())
     }
 }

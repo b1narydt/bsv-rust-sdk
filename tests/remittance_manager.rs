@@ -5,40 +5,41 @@
 //! compilation errors in the lib test target — consistent with Phase 1/2 pattern.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 
 use bsv::remittance::comms_layer::CommsLayer;
 use bsv::remittance::error::RemittanceError;
-use bsv::remittance::identity_layer::{AssessIdentityResult, IdentityLayer, RespondToRequestResult};
+use bsv::remittance::identity_layer::{
+    AssessIdentityResult, IdentityLayer, RespondToRequestResult,
+};
 use bsv::remittance::manager::{
-    ComposeInvoiceInput, IdentityPhase, IdentityRuntimeOptions, RemittanceEvent,
-    RemittanceManager, RemittanceManagerConfig, RemittanceManagerRuntimeOptions,
-    RemittanceManagerState, Thread, ThreadFlags, ThreadIdentity, ThreadRole,
+    ComposeInvoiceInput, IdentityPhase, IdentityRuntimeOptions, RemittanceEvent, RemittanceManager,
+    RemittanceManagerConfig, RemittanceManagerRuntimeOptions, RemittanceManagerState, Thread,
+    ThreadFlags, ThreadIdentity, ThreadRole,
 };
 use bsv::remittance::remittance_module::{
     AcceptSettlementResult, BuildSettlementResult, RemittanceModule,
 };
 use bsv::remittance::types::{
-    Amount, IdentityVerificationAcknowledgment, IdentityVerificationRequest,
+    sat_unit, Amount, IdentityVerificationAcknowledgment, IdentityVerificationRequest,
     IdentityVerificationResponse, InstrumentBase, Invoice, LineItem, ModuleContext, PeerMessage,
-    Receipt, RemittanceEnvelope, RemittanceKind, RemittanceThreadState, Settlement, sat_unit,
+    Receipt, RemittanceEnvelope, RemittanceKind, RemittanceThreadState, Settlement,
 };
 use bsv::wallet::error::WalletError;
 use bsv::wallet::interfaces::{
-    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult,
-    Certificate, CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult,
-    CreateSignatureArgs, CreateSignatureResult, DecryptArgs, DecryptResult,
-    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult,
-    EncryptArgs, EncryptResult, GetHeaderArgs, GetHeaderResult, GetHeightResult,
-    GetNetworkResult, GetPublicKeyArgs, GetPublicKeyResult, GetVersionResult,
-    InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
-    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
-    ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
-    RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
-    RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
+    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult, Certificate,
+    CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult, CreateSignatureArgs,
+    CreateSignatureResult, DecryptArgs, DecryptResult, DiscoverByAttributesArgs,
+    DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
+    GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
+    GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
+    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
+    ListOutputsArgs, ListOutputsResult, ProveCertificateArgs, ProveCertificateResult,
+    RelinquishCertificateArgs, RelinquishCertificateResult, RelinquishOutputArgs,
+    RelinquishOutputResult, RevealCounterpartyKeyLinkageArgs, RevealCounterpartyKeyLinkageResult,
     RevealSpecificKeyLinkageArgs, RevealSpecificKeyLinkageResult, SignActionArgs, SignActionResult,
     VerifyHmacArgs, VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletInterface,
 };
@@ -51,41 +52,191 @@ struct MockWallet;
 
 #[async_trait]
 impl WalletInterface for MockWallet {
-    async fn create_action(&self, _a: CreateActionArgs, _o: Option<&str>) -> Result<CreateActionResult, WalletError> { unimplemented!() }
-    async fn sign_action(&self, _a: SignActionArgs, _o: Option<&str>) -> Result<SignActionResult, WalletError> { unimplemented!() }
-    async fn abort_action(&self, _a: AbortActionArgs, _o: Option<&str>) -> Result<AbortActionResult, WalletError> { unimplemented!() }
-    async fn list_actions(&self, _a: ListActionsArgs, _o: Option<&str>) -> Result<ListActionsResult, WalletError> { unimplemented!() }
-    async fn internalize_action(&self, _a: InternalizeActionArgs, _o: Option<&str>) -> Result<InternalizeActionResult, WalletError> { unimplemented!() }
-    async fn list_outputs(&self, _a: ListOutputsArgs, _o: Option<&str>) -> Result<ListOutputsResult, WalletError> { unimplemented!() }
-    async fn relinquish_output(&self, _a: RelinquishOutputArgs, _o: Option<&str>) -> Result<RelinquishOutputResult, WalletError> { unimplemented!() }
-    async fn get_public_key(&self, _a: GetPublicKeyArgs, _o: Option<&str>) -> Result<GetPublicKeyResult, WalletError> {
+    async fn create_action(
+        &self,
+        _a: CreateActionArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn sign_action(
+        &self,
+        _a: SignActionArgs,
+        _o: Option<&str>,
+    ) -> Result<SignActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn abort_action(
+        &self,
+        _a: AbortActionArgs,
+        _o: Option<&str>,
+    ) -> Result<AbortActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_actions(
+        &self,
+        _a: ListActionsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListActionsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn internalize_action(
+        &self,
+        _a: InternalizeActionArgs,
+        _o: Option<&str>,
+    ) -> Result<InternalizeActionResult, WalletError> {
+        unimplemented!()
+    }
+    async fn list_outputs(
+        &self,
+        _a: ListOutputsArgs,
+        _o: Option<&str>,
+    ) -> Result<ListOutputsResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_output(
+        &self,
+        _a: RelinquishOutputArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishOutputResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_public_key(
+        &self,
+        _a: GetPublicKeyArgs,
+        _o: Option<&str>,
+    ) -> Result<GetPublicKeyResult, WalletError> {
         // Return a valid compressed public key (the secp256k1 generator point in DER hex).
         // This is a well-known uncompressed point used only for testing.
         let pk = bsv::primitives::public_key::PublicKey::from_string(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        ).map_err(|e| WalletError::InvalidParameter(e.to_string()))?;
+        )
+        .map_err(|e| WalletError::InvalidParameter(e.to_string()))?;
         Ok(GetPublicKeyResult { public_key: pk })
     }
-    async fn reveal_counterparty_key_linkage(&self, _a: RevealCounterpartyKeyLinkageArgs, _o: Option<&str>) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn reveal_specific_key_linkage(&self, _a: RevealSpecificKeyLinkageArgs, _o: Option<&str>) -> Result<RevealSpecificKeyLinkageResult, WalletError> { unimplemented!() }
-    async fn encrypt(&self, _a: EncryptArgs, _o: Option<&str>) -> Result<EncryptResult, WalletError> { unimplemented!() }
-    async fn decrypt(&self, _a: DecryptArgs, _o: Option<&str>) -> Result<DecryptResult, WalletError> { unimplemented!() }
-    async fn create_hmac(&self, _a: CreateHmacArgs, _o: Option<&str>) -> Result<CreateHmacResult, WalletError> { unimplemented!() }
-    async fn verify_hmac(&self, _a: VerifyHmacArgs, _o: Option<&str>) -> Result<VerifyHmacResult, WalletError> { unimplemented!() }
-    async fn create_signature(&self, _a: CreateSignatureArgs, _o: Option<&str>) -> Result<CreateSignatureResult, WalletError> { unimplemented!() }
-    async fn verify_signature(&self, _a: VerifySignatureArgs, _o: Option<&str>) -> Result<VerifySignatureResult, WalletError> { unimplemented!() }
-    async fn acquire_certificate(&self, _a: AcquireCertificateArgs, _o: Option<&str>) -> Result<Certificate, WalletError> { unimplemented!() }
-    async fn list_certificates(&self, _a: ListCertificatesArgs, _o: Option<&str>) -> Result<ListCertificatesResult, WalletError> { unimplemented!() }
-    async fn prove_certificate(&self, _a: ProveCertificateArgs, _o: Option<&str>) -> Result<ProveCertificateResult, WalletError> { unimplemented!() }
-    async fn relinquish_certificate(&self, _a: RelinquishCertificateArgs, _o: Option<&str>) -> Result<RelinquishCertificateResult, WalletError> { unimplemented!() }
-    async fn discover_by_identity_key(&self, _a: DiscoverByIdentityKeyArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn discover_by_attributes(&self, _a: DiscoverByAttributesArgs, _o: Option<&str>) -> Result<DiscoverCertificatesResult, WalletError> { unimplemented!() }
-    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn wait_for_authentication(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> { unimplemented!() }
-    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> { unimplemented!() }
-    async fn get_header_for_height(&self, _a: GetHeaderArgs, _o: Option<&str>) -> Result<GetHeaderResult, WalletError> { unimplemented!() }
-    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> { unimplemented!() }
-    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> { unimplemented!() }
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        _a: RevealCounterpartyKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn reveal_specific_key_linkage(
+        &self,
+        _a: RevealSpecificKeyLinkageArgs,
+        _o: Option<&str>,
+    ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+        unimplemented!()
+    }
+    async fn encrypt(
+        &self,
+        _a: EncryptArgs,
+        _o: Option<&str>,
+    ) -> Result<EncryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn decrypt(
+        &self,
+        _a: DecryptArgs,
+        _o: Option<&str>,
+    ) -> Result<DecryptResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_hmac(
+        &self,
+        _a: CreateHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_hmac(
+        &self,
+        _a: VerifyHmacArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifyHmacResult, WalletError> {
+        unimplemented!()
+    }
+    async fn create_signature(
+        &self,
+        _a: CreateSignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<CreateSignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn verify_signature(
+        &self,
+        _a: VerifySignatureArgs,
+        _o: Option<&str>,
+    ) -> Result<VerifySignatureResult, WalletError> {
+        unimplemented!()
+    }
+    async fn acquire_certificate(
+        &self,
+        _a: AcquireCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<Certificate, WalletError> {
+        unimplemented!()
+    }
+    async fn list_certificates(
+        &self,
+        _a: ListCertificatesArgs,
+        _o: Option<&str>,
+    ) -> Result<ListCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn prove_certificate(
+        &self,
+        _a: ProveCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<ProveCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn relinquish_certificate(
+        &self,
+        _a: RelinquishCertificateArgs,
+        _o: Option<&str>,
+    ) -> Result<RelinquishCertificateResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_identity_key(
+        &self,
+        _a: DiscoverByIdentityKeyArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn discover_by_attributes(
+        &self,
+        _a: DiscoverByAttributesArgs,
+        _o: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        unimplemented!()
+    }
+    async fn is_authenticated(&self, _o: Option<&str>) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn wait_for_authentication(
+        &self,
+        _o: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_height(&self, _o: Option<&str>) -> Result<GetHeightResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_header_for_height(
+        &self,
+        _a: GetHeaderArgs,
+        _o: Option<&str>,
+    ) -> Result<GetHeaderResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_network(&self, _o: Option<&str>) -> Result<GetNetworkResult, WalletError> {
+        unimplemented!()
+    }
+    async fn get_version(&self, _o: Option<&str>) -> Result<GetVersionResult, WalletError> {
+        unimplemented!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,10 +315,7 @@ impl CommsLayer for MockComms {
         Ok(msgs)
     }
 
-    async fn acknowledge_message(
-        &self,
-        message_ids: &[String],
-    ) -> Result<(), RemittanceError> {
+    async fn acknowledge_message(&self, message_ids: &[String]) -> Result<(), RemittanceError> {
         let mut ack = self.acknowledged.lock().unwrap();
         for id in message_ids {
             ack.push(id.clone());
@@ -273,9 +421,15 @@ impl RemittanceModule for MockModule {
     type SettlementArtifact = serde_json::Value;
     type ReceiptData = serde_json::Value;
 
-    fn id(&self) -> &str { "mock" }
-    fn name(&self) -> &str { "Mock Module" }
-    fn allow_unsolicited_settlements(&self) -> bool { false }
+    fn id(&self) -> &str {
+        "mock"
+    }
+    fn name(&self) -> &str {
+        "Mock Module"
+    }
+    fn allow_unsolicited_settlements(&self) -> bool {
+        false
+    }
 
     async fn build_settlement(
         &self,
@@ -314,10 +468,18 @@ impl RemittanceModule for MockModuleWithOptions {
     type SettlementArtifact = serde_json::Value;
     type ReceiptData = serde_json::Value;
 
-    fn id(&self) -> &str { "mock" }
-    fn name(&self) -> &str { "Mock Module With Options" }
-    fn allow_unsolicited_settlements(&self) -> bool { false }
-    fn supports_create_option(&self) -> bool { true }
+    fn id(&self) -> &str {
+        "mock"
+    }
+    fn name(&self) -> &str {
+        "Mock Module With Options"
+    }
+    fn allow_unsolicited_settlements(&self) -> bool {
+        false
+    }
+    fn supports_create_option(&self) -> bool {
+        true
+    }
 
     async fn create_option(
         &self,
@@ -368,10 +530,18 @@ impl RemittanceModule for MockModuleTracked {
     type SettlementArtifact = serde_json::Value;
     type ReceiptData = serde_json::Value;
 
-    fn id(&self) -> &str { "mock" }
-    fn name(&self) -> &str { "Mock Module Tracked" }
-    fn allow_unsolicited_settlements(&self) -> bool { true }
-    fn supports_create_option(&self) -> bool { true }
+    fn id(&self) -> &str {
+        "mock"
+    }
+    fn name(&self) -> &str {
+        "Mock Module Tracked"
+    }
+    fn allow_unsolicited_settlements(&self) -> bool {
+        true
+    }
+    fn supports_create_option(&self) -> bool {
+        true
+    }
 
     async fn create_option(
         &self,
@@ -422,9 +592,15 @@ impl RemittanceModule for MockModuleWithReceipt {
     type SettlementArtifact = serde_json::Value;
     type ReceiptData = serde_json::Value;
 
-    fn id(&self) -> &str { "mock" }
-    fn name(&self) -> &str { "Mock Module With Receipt" }
-    fn allow_unsolicited_settlements(&self) -> bool { true }
+    fn id(&self) -> &str {
+        "mock"
+    }
+    fn name(&self) -> &str {
+        "Mock Module With Receipt"
+    }
+    fn allow_unsolicited_settlements(&self) -> bool {
+        true
+    }
 
     async fn build_settlement(
         &self,
@@ -619,7 +795,10 @@ fn invoiced_taker_thread(thread_id: &str) -> Thread {
             payer: "bob".to_string(),
             note: None,
             line_items: vec![],
-            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            total: Amount {
+                value: "1000".to_string(),
+                unit: sat_unit(),
+            },
             invoice_number: "INV-001".to_string(),
             created_at: 1_000_000,
             arbitrary: None,
@@ -748,12 +927,36 @@ async fn test_thread_serde() {
     let json = serde_json::to_string(&thread).unwrap();
 
     // camelCase field names in JSON
-    assert!(json.contains("\"threadId\""), "expected threadId in JSON: {}", json);
-    assert!(json.contains("\"myRole\""), "expected myRole in JSON: {}", json);
-    assert!(json.contains("\"stateLog\""), "expected stateLog in JSON: {}", json);
-    assert!(json.contains("\"counterparty\""), "expected counterparty in JSON: {}", json);
-    assert!(json.contains("\"createdAt\""), "expected createdAt in JSON: {}", json);
-    assert!(json.contains("\"updatedAt\""), "expected updatedAt in JSON: {}", json);
+    assert!(
+        json.contains("\"threadId\""),
+        "expected threadId in JSON: {}",
+        json
+    );
+    assert!(
+        json.contains("\"myRole\""),
+        "expected myRole in JSON: {}",
+        json
+    );
+    assert!(
+        json.contains("\"stateLog\""),
+        "expected stateLog in JSON: {}",
+        json
+    );
+    assert!(
+        json.contains("\"counterparty\""),
+        "expected counterparty in JSON: {}",
+        json
+    );
+    assert!(
+        json.contains("\"createdAt\""),
+        "expected createdAt in JSON: {}",
+        json
+    );
+    assert!(
+        json.contains("\"updatedAt\""),
+        "expected updatedAt in JSON: {}",
+        json
+    );
 }
 
 #[tokio::test]
@@ -885,13 +1088,24 @@ async fn test_send_invoice_lifecycle() {
         .expect("send_invoice should succeed");
 
     let thread = handle.handle.get_thread().await.unwrap();
-    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
-    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Invoiced,
+        "thread should be Invoiced"
+    );
+    assert!(
+        thread.invoice.is_some(),
+        "invoice should be stored on thread"
+    );
     assert!(thread.flags.has_invoiced, "has_invoiced flag should be set");
 
     // MockComms.send_live_message records the message; verify at least one was sent.
     let sent_count = comms.sent.lock().unwrap().len();
-    assert!(sent_count >= 1, "at least one message should have been sent, got {}", sent_count);
+    assert!(
+        sent_count >= 1,
+        "at least one message should have been sent, got {}",
+        sent_count
+    );
 }
 
 #[tokio::test]
@@ -913,7 +1127,10 @@ async fn test_send_invoice_for_thread() {
 
     let thread = handle.handle.get_thread().await.unwrap();
     assert_eq!(thread.state, RemittanceThreadState::Invoiced);
-    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+    assert!(
+        thread.invoice.is_some(),
+        "invoice should be stored on thread"
+    );
 }
 
 #[tokio::test]
@@ -939,7 +1156,12 @@ async fn test_find_invoices_payable() {
     manager.insert_thread(t3).await;
 
     let payable = manager.find_invoices_payable(None).await;
-    assert_eq!(payable.len(), 1, "only 1 thread should be payable, got {:?}", payable.len());
+    assert_eq!(
+        payable.len(),
+        1,
+        "only 1 thread should be payable, got {:?}",
+        payable.len()
+    );
     assert_eq!(payable[0].handle.thread_id(), "t-payable");
 }
 
@@ -959,15 +1181,28 @@ async fn test_pay() {
         .await
         .expect("pay should succeed");
 
-    assert!(called_flag.load(Ordering::SeqCst), "build_settlement_erased should have been called");
+    assert!(
+        called_flag.load(Ordering::SeqCst),
+        "build_settlement_erased should have been called"
+    );
 
     let thread = handle.get_thread().await.unwrap();
-    assert_eq!(thread.state, RemittanceThreadState::Settled, "thread should be Settled after pay");
-    assert!(thread.settlement.is_some(), "settlement should be stored on thread");
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Settled,
+        "thread should be Settled after pay"
+    );
+    assert!(
+        thread.settlement.is_some(),
+        "settlement should be stored on thread"
+    );
     assert!(thread.flags.has_paid, "has_paid flag should be set");
 
     let sent_count = comms.sent.lock().unwrap().len();
-    assert!(sent_count >= 1, "at least one settlement message should have been sent");
+    assert!(
+        sent_count >= 1,
+        "at least one settlement message should have been sent"
+    );
 }
 
 #[tokio::test]
@@ -978,13 +1213,27 @@ async fn test_unsolicited_settlement() {
     manager.init().await.unwrap();
 
     let handle = manager
-        .send_unsolicited_settlement("alice", "mock", "mock", serde_json::json!({"amount": 500}), None, None)
+        .send_unsolicited_settlement(
+            "alice",
+            "mock",
+            "mock",
+            serde_json::json!({"amount": 500}),
+            None,
+            None,
+        )
         .await
         .expect("send_unsolicited_settlement should succeed");
 
     let thread = handle.get_thread().await.unwrap();
-    assert!(matches!(thread.my_role, ThreadRole::Taker), "thread role should be Taker");
-    assert_eq!(thread.state, RemittanceThreadState::Settled, "thread should be Settled");
+    assert!(
+        matches!(thread.my_role, ThreadRole::Taker),
+        "thread role should be Taker"
+    );
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Settled,
+        "thread should be Settled"
+    );
     assert!(thread.settlement.is_some(), "settlement should be stored");
 
     let sent_count = comms.sent.lock().unwrap().len();
@@ -1085,16 +1334,25 @@ async fn test_preselect_option() {
 
     // Verify it was stored.
     let default_opt = manager.get_default_payment_option_id().await;
-    assert_eq!(default_opt.as_deref(), Some("mock"), "default option should be 'mock'");
+    assert_eq!(
+        default_opt.as_deref(),
+        Some("mock"),
+        "default option should be 'mock'"
+    );
 
     // Insert an Invoiced taker thread and pay without explicit option_id.
-    manager.insert_thread(invoiced_taker_thread("t-preselect")).await;
+    manager
+        .insert_thread(invoiced_taker_thread("t-preselect"))
+        .await;
     let handle = manager
-        .pay("t-preselect", None, None)  // no explicit option_id — should use default
+        .pay("t-preselect", None, None) // no explicit option_id — should use default
         .await
         .expect("pay with preselected option should succeed");
 
-    assert!(called_flag.load(Ordering::SeqCst), "mock module should have been called via preselected option");
+    assert!(
+        called_flag.load(Ordering::SeqCst),
+        "mock module should have been called via preselected option"
+    );
     let thread = handle.get_thread().await.unwrap();
     assert_eq!(thread.state, RemittanceThreadState::Settled);
 }
@@ -1144,7 +1402,10 @@ fn test_invoice(thread_id: &str) -> Invoice {
             payer: "bob".to_string(),
             note: None,
             line_items: vec![],
-            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            total: Amount {
+                value: "1000".to_string(),
+                unit: sat_unit(),
+            },
             invoice_number: "INV-T01".to_string(),
             created_at: 1_000_000,
             arbitrary: None,
@@ -1214,18 +1475,31 @@ async fn test_sync_threads() {
     let manager = make_manager_with_comms(Arc::clone(&comms));
     manager.init().await.unwrap();
 
-    manager.sync_threads(None).await.expect("sync_threads should succeed");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync_threads should succeed");
 
     // Thread should have been created and transitioned to Invoiced.
     let thread = manager.get_thread(thread_id).await;
-    assert!(thread.is_some(), "thread should have been created by sync_threads");
+    assert!(
+        thread.is_some(),
+        "thread should have been created by sync_threads"
+    );
     let thread = thread.unwrap();
-    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Invoiced,
+        "thread should be Invoiced"
+    );
     assert!(thread.invoice.is_some(), "invoice should be stored");
 
     // Message should have been acknowledged.
     let acked = comms.acknowledged.lock().unwrap().clone();
-    assert!(acked.contains(&"msg-001".to_string()), "message should have been acknowledged");
+    assert!(
+        acked.contains(&"msg-001".to_string()),
+        "message should have been acknowledged"
+    );
 }
 
 #[tokio::test]
@@ -1234,7 +1508,10 @@ async fn test_start_listening() {
     let manager = make_manager_with_comms(Arc::clone(&comms));
     manager.init().await.unwrap();
 
-    manager.start_listening(None).await.expect("start_listening should succeed");
+    manager
+        .start_listening(None)
+        .await
+        .expect("start_listening should succeed");
 
     // Verify listen_for_live_messages was called.
     assert!(
@@ -1258,7 +1535,9 @@ async fn test_wait_for_receipt_notify() {
 
     // Set up an Invoiced taker thread.
     let thread_id = "wait-receipt-thread";
-    manager.insert_thread(invoiced_taker_thread(thread_id)).await;
+    manager
+        .insert_thread(invoiced_taker_thread(thread_id))
+        .await;
 
     // Transition to Settled first (so we can send receipt).
     manager
@@ -1335,7 +1614,10 @@ async fn test_deduplication() {
         .iter()
         .filter(|id| id.as_str() == "dedup-msg-001")
         .count();
-    assert_eq!(count, 1, "dedup-msg-001 should appear exactly once in processed_message_ids");
+    assert_eq!(
+        count, 1,
+        "dedup-msg-001 should appear exactly once in processed_message_ids"
+    );
 }
 
 #[tokio::test]
@@ -1356,7 +1638,10 @@ async fn test_thread_handle() {
     assert_eq!(handle.thread_id(), thread_id);
 
     // get_thread() on handle returns the correct thread.
-    let thread = handle.get_thread().await.expect("handle.get_thread should succeed");
+    let thread = handle
+        .get_thread()
+        .await
+        .expect("handle.get_thread should succeed");
     assert_eq!(thread.thread_id, thread_id);
     assert_eq!(thread.state, RemittanceThreadState::New);
 }
@@ -1373,13 +1658,29 @@ async fn test_inbound_invoice() {
     let msg = make_peer_message("inv-msg-001", "alice", &body);
 
     comms.set_queued_messages(vec![msg]);
-    manager.sync_threads(None).await.expect("sync_threads should succeed");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync_threads should succeed");
 
-    let thread = manager.get_thread(thread_id).await.expect("thread should have been created");
+    let thread = manager
+        .get_thread(thread_id)
+        .await
+        .expect("thread should have been created");
     // We are taker (they sent the invoice as maker).
-    assert!(matches!(thread.my_role, ThreadRole::Taker), "our role should be Taker");
-    assert_eq!(thread.state, RemittanceThreadState::Invoiced, "thread should be Invoiced");
-    assert!(thread.invoice.is_some(), "invoice should be stored on thread");
+    assert!(
+        matches!(thread.my_role, ThreadRole::Taker),
+        "our role should be Taker"
+    );
+    assert_eq!(
+        thread.state,
+        RemittanceThreadState::Invoiced,
+        "thread should be Invoiced"
+    );
+    assert!(
+        thread.invoice.is_some(),
+        "invoice should be stored on thread"
+    );
     assert!(thread.flags.has_invoiced, "has_invoiced flag should be set");
 }
 
@@ -1404,7 +1705,10 @@ async fn test_inbound_settlement_with_auto_receipt() {
     let msg = make_peer_message("settle-msg-001", "bob", &body);
 
     comms.set_queued_messages(vec![msg]);
-    manager.sync_threads(None).await.expect("sync_threads for settlement should succeed");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync_threads for settlement should succeed");
 
     // accept_settlement should have been called on the module.
     assert!(
@@ -1431,7 +1735,10 @@ async fn test_inbound_settlement_with_auto_receipt() {
             false
         }
     });
-    assert!(receipt_sent, "a receipt message should have been sent via comms");
+    assert!(
+        receipt_sent,
+        "a receipt message should have been sent via comms"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,7 +1746,10 @@ async fn test_inbound_settlement_with_auto_receipt() {
 // ---------------------------------------------------------------------------
 
 /// Verifies that all 7 thread states appear in the state_log (as `to` values).
-fn assert_all_seven_states_in_log(thread_id: &str, log: &[bsv::remittance::manager::StateLogEntry]) {
+fn assert_all_seven_states_in_log(
+    thread_id: &str,
+    log: &[bsv::remittance::manager::StateLogEntry],
+) {
     use RemittanceThreadState::*;
     let expected = [
         IdentityRequested,
@@ -1479,7 +1789,11 @@ async fn test_full_lifecycle_new_through_receipted() {
 
     // New -> IdentityRequested (valid per allowed_transitions)
     manager
-        .transition_thread_state(thread_id, RemittanceThreadState::IdentityRequested, Some("identity request sent".to_string()))
+        .transition_thread_state(
+            thread_id,
+            RemittanceThreadState::IdentityRequested,
+            Some("identity request sent".to_string()),
+        )
         .await
         .expect("New -> IdentityRequested must succeed");
 
@@ -1488,7 +1802,11 @@ async fn test_full_lifecycle_new_through_receipted() {
 
     // --- Step 2: IdentityRequested -> IdentityResponded ---
     manager
-        .transition_thread_state(thread_id, RemittanceThreadState::IdentityResponded, Some("identity response received".to_string()))
+        .transition_thread_state(
+            thread_id,
+            RemittanceThreadState::IdentityResponded,
+            Some("identity response received".to_string()),
+        )
         .await
         .expect("IdentityRequested -> IdentityResponded must succeed");
 
@@ -1497,7 +1815,11 @@ async fn test_full_lifecycle_new_through_receipted() {
 
     // --- Step 3: IdentityResponded -> IdentityAcknowledged ---
     manager
-        .transition_thread_state(thread_id, RemittanceThreadState::IdentityAcknowledged, Some("identity acknowledged".to_string()))
+        .transition_thread_state(
+            thread_id,
+            RemittanceThreadState::IdentityAcknowledged,
+            Some("identity acknowledged".to_string()),
+        )
         .await
         .expect("IdentityResponded -> IdentityAcknowledged must succeed");
 
@@ -1510,7 +1832,11 @@ async fn test_full_lifecycle_new_through_receipted() {
     // Transition to Invoiced and then replace thread data via a new insert
     // (insert_thread overwrites the existing entry).
     manager
-        .transition_thread_state(thread_id, RemittanceThreadState::Invoiced, Some("invoice sent".to_string()))
+        .transition_thread_state(
+            thread_id,
+            RemittanceThreadState::Invoiced,
+            Some("invoice sent".to_string()),
+        )
         .await
         .expect("IdentityAcknowledged -> Invoiced must succeed");
 
@@ -1528,7 +1854,10 @@ async fn test_full_lifecycle_new_through_receipted() {
         let snapshot = manager.get_thread(thread_id).await.unwrap();
         Thread {
             invoice: Some(test_invoice(thread_id)),
-            flags: ThreadFlags { has_invoiced: true, ..snapshot.flags },
+            flags: ThreadFlags {
+                has_invoiced: true,
+                ..snapshot.flags
+            },
             my_role: ThreadRole::Maker,
             their_role: ThreadRole::Taker,
             ..snapshot
@@ -1540,7 +1869,11 @@ async fn test_full_lifecycle_new_through_receipted() {
 
     // Verify state is still Invoiced after re-insert.
     let t = manager.get_thread(thread_id).await.unwrap();
-    assert_eq!(t.state, RemittanceThreadState::Invoiced, "should still be Invoiced after re-insert");
+    assert_eq!(
+        t.state,
+        RemittanceThreadState::Invoiced,
+        "should still be Invoiced after re-insert"
+    );
 
     // Queue an inbound settlement message from the taker.
     let body = make_settlement_envelope(thread_id);
@@ -1548,10 +1881,16 @@ async fn test_full_lifecycle_new_through_receipted() {
     comms.set_queued_messages(vec![msg]);
 
     // sync_threads processes the settlement; auto-receipt fires because auto_issue_receipt=true.
-    manager.sync_threads(None).await.expect("sync_threads for settlement should succeed");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync_threads for settlement should succeed");
 
     // --- Assertions ---
-    assert!(accept_called.load(Ordering::SeqCst), "accept_settlement must have been called");
+    assert!(
+        accept_called.load(Ordering::SeqCst),
+        "accept_settlement must have been called"
+    );
 
     let final_thread = manager.get_thread(thread_id).await.unwrap();
 
@@ -1564,8 +1903,14 @@ async fn test_full_lifecycle_new_through_receipted() {
     );
 
     // Settlement and receipt must be stored.
-    assert!(final_thread.settlement.is_some(), "settlement should be stored on thread");
-    assert!(final_thread.receipt.is_some(), "receipt should be stored on thread");
+    assert!(
+        final_thread.settlement.is_some(),
+        "settlement should be stored on thread"
+    );
+    assert!(
+        final_thread.receipt.is_some(),
+        "receipt should be stored on thread"
+    );
 
     // State log must contain entries for all transitions driven (IdentityRequested
     // through Receipted — 6 transitions covering all 7 states New->Receipted).
@@ -1580,7 +1925,10 @@ async fn test_full_lifecycle_new_through_receipted() {
             false
         }
     });
-    assert!(receipt_sent, "a receipt message should have been sent outbound");
+    assert!(
+        receipt_sent,
+        "a receipt message should have been sent outbound"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,7 +1981,10 @@ fn invoiced_maker_thread_unidentified(thread_id: &str) -> Thread {
             payer: "bob".to_string(),
             note: None,
             line_items: vec![],
-            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            total: Amount {
+                value: "1000".to_string(),
+                unit: sat_unit(),
+            },
             invoice_number: "INV-GUARD".to_string(),
             created_at: 1_000_000,
             arbitrary: None,
@@ -1651,7 +2002,11 @@ fn invoiced_maker_thread_unidentified(thread_id: &str) -> Thread {
         processed_message_ids: vec![],
         protocol_log: vec![],
         identity: ThreadIdentity::default(),
-        flags: ThreadFlags { has_invoiced: true, has_identified: false, ..Default::default() },
+        flags: ThreadFlags {
+            has_invoiced: true,
+            has_identified: false,
+            ..Default::default()
+        },
         invoice: Some(invoice),
         settlement: None,
         receipt: None,
@@ -1683,14 +2038,19 @@ async fn test_identity_before_settlement_guard() {
     let manager = make_manager_with_identity_before_settlement(comms.clone());
 
     let thread_id = "guard-test-01";
-    manager.insert_thread(invoiced_maker_thread_unidentified(thread_id)).await;
+    manager
+        .insert_thread(invoiced_maker_thread_unidentified(thread_id))
+        .await;
 
     // Queue inbound settlement.
     let body = make_settlement_envelope(thread_id);
     let msg = make_peer_message("guard-msg-01", "bob", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Thread must be Terminated — settlement was blocked.
@@ -1710,7 +2070,10 @@ async fn test_identity_before_settlement_guard() {
             false
         }
     });
-    assert!(term_sent, "a termination message should have been sent when identity guard fires");
+    assert!(
+        term_sent,
+        "a termination message should have been sent when identity guard fires"
+    );
 }
 
 // PARITY-06 + PARITY-12: Guard does not fire when has_identified=true.
@@ -1720,14 +2083,19 @@ async fn test_identity_before_settlement_guard_passes_when_identified() {
     let manager = make_manager_with_identity_before_settlement(comms.clone());
 
     let thread_id = "guard-test-02";
-    manager.insert_thread(invoiced_maker_thread_identified(thread_id)).await;
+    manager
+        .insert_thread(invoiced_maker_thread_identified(thread_id))
+        .await;
 
     // Queue inbound settlement.
     let body = make_settlement_envelope(thread_id);
     let msg = make_peer_message("guard-msg-02", "bob", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Settlement was accepted — thread should be Settled (auto_issue_receipt=false).
@@ -1746,14 +2114,19 @@ async fn test_identity_before_settlement_guard_taker_skips() {
     let manager = make_manager_with_identity_before_settlement(comms.clone());
 
     let thread_id = "guard-test-03";
-    manager.insert_thread(invoiced_taker_thread_unidentified(thread_id)).await;
+    manager
+        .insert_thread(invoiced_taker_thread_unidentified(thread_id))
+        .await;
 
     // Queue inbound settlement (taker receiving settlement is unusual but allowed by guard logic).
     let body = make_settlement_envelope(thread_id);
     let msg = make_peer_message("guard-msg-03", "alice", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Taker is never blocked by maker identity guard — settlement proceeds.
@@ -1799,7 +2172,10 @@ async fn test_role_inference_identity_request() {
     let request = IdentityVerificationRequest {
         kind: RemittanceKind::IdentityVerificationRequest,
         thread_id: thread_id.to_string(),
-        request: bsv::remittance::types::IdentityRequest { types: HashMap::new(), certifiers: vec![] },
+        request: bsv::remittance::types::IdentityRequest {
+            types: HashMap::new(),
+            certifiers: vec![],
+        },
     };
     let payload = serde_json::to_value(&request).unwrap();
     let env = RemittanceEnvelope {
@@ -1814,7 +2190,10 @@ async fn test_role_inference_identity_request() {
     let msg = make_peer_message("role-msg-01", "alice", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Maker requested identity, so inbound request means I am the responder/taker.
@@ -1874,7 +2253,10 @@ async fn test_role_inference_identity_response() {
     let msg = make_peer_message("role-msg-02", "alice", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Maker requested identity and I am the maker — inbound response means I am Maker.
@@ -1929,7 +2311,10 @@ async fn test_role_inference_receipt_termination() {
     let msg = make_peer_message("role-msg-03", "alice", &body);
     comms.set_queued_messages(vec![msg]);
 
-    manager.sync_threads(None).await.expect("sync should not error");
+    manager
+        .sync_threads(None)
+        .await
+        .expect("sync should not error");
 
     let t = manager.get_thread(thread_id).await.unwrap();
     // Inbound Termination on unknown thread defaults to Taker.
@@ -1978,11 +2363,18 @@ async fn test_on_event_unsubscribe() {
             thread: sample_thread("test-unsub"),
         })
         .await;
-    assert_eq!(call_count.load(Ordering::SeqCst), 1, "listener should fire once");
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "listener should fire once"
+    );
 
     // Unsubscribe.
     let removed = manager.remove_event_listener(listener_id).await;
-    assert!(removed, "remove_event_listener should return true for a valid ID");
+    assert!(
+        removed,
+        "remove_event_listener should return true for a valid ID"
+    );
 
     // Emit another event — listener should NOT fire.
     manager
@@ -2016,10 +2408,18 @@ impl RemittanceModule for MockModuleTerminator {
     type SettlementArtifact = serde_json::Value;
     type ReceiptData = serde_json::Value;
 
-    fn id(&self) -> &str { "terminator" }
-    fn name(&self) -> &str { "Terminator Module" }
-    fn allow_unsolicited_settlements(&self) -> bool { false }
-    fn supports_create_option(&self) -> bool { true }
+    fn id(&self) -> &str {
+        "terminator"
+    }
+    fn name(&self) -> &str {
+        "Terminator Module"
+    }
+    fn allow_unsolicited_settlements(&self) -> bool {
+        false
+    }
+    fn supports_create_option(&self) -> bool {
+        true
+    }
 
     async fn create_option(
         &self,
@@ -2078,10 +2478,8 @@ async fn test_end_to_end_invoice_settlement_receipt() {
     // --- Set up the taker manager (tracks build_settlement via MockModuleTracked) ---
     let taker_comms = Arc::new(MockComms::new());
     let taker_build_called = Arc::new(AtomicBool::new(false));
-    let taker_manager = make_manager_with_tracked_module(
-        Arc::clone(&taker_comms),
-        Arc::clone(&taker_build_called),
-    );
+    let taker_manager =
+        make_manager_with_tracked_module(Arc::clone(&taker_comms), Arc::clone(&taker_build_called));
     taker_manager.init().await.unwrap();
 
     // --- Step 1: Maker sends invoice ---
@@ -2100,7 +2498,10 @@ async fn test_end_to_end_invoice_settlement_receipt() {
     // --- Step 2: Taker syncs and receives the invoice ---
     // Simulate: extract the invoice message sent by maker and queue it for taker.
     let maker_sent = maker_comms.sent.lock().unwrap().clone();
-    assert!(!maker_sent.is_empty(), "maker should have sent at least one message");
+    assert!(
+        !maker_sent.is_empty(),
+        "maker should have sent at least one message"
+    );
 
     // Find the invoice envelope in maker's sent messages.
     let invoice_body = maker_sent
@@ -2108,7 +2509,11 @@ async fn test_end_to_end_invoice_settlement_receipt() {
         .find(|(_, _, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s.to_string())
+                })
                 == Some("invoice".to_string())
         })
         .map(|(_, _, body)| body.clone())
@@ -2116,10 +2521,15 @@ async fn test_end_to_end_invoice_settlement_receipt() {
 
     let taker_invoice_msg = make_peer_message("e2e-inv-001", "maker-key", &invoice_body);
     taker_comms.set_queued_messages(vec![taker_invoice_msg]);
-    taker_manager.sync_threads(None).await.expect("taker sync for invoice should succeed");
+    taker_manager
+        .sync_threads(None)
+        .await
+        .expect("taker sync for invoice should succeed");
 
     // Taker should now have the thread in Invoiced state.
-    let taker_thread = taker_manager.get_thread(&thread_id).await
+    let taker_thread = taker_manager
+        .get_thread(&thread_id)
+        .await
         .expect("taker should have the thread after syncing invoice");
     assert_eq!(taker_thread.state, RemittanceThreadState::Invoiced);
     assert!(taker_thread.invoice.is_some());
@@ -2142,7 +2552,11 @@ async fn test_end_to_end_invoice_settlement_receipt() {
         .find(|(_, _, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s.to_string())
+                })
                 == Some("settlement".to_string())
         })
         .map(|(_, _, body)| body.clone())
@@ -2152,7 +2566,10 @@ async fn test_end_to_end_invoice_settlement_receipt() {
     // The maker thread from send_invoice is already Invoiced/Maker — perfect.
     let maker_settle_msg = make_peer_message("e2e-settle-001", "taker-key", &settlement_body);
     maker_comms.set_queued_messages(vec![maker_settle_msg]);
-    maker_manager.sync_threads(None).await.expect("maker sync for settlement should succeed");
+    maker_manager
+        .sync_threads(None)
+        .await
+        .expect("maker sync for settlement should succeed");
 
     // accept_settlement should have been called.
     assert!(
@@ -2177,7 +2594,11 @@ async fn test_end_to_end_invoice_settlement_receipt() {
         .find(|(_, _, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s.to_string())
+                })
                 == Some("receipt".to_string())
         })
         .map(|(_, _, body)| body.clone())
@@ -2185,7 +2606,10 @@ async fn test_end_to_end_invoice_settlement_receipt() {
 
     let taker_receipt_msg = make_peer_message("e2e-rcpt-001", "maker-key", &receipt_body);
     taker_comms.set_queued_messages(vec![taker_receipt_msg]);
-    taker_manager.sync_threads(None).await.expect("taker sync for receipt should succeed");
+    taker_manager
+        .sync_threads(None)
+        .await
+        .expect("taker sync for receipt should succeed");
 
     let taker_final = taker_manager.get_thread(&thread_id).await.unwrap();
     assert_eq!(
@@ -2193,7 +2617,10 @@ async fn test_end_to_end_invoice_settlement_receipt() {
         RemittanceThreadState::Receipted,
         "taker should be Receipted after receiving receipt"
     );
-    assert!(taker_final.receipt.is_some(), "taker should have receipt stored");
+    assert!(
+        taker_final.receipt.is_some(),
+        "taker should have receipt stored"
+    );
 }
 
 /// TS SDK parity: "waits for identity verification before invoicing when required"
@@ -2291,14 +2718,22 @@ async fn test_identity_before_invoicing_full_flow() {
         .map(|(i, (_, _, body))| make_peer_message(&format!("id-inv-msg-{}", i), "maker-key", body))
         .collect();
     taker_comms.set_queued_messages(taker_msgs);
-    taker_manager.sync_threads(None).await.expect("taker sync should succeed");
+    taker_manager
+        .sync_threads(None)
+        .await
+        .expect("taker sync should succeed");
 
     // Taker should have responded to identity request (IdentityResponded state)
     // and received the invoice. hasIdentified is NOT yet true because the taker
     // has not received the maker's acknowledgment yet.
-    let taker_thread = taker_manager.get_thread(&thread_id).await
+    let taker_thread = taker_manager
+        .get_thread(&thread_id)
+        .await
         .expect("taker should have the thread after syncing");
-    assert!(taker_thread.invoice.is_some(), "taker should have received the invoice");
+    assert!(
+        taker_thread.invoice.is_some(),
+        "taker should have received the invoice"
+    );
 
     // Taker should have sent an identity response back.
     let taker_sent = taker_comms.sent.lock().unwrap().clone();
@@ -2307,7 +2742,11 @@ async fn test_identity_before_invoicing_full_flow() {
         .find(|(_, _, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s.to_string())
+                })
                 == Some("identityVerificationResponse".to_string())
         })
         .map(|(_, _, body)| body.clone())
@@ -2316,7 +2755,10 @@ async fn test_identity_before_invoicing_full_flow() {
     // --- Step 2: Maker syncs taker's identity response -> sends acknowledgment ---
     let maker_resp_msg = make_peer_message("id-resp-001", "taker-key", &response_body);
     maker_comms.set_queued_messages(vec![maker_resp_msg]);
-    maker_manager.sync_threads(None).await.expect("maker sync for identity response should succeed");
+    maker_manager
+        .sync_threads(None)
+        .await
+        .expect("maker sync for identity response should succeed");
 
     // Maker should now have has_identified=true.
     let maker_thread = maker_manager.get_thread(&thread_id).await.unwrap();
@@ -2332,7 +2774,11 @@ async fn test_identity_before_invoicing_full_flow() {
         .find(|(_, _, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s.to_string())
+                })
                 == Some("identityVerificationAcknowledgment".to_string())
         })
         .map(|(_, _, body)| body.clone())
@@ -2341,7 +2787,10 @@ async fn test_identity_before_invoicing_full_flow() {
     // --- Step 3: Taker syncs maker's acknowledgment -> hasIdentified=true ---
     let taker_ack_msg = make_peer_message("id-ack-001", "maker-key", &ack_body);
     taker_comms.set_queued_messages(vec![taker_ack_msg]);
-    taker_manager.sync_threads(None).await.expect("taker sync for acknowledgment should succeed");
+    taker_manager
+        .sync_threads(None)
+        .await
+        .expect("taker sync for acknowledgment should succeed");
 
     let taker_final = taker_manager.get_thread(&thread_id).await.unwrap();
     assert!(
@@ -2397,7 +2846,10 @@ async fn test_module_refuses_settlement_sends_termination() {
             payer: "bob".to_string(),
             note: None,
             line_items: vec![],
-            total: Amount { value: "1000".to_string(), unit: sat_unit() },
+            total: Amount {
+                value: "1000".to_string(),
+                unit: sat_unit(),
+            },
             invoice_number: "INV-TERM".to_string(),
             created_at: 1_000_000,
             arbitrary: None,
@@ -2415,7 +2867,10 @@ async fn test_module_refuses_settlement_sends_termination() {
         processed_message_ids: vec![],
         protocol_log: vec![],
         identity: ThreadIdentity::default(),
-        flags: ThreadFlags { has_invoiced: true, ..Default::default() },
+        flags: ThreadFlags {
+            has_invoiced: true,
+            ..Default::default()
+        },
         invoice: Some(invoice),
         settlement: None,
         receipt: None,

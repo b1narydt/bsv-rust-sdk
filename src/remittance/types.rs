@@ -71,7 +71,10 @@ pub enum RemittanceKind {
     IdentityVerificationRequest,
     #[cfg_attr(feature = "network", serde(rename = "identityVerificationResponse"))]
     IdentityVerificationResponse,
-    #[cfg_attr(feature = "network", serde(rename = "identityVerificationAcknowledgment"))]
+    #[cfg_attr(
+        feature = "network",
+        serde(rename = "identityVerificationAcknowledgment")
+    )]
     IdentityVerificationAcknowledgment,
     #[cfg_attr(feature = "network", serde(rename = "settlement"))]
     Settlement,
@@ -104,10 +107,24 @@ pub fn allowed_transitions(state: &RemittanceThreadState) -> &'static [Remittanc
     use RemittanceThreadState::*;
     match state {
         New => &[IdentityRequested, Invoiced, Settled, Terminated, Errored],
-        IdentityRequested => &[IdentityResponded, IdentityAcknowledged, Invoiced, Settled, Terminated, Errored],
+        IdentityRequested => &[
+            IdentityResponded,
+            IdentityAcknowledged,
+            Invoiced,
+            Settled,
+            Terminated,
+            Errored,
+        ],
         IdentityResponded => &[IdentityAcknowledged, Invoiced, Settled, Terminated, Errored],
         IdentityAcknowledged => &[Invoiced, Settled, Terminated, Errored],
-        Invoiced => &[IdentityRequested, IdentityResponded, IdentityAcknowledged, Settled, Terminated, Errored],
+        Invoiced => &[
+            IdentityRequested,
+            IdentityResponded,
+            IdentityAcknowledged,
+            Settled,
+            Terminated,
+            Errored,
+        ],
         Settled => &[Receipted, Terminated, Errored],
         Receipted => &[Terminated, Errored],
         Terminated => &[Errored],
@@ -418,9 +435,18 @@ mod tests {
         use RemittanceKind::*;
         let cases = vec![
             (Invoice, r#""invoice""#),
-            (IdentityVerificationRequest, r#""identityVerificationRequest""#),
-            (IdentityVerificationResponse, r#""identityVerificationResponse""#),
-            (IdentityVerificationAcknowledgment, r#""identityVerificationAcknowledgment""#),
+            (
+                IdentityVerificationRequest,
+                r#""identityVerificationRequest""#,
+            ),
+            (
+                IdentityVerificationResponse,
+                r#""identityVerificationResponse""#,
+            ),
+            (
+                IdentityVerificationAcknowledgment,
+                r#""identityVerificationAcknowledgment""#,
+            ),
             (Settlement, r#""settlement""#),
             (Receipt, r#""receipt""#),
             (Termination, r#""termination""#),
@@ -436,9 +462,18 @@ mod tests {
         use RemittanceKind::*;
         let cases = vec![
             (r#""invoice""#, Invoice),
-            (r#""identityVerificationRequest""#, IdentityVerificationRequest),
-            (r#""identityVerificationResponse""#, IdentityVerificationResponse),
-            (r#""identityVerificationAcknowledgment""#, IdentityVerificationAcknowledgment),
+            (
+                r#""identityVerificationRequest""#,
+                IdentityVerificationRequest,
+            ),
+            (
+                r#""identityVerificationResponse""#,
+                IdentityVerificationResponse,
+            ),
+            (
+                r#""identityVerificationAcknowledgment""#,
+                IdentityVerificationAcknowledgment,
+            ),
             (r#""settlement""#, Settlement),
             (r#""receipt""#, Receipt),
             (r#""termination""#, Termination),
@@ -469,7 +504,10 @@ mod tests {
         assert!(is_valid_transition(&IdentityRequested, &Invoiced));
 
         // IdentityResponded
-        assert!(is_valid_transition(&IdentityResponded, &IdentityAcknowledged));
+        assert!(is_valid_transition(
+            &IdentityResponded,
+            &IdentityAcknowledged
+        ));
         assert!(is_valid_transition(&IdentityResponded, &Invoiced));
 
         // IdentityAcknowledged
@@ -513,7 +551,10 @@ mod tests {
     #[test]
     fn test_errored_is_terminal() {
         let transitions = allowed_transitions(&RemittanceThreadState::Errored);
-        assert!(transitions.is_empty(), "Errored should be a terminal state with no transitions");
+        assert!(
+            transitions.is_empty(),
+            "Errored should be a terminal state with no transitions"
+        );
     }
 
     #[test]
@@ -542,7 +583,10 @@ mod tests {
     #[test]
     fn test_thread_state_display() {
         assert_eq!(RemittanceThreadState::New.to_string(), "new");
-        assert_eq!(RemittanceThreadState::IdentityRequested.to_string(), "identityRequested");
+        assert_eq!(
+            RemittanceThreadState::IdentityRequested.to_string(),
+            "identityRequested"
+        );
         assert_eq!(RemittanceThreadState::Invoiced.to_string(), "invoiced");
         assert_eq!(RemittanceThreadState::Errored.to_string(), "errored");
     }

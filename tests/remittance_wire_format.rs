@@ -9,9 +9,10 @@ use std::collections::HashMap;
 use serde_json::json;
 
 use bsv::remittance::types::{
-    sat_unit, Amount, RemittanceCertificate, IdentityRequest, IdentityVerificationAcknowledgment,
+    sat_unit, Amount, IdentityRequest, IdentityVerificationAcknowledgment,
     IdentityVerificationRequest, IdentityVerificationResponse, InstrumentBase, Invoice, LineItem,
-    PeerMessage, Receipt, RemittanceEnvelope, RemittanceKind, Settlement, Termination, Unit,
+    PeerMessage, Receipt, RemittanceCertificate, RemittanceEnvelope, RemittanceKind, Settlement,
+    Termination, Unit,
 };
 
 // ---------------------------------------------------------------------------
@@ -244,10 +245,7 @@ fn test_identity_certificate_type_field() {
         val["type"], "someType",
         "cert_type should serialize as 'type'"
     );
-    assert!(
-        val.get("certType").is_none(),
-        "certType should not appear"
-    );
+    assert!(val.get("certType").is_none(), "certType should not appear");
 }
 
 #[test]
@@ -520,7 +518,10 @@ fn test_ts_originated_identity_request_envelope() {
     let req: IdentityVerificationRequest = serde_json::from_value(env.payload).unwrap();
     assert_eq!(req.thread_id, "thread-0001");
     assert!(req.request.types.contains_key("kyc-basic"));
-    assert_eq!(req.request.types["kyc-basic"], vec!["name", "dateOfBirth", "countryOfResidence"]);
+    assert_eq!(
+        req.request.types["kyc-basic"],
+        vec!["name", "dateOfBirth", "countryOfResidence"]
+    );
     assert_eq!(req.request.certifiers.len(), 1);
 }
 
@@ -565,9 +566,9 @@ fn test_ts_originated_identity_response_envelope() {
     assert_eq!(cert.cert_type, "kyc-basic");
     assert_eq!(cert.fields["name"], "Alice Wonderland");
     assert_eq!(cert.serial_number, "cert-serial-0001");
-    assert!(cert.keyring_for_verifier.contains_key(
-        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-    ));
+    assert!(cert
+        .keyring_for_verifier
+        .contains_key("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"));
 }
 
 #[test]
@@ -773,11 +774,7 @@ fn test_optional_fields_never_null() {
         arbitrary: None,
     })
     .unwrap();
-    assert!(
-        !ib_json.contains(":null"),
-        "InstrumentBase: {}",
-        ib_json
-    );
+    assert!(!ib_json.contains(":null"), "InstrumentBase: {}", ib_json);
 
     // Settlement with None note
     let s_json = serde_json::to_string(&Settlement {

@@ -47,10 +47,7 @@ pub trait CommsLayer: Send + Sync {
     ) -> Result<Vec<PeerMessage>, RemittanceError>;
 
     /// Acknowledge receipt of a set of messages so the server can delete them.
-    async fn acknowledge_message(
-        &self,
-        message_ids: &[String],
-    ) -> Result<(), RemittanceError>;
+    async fn acknowledge_message(&self, message_ids: &[String]) -> Result<(), RemittanceError>;
 
     // ------------------------------------------------------------------
     // Optional methods — default to Protocol error
@@ -154,9 +151,7 @@ mod tests {
     async fn listen_for_live_messages_default_returns_error() {
         let comms = MockComms;
         let cb: Arc<dyn Fn(PeerMessage) + Send + Sync> = Arc::new(|_msg| {});
-        let result = comms
-            .listen_for_live_messages("inbox", None, cb)
-            .await;
+        let result = comms.listen_for_live_messages("inbox", None, cb).await;
         assert!(
             matches!(result, Err(RemittanceError::Protocol(_))),
             "expected Protocol error, got {:?}",

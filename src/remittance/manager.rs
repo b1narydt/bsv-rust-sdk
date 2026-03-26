@@ -16,10 +16,10 @@ use crate::remittance::error::RemittanceError;
 use crate::remittance::identity_layer::IdentityLayer;
 use crate::remittance::remittance_module::ErasedRemittanceModule;
 use crate::remittance::types::{
-    IdentityVerificationAcknowledgment, IdentityVerificationRequest, IdentityVerificationResponse,
-    Invoice, InstrumentBase, LineItem, LoggerLike, Amount, ModuleContext, PeerMessage, Receipt,
-    RemittanceCertificate, RemittanceEnvelope, RemittanceKind, RemittanceThreadState, Settlement,
-    Termination, ThreadId, UnixMillis,
+    Amount, IdentityVerificationAcknowledgment, IdentityVerificationRequest,
+    IdentityVerificationResponse, InstrumentBase, Invoice, LineItem, LoggerLike, ModuleContext,
+    PeerMessage, Receipt, RemittanceCertificate, RemittanceEnvelope, RemittanceKind,
+    RemittanceThreadState, Settlement, Termination, ThreadId, UnixMillis,
 };
 use crate::wallet::interfaces::{GetPublicKeyArgs, WalletInterface};
 
@@ -401,13 +401,12 @@ impl RemittanceManager {
         identity: Option<Arc<dyn IdentityLayer>>,
         modules: Vec<Box<dyn ErasedRemittanceModule>>,
     ) -> Self {
-        let options = config
-            .options
-            .clone()
-            .unwrap_or_default();
+        let options = config.options.clone().unwrap_or_default();
 
-        let module_map: HashMap<String, Box<dyn ErasedRemittanceModule>> =
-            modules.into_iter().map(|m| (m.id().to_string(), m)).collect();
+        let module_map: HashMap<String, Box<dyn ErasedRemittanceModule>> = modules
+            .into_iter()
+            .map(|m| (m.id().to_string(), m))
+            .collect();
 
         let inner = ManagerInner {
             threads: HashMap::new(),
@@ -545,10 +544,9 @@ impl RemittanceManager {
         // Collect data under lock, then drop guard before calling async methods.
         let (previous, notify) = {
             let mut guard = self.inner.lock().await;
-            let thread = guard
-                .threads
-                .get_mut(thread_id)
-                .ok_or_else(|| RemittanceError::Protocol(format!("thread not found: {}", thread_id)))?;
+            let thread = guard.threads.get_mut(thread_id).ok_or_else(|| {
+                RemittanceError::Protocol(format!("thread not found: {}", thread_id))
+            })?;
 
             let current = thread.state.clone();
 
@@ -651,13 +649,16 @@ impl RemittanceManager {
 
     /// Returns a clone of the thread, or `RemittanceError::Protocol` if not found.
     pub async fn get_thread_or_throw(&self, thread_id: &str) -> Result<Thread, RemittanceError> {
-        self.get_thread(thread_id).await.ok_or_else(|| {
-            RemittanceError::Protocol(format!("thread not found: {}", thread_id))
-        })
+        self.get_thread(thread_id)
+            .await
+            .ok_or_else(|| RemittanceError::Protocol(format!("thread not found: {}", thread_id)))
     }
 
     /// Returns a `ThreadHandle` for ergonomic chained access.
-    pub async fn get_thread_handle(&self, thread_id: &str) -> Result<ThreadHandle, RemittanceError> {
+    pub async fn get_thread_handle(
+        &self,
+        thread_id: &str,
+    ) -> Result<ThreadHandle, RemittanceError> {
         // Verify the thread exists before issuing a handle.
         let _ = self.get_thread_or_throw(thread_id).await?;
         Ok(ThreadHandle {
@@ -673,7 +674,11 @@ impl RemittanceManager {
     }
 
     /// Update a thread in place using a mutable closure.
-    pub(crate) async fn update_thread<F>(&self, thread_id: &str, f: F) -> Result<(), RemittanceError>
+    pub(crate) async fn update_thread<F>(
+        &self,
+        thread_id: &str,
+        f: F,
+    ) -> Result<(), RemittanceError>
     where
         F: FnOnce(&mut Thread),
     {
@@ -833,11 +838,7 @@ impl RemittanceManager {
         host_override: Option<&str>,
     ) -> Result<String, RemittanceError> {
         let body = serde_json::to_string(env)?;
-        let message_box = self
-            .config
-            .message_box
-            .as_deref()
-            .unwrap_or("remittance");
+        let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
 
         // Try live first; fall back to queued.
         let transport_message_id = match self
@@ -906,9 +907,7 @@ impl RemittanceManager {
 
         let expires_at = input
             .expires_at
-            .or_else(|| {
-                Some(now + self.options.invoice_expiry_seconds * 1_000)
-            });
+            .or_else(|| Some(now + self.options.invoice_expiry_seconds * 1_000));
 
         // Draft invoice (without options yet) for passing to create_option_erased.
         let draft = Invoice {
@@ -961,7 +960,10 @@ impl RemittanceManager {
             Some(id_opts) => {
                 // Maker initiates — check maker_request_identity phase.
                 let phase = id_opts.maker_request_identity.as_ref();
-                matches!(phase, Some(IdentityPhase::BeforeInvoicing) | Some(IdentityPhase::BeforeSettlement))
+                matches!(
+                    phase,
+                    Some(IdentityPhase::BeforeInvoicing) | Some(IdentityPhase::BeforeSettlement)
+                )
             }
         };
 
@@ -1065,7 +1067,8 @@ impl RemittanceManager {
         let thread_id = thread.thread_id.clone();
 
         // Identity exchange (if configured).
-        self.ensure_identity_exchange(&thread_id, counterparty).await?;
+        self.ensure_identity_exchange(&thread_id, counterparty)
+            .await?;
 
         // Re-fetch thread after possible identity transition.
         let thread = self.get_thread_or_throw(&thread_id).await?;
@@ -1079,7 +1082,8 @@ impl RemittanceManager {
             self.now_internal(),
         );
 
-        self.send_envelope(counterparty, &env, host_override).await?;
+        self.send_envelope(counterparty, &env, host_override)
+            .await?;
 
         // Store invoice on thread and transition to Invoiced (lock-free across await).
         {
@@ -1131,7 +1135,8 @@ impl RemittanceManager {
             self.now_internal(),
         );
 
-        self.send_envelope(&counterparty, &env, host_override).await?;
+        self.send_envelope(&counterparty, &env, host_override)
+            .await?;
 
         {
             let mut guard = self.inner.lock().await;
@@ -1263,12 +1268,9 @@ impl RemittanceManager {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        let module = self
-            .modules
-            .get(&selected_option_id)
-            .ok_or_else(|| {
-                RemittanceError::Protocol(format!("module not found: {}", selected_option_id))
-            })?;
+        let module = self.modules.get(&selected_option_id).ok_or_else(|| {
+            RemittanceError::Protocol(format!("module not found: {}", selected_option_id))
+        })?;
 
         let note = invoice.base.note.as_deref();
         let ctx = self.make_module_context();
@@ -1299,14 +1301,10 @@ impl RemittanceManager {
                 };
 
                 let payload = serde_json::to_value(&settlement)?;
-                let env = Self::make_envelope(
-                    RemittanceKind::Settlement,
-                    thread_id,
-                    payload,
-                    now,
-                );
+                let env = Self::make_envelope(RemittanceKind::Settlement, thread_id, payload, now);
 
-                self.send_envelope(&counterparty, &env, host_override).await?;
+                self.send_envelope(&counterparty, &env, host_override)
+                    .await?;
 
                 {
                     let mut guard = self.inner.lock().await;
@@ -1330,23 +1328,17 @@ impl RemittanceManager {
                 .await;
             }
             "terminate" => {
-                let termination = result
-                    .termination
-                    .unwrap_or_else(|| Termination {
-                        code: "module_terminated".to_string(),
-                        message: "module requested termination".to_string(),
-                        details: None,
-                    });
+                let termination = result.termination.unwrap_or_else(|| Termination {
+                    code: "module_terminated".to_string(),
+                    message: "module requested termination".to_string(),
+                    details: None,
+                });
 
                 let payload = serde_json::to_value(&termination)?;
-                let env = Self::make_envelope(
-                    RemittanceKind::Termination,
-                    thread_id,
-                    payload,
-                    now,
-                );
+                let env = Self::make_envelope(RemittanceKind::Termination, thread_id, payload, now);
 
-                self.send_envelope(&counterparty, &env, host_override).await?;
+                self.send_envelope(&counterparty, &env, host_override)
+                    .await?;
 
                 {
                     let mut guard = self.inner.lock().await;
@@ -1387,7 +1379,10 @@ impl RemittanceManager {
     // -----------------------------------------------------------------------
 
     /// Parse an inbound PeerMessage, deduplicate, and dispatch to the correct handler.
-    pub(crate) async fn handle_inbound_message(&self, msg: PeerMessage) -> Result<(), RemittanceError> {
+    pub(crate) async fn handle_inbound_message(
+        &self,
+        msg: PeerMessage,
+    ) -> Result<(), RemittanceError> {
         // Parse envelope from message body.
         let envelope: RemittanceEnvelope = serde_json::from_str(&msg.body)
             .map_err(|e| RemittanceError::Protocol(format!("invalid envelope: {}", e)))?;
@@ -1411,7 +1406,8 @@ impl RemittanceManager {
         }
 
         // Dispatch to kind-specific handler.
-        self.apply_inbound_envelope(&thread_id, envelope.clone()).await?;
+        self.apply_inbound_envelope(&thread_id, envelope.clone())
+            .await?;
 
         // Record message ID and log entry under lock.
         let log_entry = ProtocolLogEntry {
@@ -1504,7 +1500,9 @@ impl RemittanceManager {
             }
         };
 
-        let thread = self.create_thread_with_id(sender, my_role, &env.thread_id).await?;
+        let thread = self
+            .create_thread_with_id(sender, my_role, &env.thread_id)
+            .await?;
         Ok(thread.thread_id)
     }
 
@@ -1579,8 +1577,9 @@ impl RemittanceManager {
         match env.kind {
             RemittanceKind::IdentityVerificationRequest => {
                 let request: IdentityVerificationRequest =
-                    serde_json::from_value(env.payload.clone())
-                        .map_err(|e| RemittanceError::Protocol(format!("bad IdentityVerificationRequest: {}", e)))?;
+                    serde_json::from_value(env.payload.clone()).map_err(|e| {
+                        RemittanceError::Protocol(format!("bad IdentityVerificationRequest: {}", e))
+                    })?;
 
                 let identity = match &self.identity {
                     Some(il) => il.clone(),
@@ -1610,10 +1609,14 @@ impl RemittanceManager {
                 };
 
                 let ctx = self.make_module_context();
-                let result = identity.respond_to_request(&sender, thread_id, &request, &ctx).await?;
+                let result = identity
+                    .respond_to_request(&sender, thread_id, &request, &ctx)
+                    .await?;
 
                 match result {
-                    crate::remittance::identity_layer::RespondToRequestResult::Respond { response } => {
+                    crate::remittance::identity_layer::RespondToRequestResult::Respond {
+                        response,
+                    } => {
                         let certs = response.certificates.clone();
                         let payload = serde_json::to_value(&response)?;
                         let resp_env = Self::make_envelope(
@@ -1646,7 +1649,9 @@ impl RemittanceManager {
                         })
                         .await;
                     }
-                    crate::remittance::identity_layer::RespondToRequestResult::Terminate { termination } => {
+                    crate::remittance::identity_layer::RespondToRequestResult::Terminate {
+                        termination,
+                    } => {
                         let payload = serde_json::to_value(&termination)?;
                         let term_env = Self::make_envelope(
                             RemittanceKind::Termination,
@@ -1667,14 +1672,19 @@ impl RemittanceManager {
 
             RemittanceKind::IdentityVerificationResponse => {
                 let response: IdentityVerificationResponse =
-                    serde_json::from_value(env.payload.clone())
-                        .map_err(|e| RemittanceError::Protocol(format!("bad IdentityVerificationResponse: {}", e)))?;
+                    serde_json::from_value(env.payload.clone()).map_err(|e| {
+                        RemittanceError::Protocol(format!(
+                            "bad IdentityVerificationResponse: {}",
+                            e
+                        ))
+                    })?;
 
                 let identity = match &self.identity {
                     Some(il) => il.clone(),
                     None => {
                         return Err(RemittanceError::Protocol(
-                            "received IdentityVerificationResponse with no identity layer".to_string(),
+                            "received IdentityVerificationResponse with no identity layer"
+                                .to_string(),
                         ));
                     }
                 };
@@ -1718,7 +1728,9 @@ impl RemittanceManager {
                         })
                         .await;
                     }
-                    crate::remittance::identity_layer::AssessIdentityResult::Terminate(termination) => {
+                    crate::remittance::identity_layer::AssessIdentityResult::Terminate(
+                        termination,
+                    ) => {
                         let payload = serde_json::to_value(&termination)?;
                         let term_env = Self::make_envelope(
                             RemittanceKind::Termination,
@@ -1870,7 +1882,8 @@ impl RemittanceManager {
                         }
 
                         if self.options.auto_issue_receipt {
-                            let receipt_data = result.receipt_data.unwrap_or(serde_json::Value::Null);
+                            let receipt_data =
+                                result.receipt_data.unwrap_or(serde_json::Value::Null);
                             // Build payee/payer from invoice if available, else use thread info.
                             let (payee, payer) = if let Some(ref inv) = invoice_opt {
                                 (inv.base.payee.clone(), inv.base.payer.clone())
@@ -2102,7 +2115,10 @@ impl RemittanceManager {
     ///
     /// The callback spawns a tokio task for each inbound message, so this
     /// method returns immediately after registration.
-    pub async fn start_listening(&self, host_override: Option<&str>) -> Result<(), RemittanceError> {
+    pub async fn start_listening(
+        &self,
+        host_override: Option<&str>,
+    ) -> Result<(), RemittanceError> {
         let message_box = self.config.message_box.as_deref().unwrap_or("remittance");
         let manager_clone = self.clone();
         let callback: Arc<dyn Fn(PeerMessage) + Send + Sync> = Arc::new(move |msg: PeerMessage| {
@@ -2111,7 +2127,9 @@ impl RemittanceManager {
                 let _ = mgr.handle_inbound_message(msg).await;
             });
         });
-        self.comms.listen_for_live_messages(message_box, host_override, callback).await?;
+        self.comms
+            .listen_for_live_messages(message_box, host_override, callback)
+            .await?;
         Ok(())
     }
 
@@ -2167,10 +2185,12 @@ impl RemittanceManager {
         if let Some(ms) = timeout_ms {
             tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                 .await
-                .map_err(|_| RemittanceError::Timeout(format!(
-                    "wait_for_state timed out after {}ms waiting for thread {} to reach {:?}",
-                    ms, thread_id, target
-                )))?
+                .map_err(|_| {
+                    RemittanceError::Timeout(format!(
+                        "wait_for_state timed out after {}ms waiting for thread {} to reach {:?}",
+                        ms, thread_id, target
+                    ))
+                })?
         } else {
             fut.await
         }
@@ -2189,20 +2209,23 @@ impl RemittanceManager {
             .wait_for_state(thread_id, RemittanceThreadState::Receipted, timeout_ms)
             .await?;
         if thread.state == RemittanceThreadState::Terminated {
-            return Ok(WaitReceiptResult::Terminated(
-                thread.termination.unwrap_or(Termination {
+            return Ok(WaitReceiptResult::Terminated(thread.termination.unwrap_or(
+                Termination {
                     code: "terminated".into(),
                     message: "counterparty terminated".into(),
                     details: None,
-                }),
-            ));
+                },
+            )));
         }
-        thread.receipt.map(WaitReceiptResult::Receipt).ok_or_else(|| {
-            RemittanceError::Protocol(format!(
-                "thread {} reached Receipted state but has no receipt",
-                thread_id
-            ))
-        })
+        thread
+            .receipt
+            .map(WaitReceiptResult::Receipt)
+            .ok_or_else(|| {
+                RemittanceError::Protocol(format!(
+                    "thread {} reached Receipted state but has no receipt",
+                    thread_id
+                ))
+            })
     }
 
     /// Wait until the thread has completed identity exchange.
@@ -2211,8 +2234,12 @@ impl RemittanceManager {
         thread_id: &str,
         timeout_ms: Option<u64>,
     ) -> Result<Thread, RemittanceError> {
-        self.wait_for_state(thread_id, RemittanceThreadState::IdentityAcknowledged, timeout_ms)
-            .await
+        self.wait_for_state(
+            thread_id,
+            RemittanceThreadState::IdentityAcknowledged,
+            timeout_ms,
+        )
+        .await
     }
 
     /// Wait until a thread reaches `Settled` state and return the settlement.
@@ -2236,12 +2263,15 @@ impl RemittanceManager {
                 }),
             ));
         }
-        thread.settlement.map(WaitSettlementResult::Settlement).ok_or_else(|| {
-            RemittanceError::Protocol(format!(
-                "thread {} reached Settled state but has no settlement",
-                thread_id
-            ))
-        })
+        thread
+            .settlement
+            .map(WaitSettlementResult::Settlement)
+            .ok_or_else(|| {
+                RemittanceError::Protocol(format!(
+                    "thread {} reached Settled state but has no settlement",
+                    thread_id
+                ))
+            })
     }
 
     /// Send a settlement without a prior invoice (unsolicited).
@@ -2300,7 +2330,8 @@ impl RemittanceManager {
 
         let payload = serde_json::to_value(&settlement)?;
         let env = Self::make_envelope(RemittanceKind::Settlement, &thread_id, payload, now);
-        self.send_envelope(counterparty, &env, host_override).await?;
+        self.send_envelope(counterparty, &env, host_override)
+            .await?;
 
         {
             let mut guard = self.inner.lock().await;
@@ -2357,22 +2388,39 @@ impl ThreadHandle {
         state: RemittanceThreadState,
         timeout_ms: Option<u64>,
     ) -> Result<Thread, RemittanceError> {
-        self.manager.wait_for_state(&self.thread_id, state, timeout_ms).await
+        self.manager
+            .wait_for_state(&self.thread_id, state, timeout_ms)
+            .await
     }
 
     /// Wait until the thread has completed identity exchange.
-    pub async fn wait_for_identity(&self, timeout_ms: Option<u64>) -> Result<Thread, RemittanceError> {
-        self.manager.wait_for_identity(&self.thread_id, timeout_ms).await
+    pub async fn wait_for_identity(
+        &self,
+        timeout_ms: Option<u64>,
+    ) -> Result<Thread, RemittanceError> {
+        self.manager
+            .wait_for_identity(&self.thread_id, timeout_ms)
+            .await
     }
 
     /// Wait until the thread has a confirmed settlement.
-    pub async fn wait_for_settlement(&self, timeout_ms: Option<u64>) -> Result<WaitSettlementResult, RemittanceError> {
-        self.manager.wait_for_settlement(&self.thread_id, timeout_ms).await
+    pub async fn wait_for_settlement(
+        &self,
+        timeout_ms: Option<u64>,
+    ) -> Result<WaitSettlementResult, RemittanceError> {
+        self.manager
+            .wait_for_settlement(&self.thread_id, timeout_ms)
+            .await
     }
 
     /// Wait until the thread has been receipted.
-    pub async fn wait_for_receipt(&self, timeout_ms: Option<u64>) -> Result<WaitReceiptResult, RemittanceError> {
-        self.manager.wait_for_receipt(&self.thread_id, timeout_ms).await
+    pub async fn wait_for_receipt(
+        &self,
+        timeout_ms: Option<u64>,
+    ) -> Result<WaitReceiptResult, RemittanceError> {
+        self.manager
+            .wait_for_receipt(&self.thread_id, timeout_ms)
+            .await
     }
 }
 
@@ -2386,10 +2434,7 @@ impl InvoiceHandle {
     pub async fn invoice(&self) -> Result<Invoice, RemittanceError> {
         let thread = self.handle.get_thread().await?;
         thread.invoice.ok_or_else(|| {
-            RemittanceError::Protocol(format!(
-                "thread {} has no invoice",
-                self.handle.thread_id
-            ))
+            RemittanceError::Protocol(format!("thread {} has no invoice", self.handle.thread_id))
         })
     }
 
@@ -2399,6 +2444,9 @@ impl InvoiceHandle {
         option_id: Option<&str>,
         host_override: Option<&str>,
     ) -> Result<ThreadHandle, RemittanceError> {
-        self.handle.manager.pay(&self.handle.thread_id, option_id, host_override).await
+        self.handle
+            .manager
+            .pay(&self.handle.thread_id, option_id, host_override)
+            .await
     }
 }

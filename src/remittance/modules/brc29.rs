@@ -25,9 +25,8 @@ use crate::remittance::types::{Invoice, ModuleContext, Settlement, Termination};
 use crate::script::templates::p2pkh::P2PKH;
 use crate::script::ScriptTemplateLock;
 use crate::wallet::interfaces::{
-    CreateActionArgs, CreateActionOptions, CreateActionOutput, GetPublicKeyArgs,
+    BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput, GetPublicKeyArgs,
     InternalizeActionArgs, InternalizeOutput, Payment, WalletInterface,
-    BasketInsertion,
 };
 use crate::wallet::types::{BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol};
 
@@ -183,7 +182,9 @@ impl NonceProvider for DefaultNonceProvider {
         wallet: &Arc<dyn WalletInterface>,
         _originator: Option<&str>,
     ) -> Result<String, RemittanceError> {
-        create_nonce(wallet.as_ref()).await.map_err(RemittanceError::from)
+        create_nonce(wallet.as_ref())
+            .await
+            .map_err(RemittanceError::from)
     }
 }
 
@@ -194,10 +195,7 @@ impl NonceProvider for DefaultNonceProvider {
 #[async_trait]
 pub trait LockingScriptProvider: Send + Sync {
     /// Returns a hex-encoded P2PKH locking script for the given public key.
-    async fn get_locking_script(
-        &self,
-        public_key_hex: &str,
-    ) -> Result<String, RemittanceError>;
+    async fn get_locking_script(&self, public_key_hex: &str) -> Result<String, RemittanceError>;
 }
 
 /// Default `LockingScriptProvider` using the crate's P2PKH script template.
@@ -205,10 +203,7 @@ pub struct DefaultLockingScriptProvider;
 
 #[async_trait]
 impl LockingScriptProvider for DefaultLockingScriptProvider {
-    async fn get_locking_script(
-        &self,
-        public_key_hex: &str,
-    ) -> Result<String, RemittanceError> {
+    async fn get_locking_script(&self, public_key_hex: &str) -> Result<String, RemittanceError> {
         let pk = PublicKey::from_string(public_key_hex)
             .map_err(|e| RemittanceError::Protocol(format!("invalid public key: {e}")))?;
         let hash_vec = pk.to_hash(); // Vec<u8>, 20 bytes
@@ -335,7 +330,10 @@ impl RemittanceModule for Brc29RemittanceModule {
     ) -> Result<BuildSettlementResult<Brc29SettlementArtifact>, RemittanceError> {
         // TS buildSettlement wraps everything in try/catch and returns Terminate on any error.
         // Rust: use an inner async closure that returns Result, then map Err to Terminate.
-        match self.build_settlement_inner(thread_id, option, note, ctx).await {
+        match self
+            .build_settlement_inner(thread_id, option, note, ctx)
+            .await
+        {
             Ok(result) => Ok(result),
             Err(e) => Ok(BuildSettlementResult::Terminate {
                 termination: Termination {
@@ -392,24 +390,22 @@ impl RemittanceModule for Brc29RemittanceModule {
                     labels: self.config.labels.clone(),
                     seek_permission: BooleanDefaultTrue(Some(true)),
                     outputs: vec![match self.config.internalize_protocol {
-                        InternalizeProtocol::WalletPayment => {
-                            InternalizeOutput::WalletPayment {
-                                output_index,
-                                payment: Payment {
-                                    derivation_prefix: settlement
-                                        .custom_instructions
-                                        .derivation_prefix
-                                        .as_bytes()
-                                        .to_vec(),
-                                    derivation_suffix: settlement
-                                        .custom_instructions
-                                        .derivation_suffix
-                                        .as_bytes()
-                                        .to_vec(),
-                                    sender_identity_key: sender_pk,
-                                },
-                            }
-                        }
+                        InternalizeProtocol::WalletPayment => InternalizeOutput::WalletPayment {
+                            output_index,
+                            payment: Payment {
+                                derivation_prefix: settlement
+                                    .custom_instructions
+                                    .derivation_prefix
+                                    .as_bytes()
+                                    .to_vec(),
+                                derivation_suffix: settlement
+                                    .custom_instructions
+                                    .derivation_suffix
+                                    .as_bytes()
+                                    .to_vec(),
+                                sender_identity_key: sender_pk,
+                            },
+                        },
                         InternalizeProtocol::BasketInsertion => {
                             InternalizeOutput::BasketInsertion {
                                 output_index,
@@ -434,8 +430,7 @@ impl RemittanceModule for Brc29RemittanceModule {
             Ok(result) => Ok(AcceptSettlementResult::Accept {
                 receipt_data: Some(Brc29ReceiptData {
                     internalize_result: Some(
-                        serde_json::to_value(&result)
-                            .unwrap_or(serde_json::Value::Null),
+                        serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
                     ),
                     rejected_reason: None,
                     refund: None,
@@ -669,9 +664,7 @@ pub fn ensure_valid_option(option: &Brc29OptionTerms) -> Result<(), String> {
     }
     if let Some(pid) = &option.protocol_id {
         if pid.protocol.trim().is_empty() {
-            return Err(
-                "BRC-29 option protocolID must have a non-empty protocol string".into(),
-            );
+            return Err("BRC-29 option protocolID must have a non-empty protocol string".into());
         }
     }
     if let Some(labels) = &option.labels {
@@ -698,17 +691,23 @@ pub fn ensure_valid_option(option: &Brc29OptionTerms) -> Result<(), String> {
 /// matching the TS runtime check for `outputIndex >= 0`. No runtime code needed.
 pub fn ensure_valid_settlement(artifact: &Brc29SettlementArtifact) -> Result<(), String> {
     if !is_atomic_beef(&artifact.transaction) {
-        return Err(
-            "BRC-29 settlement transaction must be a non-empty byte array".into(),
-        );
+        return Err("BRC-29 settlement transaction must be a non-empty byte array".into());
     }
     if artifact.custom_instructions.derivation_prefix.is_empty()
-        || artifact.custom_instructions.derivation_prefix.trim().is_empty()
+        || artifact
+            .custom_instructions
+            .derivation_prefix
+            .trim()
+            .is_empty()
     {
         return Err("BRC-29 settlement derivation values are required".into());
     }
     if artifact.custom_instructions.derivation_suffix.is_empty()
-        || artifact.custom_instructions.derivation_suffix.trim().is_empty()
+        || artifact
+            .custom_instructions
+            .derivation_suffix
+            .trim()
+            .is_empty()
     {
         return Err("BRC-29 settlement derivation values are required".into());
     }

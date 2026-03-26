@@ -125,7 +125,10 @@ fn test_valid_transitions() {
     assert!(is_valid_transition(&IdentityRequested, &Invoiced));
 
     // IdentityResponded
-    assert!(is_valid_transition(&IdentityResponded, &IdentityAcknowledged));
+    assert!(is_valid_transition(
+        &IdentityResponded,
+        &IdentityAcknowledged
+    ));
     assert!(is_valid_transition(&IdentityResponded, &Invoiced));
 
     // IdentityAcknowledged
@@ -202,9 +205,18 @@ fn test_logger_like_is_object_safe() {
 fn test_kind_display() {
     use RemittanceKind::*;
     assert_eq!(Invoice.to_string(), "invoice");
-    assert_eq!(IdentityVerificationRequest.to_string(), "identityVerificationRequest");
-    assert_eq!(IdentityVerificationResponse.to_string(), "identityVerificationResponse");
-    assert_eq!(IdentityVerificationAcknowledgment.to_string(), "identityVerificationAcknowledgment");
+    assert_eq!(
+        IdentityVerificationRequest.to_string(),
+        "identityVerificationRequest"
+    );
+    assert_eq!(
+        IdentityVerificationResponse.to_string(),
+        "identityVerificationResponse"
+    );
+    assert_eq!(
+        IdentityVerificationAcknowledgment.to_string(),
+        "identityVerificationAcknowledgment"
+    );
     assert_eq!(Settlement.to_string(), "settlement");
     assert_eq!(Receipt.to_string(), "receipt");
     assert_eq!(Termination.to_string(), "termination");
@@ -266,9 +278,7 @@ fn test_all_invalid_transitions() {
 
     for from in &states {
         for to in &states {
-            let is_valid = valid_pairs
-                .iter()
-                .any(|(f, t)| f == from && t == to);
+            let is_valid = valid_pairs.iter().any(|(f, t)| f == from && t == to);
             let result = is_valid_transition(from, to);
 
             if is_valid {
@@ -328,7 +338,8 @@ fn test_invoiced_back_transitions_exhaustive() {
             assert!(
                 !is_valid_transition(from, to),
                 "Post-settlement state {:?} must not transition to identity state {:?}",
-                from, to
+                from,
+                to
             );
         }
     }

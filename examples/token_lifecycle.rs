@@ -17,8 +17,8 @@ use bsv::script::Script;
 use bsv::wallet::interfaces::{
     CreateActionArgs, CreateActionInput, CreateActionOutput, ListOutputsArgs, OutputInclude,
 };
-use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 use bsv::wallet::substrates::http_wallet_json::HttpWalletJson;
+use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 use bsv::wallet::WalletInterface;
 
 #[tokio::main]
