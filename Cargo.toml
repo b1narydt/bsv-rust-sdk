@@ -1,3 +1,98 @@
 [package]
 name = "bsv-sdk"
 version = "0.1.76"
+edition = "2021"
+rust-version = "1.87"
+description = "Pure Rust implementation of the BSV Blockchain SDK"
+license-file = "LICENSE"
+repository = "https://github.com/b1narydt/bsv-rust-sdk"
+readme = "README.md"
+documentation = "https://docs.rs/bsv-sdk"
+keywords = ["bsv", "bitcoin", "blockchain", "sdk", "cryptography"]
+categories = ["cryptography", "authentication"]
+
+[lib]
+name = "bsv"
+
+[dependencies]
+getrandom = "0.2"
+thiserror = "2.0"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+futures-util = { version = "0.3", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bignumber_bench"
+harness = false
+
+[[bench]]
+name = "bn_serialization_bench"
+harness = false
+
+[[bench]]
+name = "ecc_scalar_bench"
+harness = false
+
+[[bench]]
+name = "script_findanddelete_bench"
+harness = false
+
+[[bench]]
+name = "script_serialization_bench"
+harness = false
+
+[[bench]]
+name = "symmetric_key_bench"
+harness = false
+
+[[bench]]
+name = "transaction_bench"
+harness = false
+
+[[bench]]
+name = "atomic_beef_bench"
+harness = false
+
+[[bench]]
+name = "reader_writer_bench"
+harness = false
+
+[[bench]]
+name = "ecdsa_bench"
+harness = false
+
+[[bench]]
+name = "hash_bench"
+harness = false
+
+[[bench]]
+name = "ecies_bench"
+harness = false
+
+[[bench]]
+name = "dispatch_bench"
+harness = false
+
+[[example]]
+name = "wallet_client_action"
+required-features = ["network"]
+
+[[example]]
+name = "token_lifecycle"
+required-features = ["network"]
+
+[features]
+default = []
+network = ["dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util", "dep:serde", "dep:serde_json"]
