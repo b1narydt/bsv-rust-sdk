@@ -133,6 +133,16 @@ pub(crate) mod serde_helpers {
             Ok(buf)
         }
 
+        /// Encode variable-length bytes as base64 (used by bytes_as_base64 module).
+        pub(super) fn base64_encode_vec(data: &[u8]) -> String {
+            base64_encode(data)
+        }
+
+        /// Decode base64 string to variable-length bytes (used by bytes_as_base64 module).
+        pub(super) fn base64_decode_vec(s: &str) -> Result<Vec<u8>, String> {
+            base64_decode(s)
+        }
+
         fn base64_encode(data: &[u8]) -> String {
             const CHARS: &[u8] =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -205,6 +215,29 @@ pub(crate) mod serde_helpers {
                 i += 4;
             }
             Ok(result)
+        }
+    }
+
+    /// Serialize/deserialize `Vec<u8>` as base64 string.
+    ///
+    /// Matches Go's default `json.Marshal` for `[]byte` and TS SDK `Base64String`.
+    /// Used for `Payment.derivation_prefix` and `Payment.derivation_suffix`.
+    pub mod bytes_as_base64 {
+        use serde::{self, Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_str(&super::bytes32_base64::base64_encode_vec(bytes))
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s = String::deserialize(deserializer)?;
+            super::bytes32_base64::base64_decode_vec(&s).map_err(serde::de::Error::custom)
         }
     }
 
@@ -1151,9 +1184,11 @@ pub struct ListActionsResult {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct Payment {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    // bytes_as_base64: TS SDK types these as Base64String, Go uses default
+    // json.Marshal for []byte which produces base64. BSV Desktop expects strings.
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
     pub derivation_prefix: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
     pub derivation_suffix: Vec<u8>,
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
     pub sender_identity_key: PublicKey,
@@ -1520,7 +1555,9 @@ pub struct CreateSignatureArgs {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct CreateSignatureResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
+    // bytes_as_array: TS SDK returns Byte[] (number array), Go SDK uses BytesList.
+    // NOT bytes_as_hex — BSV Desktop JSON API returns [48, 69, ...] not "3045...".
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
     pub signature: Vec<u8>,
 }
 
@@ -1552,7 +1589,8 @@ pub struct VerifySignatureArgs {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub hash_to_directly_verify: Option<Vec<u8>>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
+    // bytes_as_array: matches TS Byte[] and Go BytesList format.
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
     pub signature: Vec<u8>,
     pub for_self: Option<bool>,
     pub privileged: bool,
