@@ -1220,12 +1220,14 @@ pub struct BasketInsertion {
 pub enum InternalizeOutput {
     #[cfg_attr(feature = "network", serde(rename = "wallet payment"))]
     WalletPayment {
+        #[cfg_attr(feature = "network", serde(rename = "outputIndex"))]
         output_index: u32,
         #[cfg_attr(feature = "network", serde(rename = "paymentRemittance"))]
         payment: Payment,
     },
     #[cfg_attr(feature = "network", serde(rename = "basket insertion"))]
     BasketInsertion {
+        #[cfg_attr(feature = "network", serde(rename = "outputIndex"))]
         output_index: u32,
         #[cfg_attr(feature = "network", serde(rename = "insertionRemittance"))]
         insertion: BasketInsertion,
