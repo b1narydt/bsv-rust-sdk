@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-03-30
+
+### Fixed
+
+- **JSON serde annotations for HttpWalletJson interop** — Corrected three
+  `serde(with)` mismatches in `wallet/interfaces.rs` that caused
+  `HttpWalletJson` to fail when communicating with BSV Desktop wallet:
+  - `CreateSignatureResult.signature`: `bytes_as_hex` → `bytes_as_array`
+    (TS SDK returns `Byte[]`, Go SDK uses `BytesList` — both are number arrays)
+  - `VerifySignatureArgs.signature`: `bytes_as_hex` → `bytes_as_array`
+    (same mismatch)
+  - `Payment.derivation_prefix/suffix`: `bytes_as_array` → `bytes_as_base64`
+    (TS SDK uses `Base64String`, Go's default `json.Marshal` for `[]byte` is base64)
+
+### Added
+
+- **`bytes_as_base64` serde helper** — Serialize/deserialize `Vec<u8>` as
+  base64 strings, matching Go SDK and TS SDK `Base64String` wire format.
+  Used for `Payment.derivation_prefix` and `Payment.derivation_suffix`.
+
 ## [0.2.0] - 2026-03-26
 
 ### Added
