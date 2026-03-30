@@ -944,6 +944,41 @@ pub struct SendWithResult {
     pub status: ActionResultStatus,
 }
 
+/// Status of a review action result from undelayed broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+pub enum ReviewActionResultStatus {
+    Success,
+    DoubleSpend,
+    ServiceError,
+    InvalidTx,
+}
+
+impl ReviewActionResultStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReviewActionResultStatus::Success => "success",
+            ReviewActionResultStatus::DoubleSpend => "doubleSpend",
+            ReviewActionResultStatus::ServiceError => "serviceError",
+            ReviewActionResultStatus::InvalidTx => "invalidTx",
+        }
+    }
+}
+
+/// Result of reviewing a non-delayed broadcast action.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+pub struct ReviewActionResult {
+    pub txid: TXIDHexString,
+    pub status: ReviewActionResultStatus,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub competing_txs: Option<Vec<String>>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    pub competing_beef: Option<Vec<u8>>,
+}
+
 /// Result of creating a transaction.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
@@ -2163,5 +2198,43 @@ mod tests {
         // 64 chars but not valid hex
         let bad_hex = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
         assert!(SerialNumber::from_string(bad_hex).is_err());
+    }
+}
+
+#[cfg(test)]
+mod review_action_result_tests {
+    use super::*;
+
+    #[test]
+    fn test_review_action_result_status_values() {
+        assert_eq!(ReviewActionResultStatus::Success.as_str(), "success");
+        assert_eq!(
+            ReviewActionResultStatus::DoubleSpend.as_str(),
+            "doubleSpend"
+        );
+        assert_eq!(
+            ReviewActionResultStatus::ServiceError.as_str(),
+            "serviceError"
+        );
+        assert_eq!(ReviewActionResultStatus::InvalidTx.as_str(), "invalidTx");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn test_review_action_result_serde_roundtrip() {
+        let r = ReviewActionResult {
+            txid: "aabb".to_string(),
+            status: ReviewActionResultStatus::DoubleSpend,
+            competing_txs: Some(vec!["ccdd".to_string()]),
+            competing_beef: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"doubleSpend\""));
+        assert!(json.contains("\"competingTxs\""));
+        // competing_beef should be omitted since None
+        assert!(!json.contains("\"competingBeef\""));
+        let r2: ReviewActionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(r2.status, ReviewActionResultStatus::DoubleSpend);
+        assert_eq!(r2.competing_txs.unwrap()[0], "ccdd");
     }
 }
