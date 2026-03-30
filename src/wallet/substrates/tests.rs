@@ -1031,12 +1031,14 @@ mod json_round_trip {
     }
 
     #[test]
-    fn test_create_signature_result_hex_round_trip() {
+    fn test_create_signature_result_array_round_trip() {
         let result = CreateSignatureResult {
             signature: vec![0xDE, 0xAD, 0xBE, 0xEF],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"deadbeef\""));
+        // Signature serializes as a JSON number array (matching TS Byte[] and Go BytesList),
+        // not as a hex string — BSV Desktop returns [222,173,190,239] not "deadbeef".
+        assert!(json.contains("[222,173,190,239]"));
         let deserialized: CreateSignatureResult = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.signature, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     }
