@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-03-30
+
+### Fixed
+
+- **`InternalizeOutput` enum serde field rename** — Added explicit
+  `#[serde(rename = "outputIndex")]` to `output_index` fields in both
+  `WalletPayment` and `BasketInsertion` variants. The enum-level
+  `rename_all = "camelCase"` does not cascade into internally-tagged
+  enum variant fields, causing `output_index` to appear on the wire
+  instead of `outputIndex`. Required for TS wallet-toolbox wire parity.
+
 ## [0.2.1] - 2026-03-30
 
 ### Fixed
