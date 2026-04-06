@@ -1431,7 +1431,9 @@ pub struct GetPublicKeyArgs {
     pub privileged: bool,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub for_self: Option<bool>,
+    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub seek_permission: Option<bool>,
 }
 
