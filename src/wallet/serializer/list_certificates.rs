@@ -83,17 +83,20 @@ pub fn serialize_list_certificates_result(
             let cert_bytes = serialize_certificate(&cert_result.certificate)?;
             write_bytes(w, &cert_bytes)?;
             // Keyring (flag byte + sorted map with base64 values)
-            if cert_result.keyring.is_empty() {
-                write_byte(w, 0)?;
-            } else {
-                write_byte(w, 1)?;
-                let mut keys: Vec<&String> = cert_result.keyring.keys().collect();
-                keys.sort();
-                write_varint(w, keys.len() as u64)?;
-                for key in keys {
-                    write_string(w, key)?;
-                    let value_bytes = base64_decode(&cert_result.keyring[key])?;
-                    write_bytes(w, &value_bytes)?;
+            match &cert_result.keyring {
+                Some(keyring) if !keyring.is_empty() => {
+                    write_byte(w, 1)?;
+                    let mut keys: Vec<&String> = keyring.keys().collect();
+                    keys.sort();
+                    write_varint(w, keys.len() as u64)?;
+                    for key in keys {
+                        write_string(w, key)?;
+                        let value_bytes = base64_decode(&keyring[key])?;
+                        write_bytes(w, &value_bytes)?;
+                    }
+                }
+                _ => {
+                    write_byte(w, 0)?;
                 }
             }
             // Verifier as length-prefixed bytes
@@ -127,9 +130,9 @@ pub fn deserialize_list_certificates_result(
                 let value_bytes = read_bytes(&mut r)?;
                 map.insert(key, base64_encode(&value_bytes));
             }
-            map
+            Some(map)
         } else {
-            HashMap::new()
+            None
         };
         // Verifier
         let verifier_bytes = read_bytes(&mut r)?;

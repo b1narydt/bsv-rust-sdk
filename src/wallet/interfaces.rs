@@ -726,30 +726,33 @@ pub struct Certificate {
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct PartialCertificate {
     #[cfg_attr(feature = "network", serde(rename = "type"))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub cert_type: Option<CertificateType>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub serial_number: Option<SerialNumber>,
     #[cfg_attr(
         feature = "network",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
+    #[cfg_attr(feature = "network", serde(default))]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub subject: Option<PublicKey>,
     #[cfg_attr(
         feature = "network",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
+    #[cfg_attr(feature = "network", serde(default))]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub certifier: Option<PublicKey>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub revocation_outpoint: Option<String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub fields: Option<HashMap<String, String>>,
     #[cfg_attr(
         feature = "network",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
+    #[cfg_attr(feature = "network", serde(default))]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
 }
@@ -821,9 +824,9 @@ pub struct CreateActionInput {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub unlocking_script: Option<Vec<u8>>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub unlocking_script_length: Option<u32>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub sequence_number: Option<u32>,
 }
 
@@ -843,9 +846,9 @@ pub struct CreateActionOutput {
     pub locking_script: Option<Vec<u8>>,
     pub satoshis: SatoshiValue,
     pub output_description: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub basket: Option<BasketStringUnder300Bytes>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
         feature = "network",
@@ -863,7 +866,7 @@ pub struct CreateActionOptions {
     pub sign_and_process: BooleanDefaultTrue,
     #[cfg_attr(feature = "network", serde(default))]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub trust_self: Option<TrustSelf>,
     #[cfg_attr(
         feature = "network",
@@ -914,16 +917,16 @@ pub struct CreateActionArgs {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub outputs: Vec<CreateActionOutput>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub lock_time: Option<u32>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub version: Option<u32>,
     #[cfg_attr(
         feature = "network",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub options: Option<CreateActionOptions>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub reference: Option<String>,
@@ -1021,7 +1024,7 @@ pub struct CreateActionResult {
 pub struct SignActionSpend {
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
     pub unlocking_script: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub sequence_number: Option<u32>,
 }
 
@@ -1030,8 +1033,11 @@ pub struct SignActionSpend {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct SignActionOptions {
+    #[cfg_attr(feature = "network", serde(default))]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
+    #[cfg_attr(feature = "network", serde(default))]
     pub return_txid_only: BooleanDefaultFalse,
+    #[cfg_attr(feature = "network", serde(default))]
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
@@ -1048,7 +1054,7 @@ pub struct SignActionArgs {
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
     pub reference: Vec<u8>,
     pub spends: HashMap<u32, SignActionSpend>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub options: Option<SignActionOptions>,
 }
 
@@ -1196,7 +1202,7 @@ pub struct ListActionsArgs {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub label_query_mode: Option<QueryMode>,
     #[cfg_attr(feature = "network", serde(default))]
     pub include_labels: BooleanDefaultFalse,
@@ -1212,7 +1218,7 @@ pub struct ListActionsArgs {
     pub include_output_locking_scripts: BooleanDefaultFalse,
     #[cfg_attr(feature = "network", serde(default))]
     pub limit: PositiveIntegerDefault10Max10000,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: BooleanDefaultTrue,
@@ -1252,7 +1258,7 @@ pub struct Payment {
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct BasketInsertion {
     pub basket: BasketStringUnder300Bytes,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
         feature = "network",
@@ -1327,9 +1333,9 @@ pub struct ListOutputsArgs {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub tags: Vec<OutputTagStringUnder300Bytes>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub tag_query_mode: Option<QueryMode>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub include: Option<OutputInclude>,
     #[cfg_attr(
         feature = "network",
@@ -1348,7 +1354,7 @@ pub struct ListOutputsArgs {
     pub include_labels: BooleanDefaultFalse,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none", default))]
     pub limit: PositiveIntegerDefault10Max10000,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(
         feature = "network",
@@ -1373,7 +1379,7 @@ pub struct Output {
     )]
     pub locking_script: Option<Vec<u8>>,
     pub spendable: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
         feature = "network",
@@ -1440,16 +1446,16 @@ pub struct GetPublicKeyArgs {
     #[cfg_attr(feature = "network", serde(default))]
     pub identity_key: bool,
     #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub protocol_id: Option<Protocol>,
     #[cfg_attr(feature = "network", serde(rename = "keyID"))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub key_id: Option<String>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none", default))]
     pub counterparty: Option<Counterparty>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none", default))]
     pub for_self: Option<bool>,
@@ -1481,7 +1487,7 @@ pub struct EncryptArgs {
     pub plaintext: Vec<u8>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1511,7 +1517,7 @@ pub struct DecryptArgs {
     pub ciphertext: Vec<u8>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1541,7 +1547,7 @@ pub struct CreateHmacArgs {
     pub data: Vec<u8>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1573,7 +1579,7 @@ pub struct VerifyHmacArgs {
     pub hmac: Vec<u8>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1618,7 +1624,7 @@ pub struct CreateSignatureArgs {
     pub hash_to_directly_sign: Option<Vec<u8>>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1671,7 +1677,7 @@ pub struct VerifySignatureArgs {
     pub for_self: Option<bool>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1704,9 +1710,9 @@ pub struct AcquireCertificateArgs {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub fields: HashMap<String, String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub serial_number: Option<SerialNumber>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub revocation_outpoint: Option<String>,
     #[cfg_attr(
         feature = "network",
@@ -1717,15 +1723,15 @@ pub struct AcquireCertificateArgs {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub signature: Option<Vec<u8>>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub certifier_url: Option<String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub keyring_revealer: Option<KeyringRevealer>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub keyring_for_subject: Option<HashMap<String, String>>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
 }
 
@@ -1743,11 +1749,11 @@ pub struct ListCertificatesArgs {
     pub types: Vec<CertificateType>,
     #[cfg_attr(feature = "network", serde(default))]
     pub limit: PositiveIntegerDefault10Max10000,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
     /// Optional partial certificate filter for exact matching.
     /// When provided, only certificates matching these fields are returned.
@@ -1762,7 +1768,8 @@ pub struct ListCertificatesArgs {
 pub struct CertificateResult {
     #[cfg_attr(feature = "network", serde(flatten))]
     pub certificate: Certificate,
-    pub keyring: HashMap<String, String>,
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub keyring: Option<HashMap<String, String>>,
     #[cfg_attr(
         feature = "network",
         serde(with = "serde_helpers::option_bytes_as_hex")
@@ -1794,7 +1801,7 @@ pub struct ProveCertificateArgs {
     pub verifier: PublicKey,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
 }
 
@@ -1804,12 +1811,13 @@ pub struct ProveCertificateArgs {
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateResult {
     pub keyring_for_verifier: HashMap<String, String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub certificate: Option<Certificate>,
     #[cfg_attr(
         feature = "network",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
+    #[cfg_attr(feature = "network", serde(default))]
     #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
     pub verifier: Option<PublicKey>,
 }
@@ -1868,9 +1876,9 @@ pub struct IdentityCertificate {
 pub struct DiscoverByIdentityKeyArgs {
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
     pub identity_key: PublicKey,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub limit: Option<u32>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub offset: Option<u32>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1882,9 +1890,9 @@ pub struct DiscoverByIdentityKeyArgs {
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct DiscoverByAttributesArgs {
     pub attributes: HashMap<String, String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub limit: Option<u32>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub offset: Option<u32>,
     #[cfg_attr(feature = "network", serde(default))]
     pub seek_permission: Option<bool>,
@@ -1912,9 +1920,9 @@ pub struct RevealCounterpartyKeyLinkageArgs {
     pub counterparty: PublicKey,
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged: Option<bool>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
 }
 
@@ -1948,9 +1956,9 @@ pub struct RevealSpecificKeyLinkageArgs {
     pub protocol_id: Protocol,
     #[cfg_attr(feature = "network", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged: Option<bool>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "Option::is_none"))]
     pub privileged_reason: Option<String>,
 }
 

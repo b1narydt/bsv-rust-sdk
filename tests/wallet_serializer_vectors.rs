@@ -910,7 +910,7 @@ test_result_vector!(
                     fields: Some(fields),
                     signature: Some(sig_from_hex(SIG_HEX)),
                 },
-                keyring: HashMap::new(),
+                keyring: None,
                 verifier: None,
             }],
         }
@@ -941,7 +941,7 @@ test_result_vector!(
                     fields: Some(fields),
                     signature: Some(sig_from_hex(SIG_HEX)),
                 },
-                keyring,
+                keyring: Some(keyring),
                 verifier: Some(hex_decode(VERIFIER_HEX).unwrap()),
             }],
         }
