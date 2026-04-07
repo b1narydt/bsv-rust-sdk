@@ -245,6 +245,15 @@ pub struct Counterparty {
     pub public_key: Option<PublicKey>,
 }
 
+impl Default for Counterparty {
+    fn default() -> Self {
+        Self {
+            counterparty_type: CounterpartyType::Self_,
+            public_key: None,
+        }
+    }
+}
+
 #[cfg(feature = "network")]
 impl serde::Serialize for Counterparty {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
