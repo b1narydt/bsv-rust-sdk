@@ -1245,3 +1245,83 @@ test_result_vector!(
         version: "1.0.0".to_string()
     }
 );
+
+// ---------------------------------------------------------------------------
+// Regression: keyring Some(empty) binary round-trip (H1)
+// ---------------------------------------------------------------------------
+//
+// `CertificateResult.keyring` is `Option<HashMap<String, String>>`, so three
+// states must survive the wire format:
+//   None         -> absent
+//   Some(empty)  -> present but empty
+//   Some(map)    -> present with entries
+//
+// Before the fix, the serializer folded `Some(empty)` into the same flag-byte
+// as `None` (`write_byte(0)`), silently stripping the "present but empty"
+// marker on binary round-trip. This test exercises all three states and would
+// fail on the `Some(empty)` case before the fix.
+#[test]
+fn test_list_certificates_keyring_three_state_roundtrip() {
+    fn make_cert(keyring: Option<HashMap<String, String>>) -> ListCertificatesResult {
+        ListCertificatesResult {
+            total_certificates: 1,
+            certificates: vec![CertificateResult {
+                certificate: Certificate {
+                    cert_type: type_from_base64(TYPE_B64),
+                    serial_number: serial_from_base64(SERIAL_B64),
+                    subject: pk_from_hex(PUB_KEY_HEX),
+                    certifier: pk_from_hex(COUNTERPARTY_HEX),
+                    revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+                    fields: None,
+                    signature: Some(sig_from_hex(SIG_HEX)),
+                },
+                keyring,
+                verifier: None,
+            }],
+        }
+    }
+
+    // (A) None -> flag byte 0, deserializes to None.
+    let none_input = make_cert(None);
+    let none_bytes = list_certificates::serialize_list_certificates_result(&none_input).unwrap();
+    let none_out = list_certificates::deserialize_list_certificates_result(&none_bytes).unwrap();
+    assert!(
+        none_out.certificates[0].keyring.is_none(),
+        "None keyring must round-trip as None"
+    );
+
+    // (B) Some(empty) -> flag byte 1, varint 0, deserializes to Some(empty).
+    // This is the regression case: the pre-fix serializer wrote flag=0 here,
+    // causing deserialize to return None and silently collapsing the type.
+    let empty_input = make_cert(Some(HashMap::new()));
+    let empty_bytes = list_certificates::serialize_list_certificates_result(&empty_input).unwrap();
+    let empty_out = list_certificates::deserialize_list_certificates_result(&empty_bytes).unwrap();
+    let empty_roundtripped = empty_out.certificates[0]
+        .keyring
+        .as_ref()
+        .expect("Some(empty) keyring must round-trip as Some(_), not None");
+    assert!(
+        empty_roundtripped.is_empty(),
+        "round-tripped empty keyring must still be empty"
+    );
+    // Binary distinction: None vs Some(empty) must produce different bytes.
+    assert_ne!(
+        none_bytes, empty_bytes,
+        "None and Some(empty) keyring must serialize to distinct byte sequences"
+    );
+
+    // (C) Some(populated) -> flag byte 1, full map, round-trips intact.
+    let mut populated = HashMap::new();
+    populated.insert("field1".to_string(), "a2V5MQ==".to_string());
+    populated.insert("field2".to_string(), "a2V5Mg==".to_string());
+    let populated_input = make_cert(Some(populated.clone()));
+    let populated_bytes =
+        list_certificates::serialize_list_certificates_result(&populated_input).unwrap();
+    let populated_out =
+        list_certificates::deserialize_list_certificates_result(&populated_bytes).unwrap();
+    let populated_roundtripped = populated_out.certificates[0]
+        .keyring
+        .as_ref()
+        .expect("Some(populated) keyring must round-trip as Some(_)");
+    assert_eq!(populated_roundtripped, &populated);
+}

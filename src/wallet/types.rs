@@ -246,9 +246,13 @@ pub struct Counterparty {
 }
 
 impl Default for Counterparty {
+    /// Default to `Uninitialized` — the sentinel that `ProtoWallet::default_counterparty()`
+    /// substitutes with the correct per-op default (`self` for most crypto ops,
+    /// `anyone` for `createSignature`). Returning a concrete value here would bypass
+    /// that per-op dispatch and silently mis-derive keys across SDKs.
     fn default() -> Self {
         Self {
-            counterparty_type: CounterpartyType::Self_,
+            counterparty_type: CounterpartyType::Uninitialized,
             public_key: None,
         }
     }
@@ -275,7 +279,22 @@ impl serde::Serialize for Counterparty {
 #[cfg(feature = "network")]
 impl<'de> serde::Deserialize<'de> for Counterparty {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
+        // Accept both a missing field (handled by `#[serde(default)]` at the
+        // call site) and an explicit `null` as equivalent: both map to
+        // `Uninitialized`, which `ProtoWallet::default_counterparty()` then
+        // resolves to the correct per-op default. Without the `Option` layer,
+        // an explicit `"counterparty": null` would raise `invalid type: null,
+        // expected a string`, producing asymmetric behavior from omission.
+        let s: Option<String> = Option::<String>::deserialize(deserializer)?;
+        let s = match s {
+            None => {
+                return Ok(Counterparty {
+                    counterparty_type: CounterpartyType::Uninitialized,
+                    public_key: None,
+                })
+            }
+            Some(s) => s,
+        };
         match s.as_str() {
             "anyone" => Ok(Counterparty {
                 counterparty_type: CounterpartyType::Anyone,
@@ -329,4 +348,94 @@ pub fn anyone_private_key() -> PrivateKey {
     })
     // SAFETY: PrivateKey(1) is always valid -- 1 is within the secp256k1 scalar range.
     .expect("PrivateKey(1) is always valid")
+}
+
+#[cfg(all(test, feature = "network"))]
+mod serde_tests {
+    //! Serde-level regression tests for `Counterparty` and its interaction
+    //! with `#[serde(default)]` on BRC-100 arg structs.
+
+    use super::*;
+    use crate::wallet::interfaces::{CreateSignatureArgs, EncryptArgs};
+
+    #[test]
+    fn counterparty_default_is_uninitialized() {
+        // C1 guard at the type level: `#[serde(default)]` on arg structs calls
+        // `Counterparty::default()`, which MUST yield `Uninitialized` so that
+        // `ProtoWallet::default_counterparty()` can substitute the correct
+        // per-op default ('anyone' for createSignature, 'self' for all others).
+        let cp = Counterparty::default();
+        assert_eq!(cp.counterparty_type, CounterpartyType::Uninitialized);
+        assert!(cp.public_key.is_none());
+    }
+
+    #[test]
+    fn create_signature_args_omit_counterparty_is_uninitialized() {
+        // C1 wire-format guard: a TS client that omits `counterparty` on a
+        // createSignature request must deserialize into an `Uninitialized`
+        // value so that `create_signature_sync` can route it to `Anyone`.
+        // Before the fix, this deserialized to `Self_` and silently derived
+        // against the wrong key.
+        let json = serde_json::json!({
+            "protocolID": [0, "cross-sdk test"],
+            "keyID": "x",
+            "data": [1, 2, 3],
+        });
+        let args: CreateSignatureArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            args.counterparty.counterparty_type,
+            CounterpartyType::Uninitialized,
+            "omitted counterparty must deserialize to Uninitialized, not Self_ — \
+             otherwise createSignature will derive against the wrong key"
+        );
+    }
+
+    #[test]
+    fn encrypt_args_omit_counterparty_is_uninitialized() {
+        // Non-createSignature ops also yield Uninitialized at the serde layer;
+        // the 'self' default is applied downstream by `default_counterparty()`.
+        let json = serde_json::json!({
+            "protocolID": [0, "cross-sdk test"],
+            "keyID": "x",
+            "plaintext": [1, 2, 3],
+        });
+        let args: EncryptArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            args.counterparty.counterparty_type,
+            CounterpartyType::Uninitialized
+        );
+    }
+
+    #[test]
+    fn counterparty_explicit_null_is_uninitialized() {
+        // M3: an explicit `"counterparty": null` must behave the same as
+        // omitting the field (both -> Uninitialized). Before the fix, null
+        // raised `invalid type: null, expected a string`, producing
+        // asymmetric behavior from omission for no useful reason.
+        let json = serde_json::json!({
+            "protocolID": [0, "cross-sdk test"],
+            "keyID": "x",
+            "data": [1, 2, 3],
+            "counterparty": serde_json::Value::Null,
+        });
+        let args: CreateSignatureArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            args.counterparty.counterparty_type,
+            CounterpartyType::Uninitialized
+        );
+    }
+
+    #[test]
+    fn counterparty_explicit_self_and_anyone_parse() {
+        // Sanity: the null/omission handling in the custom Deserialize impl
+        // must not break the pre-existing string-tag parsing.
+        let self_cp: Counterparty = serde_json::from_str("\"self\"").unwrap();
+        assert_eq!(self_cp.counterparty_type, CounterpartyType::Self_);
+
+        let anyone_cp: Counterparty = serde_json::from_str("\"anyone\"").unwrap();
+        assert_eq!(anyone_cp.counterparty_type, CounterpartyType::Anyone);
+
+        let empty_cp: Counterparty = serde_json::from_str("\"\"").unwrap();
+        assert_eq!(empty_cp.counterparty_type, CounterpartyType::Uninitialized);
+    }
 }

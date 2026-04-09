@@ -1426,4 +1426,118 @@ mod tests {
         assert_eq!(result.proof_type, 0);
         assert_eq!(result.key_id, "wlink1");
     }
+
+    // -- Counterparty default-dispatch regression tests (C1) --
+    //
+    // These guard against a class of silent cross-SDK interop bugs: the TS SDK
+    // (ProtoWallet.ts) defaults a missing `counterparty` to "self" for every
+    // crypto op *except* createSignature, which defaults to "anyone". The
+    // Rust side mirrors this via `ProtoWallet::default_counterparty()`, which
+    // substitutes the per-op default only when the value is
+    // `CounterpartyType::Uninitialized`. Therefore `Counterparty::default()`
+    // MUST return `Uninitialized`, not a concrete value like `Self_` — otherwise
+    // `serde(default)` on `CreateSignatureArgs.counterparty` would derive a
+    // signature against the wrong key and fail cross-SDK verification silently.
+
+    #[test]
+    fn test_counterparty_default_is_uninitialized() {
+        // C1: guards against a regression where Counterparty::default() returns
+        // a concrete value, which would bypass per-op default dispatch in
+        // `default_counterparty()`.
+        let cp = Counterparty::default();
+        assert_eq!(cp.counterparty_type, CounterpartyType::Uninitialized);
+        assert!(cp.public_key.is_none());
+    }
+
+    #[test]
+    fn test_create_signature_defaults_uninitialized_to_anyone() {
+        // C1 end-to-end: calling create_signature_sync with an Uninitialized
+        // counterparty must derive against the 'anyone' key, matching the TS
+        // SDK's `createSignature` default. Verified by:
+        //   (1) the signature verifies when re-derived as counterparty=Anyone
+        //   (2) the signature does NOT verify when re-derived as counterparty=Self_
+        //       (which is what the TS SDK would produce for all *other* ops)
+        // Before the fix, Counterparty::default() returned Self_, causing
+        // default_counterparty(Self_, Anyone) to pass Self_ through unchanged
+        // and silently derive against the wrong key.
+        let wallet = ProtoWallet::new(test_private_key());
+        let protocol = test_protocol();
+        let data = b"cross-sdk-interop-canary";
+
+        let uninit = Counterparty::default();
+        assert_eq!(uninit.counterparty_type, CounterpartyType::Uninitialized);
+
+        let sig = wallet
+            .create_signature_sync(Some(data), None, &protocol, "sig-c1", &uninit)
+            .unwrap();
+
+        // (1) Must verify when the verifier explicitly uses Anyone.
+        //     verify_signature_sync defaults Uninitialized→Self_, so we pass
+        //     the concrete Anyone value to bypass the default and exercise
+        //     the anyone-derived key path deliberately. for_self=true matches
+        //     the existing self-verify test pattern — since this wallet knows
+        //     its own private key, the local derivation yields the public
+        //     key that matches the private key used to sign.
+        let anyone = Counterparty {
+            counterparty_type: CounterpartyType::Anyone,
+            public_key: None,
+        };
+        let valid_anyone = wallet
+            .verify_signature_sync(Some(data), None, &sig, &protocol, "sig-c1", &anyone, true)
+            .unwrap();
+        assert!(
+            valid_anyone,
+            "signature from Uninitialized counterparty must verify against 'anyone' derived key"
+        );
+
+        // (2) Must NOT verify when the verifier uses Self_ at the same
+        //     (protocol, key_id). This is the regression guard: if
+        //     Counterparty::default() ever goes back to Self_, the signature
+        //     would be produced under Self_ and (2) would start passing,
+        //     indicating the per-op default dispatch was bypassed.
+        let self_cp = self_counterparty();
+        let valid_self = wallet
+            .verify_signature_sync(Some(data), None, &sig, &protocol, "sig-c1", &self_cp, true)
+            .unwrap_or(false);
+        assert!(
+            !valid_self,
+            "signature from Uninitialized counterparty must NOT verify against 'self' derived key — \
+             if this assertion fails, Counterparty::default() has regressed and createSignature \
+             is no longer defaulting to 'anyone'"
+        );
+    }
+
+    #[test]
+    fn test_encrypt_defaults_uninitialized_to_self() {
+        // C1 dispatch counterpart: encrypt_sync defaults Uninitialized to Self_.
+        // Demonstrates that default_counterparty() dispatches per-op rather
+        // than via Counterparty::default(), so the fix to return Uninitialized
+        // from Default does not regress the five non-createSignature ops.
+        let wallet = ProtoWallet::new(test_private_key());
+        let protocol = test_protocol();
+        let plaintext = b"dispatch-to-self canary";
+
+        let ciphertext_uninit = wallet
+            .encrypt_sync(plaintext, &protocol, "enc-c1", &Counterparty::default())
+            .unwrap();
+        let ciphertext_self = wallet
+            .encrypt_sync(plaintext, &protocol, "enc-c1", &self_counterparty())
+            .unwrap();
+
+        // Both should decrypt with Self_ (different ciphertexts because ECIES is
+        // randomized, but both must round-trip through Self_).
+        let pt1 = wallet
+            .decrypt_sync(
+                &ciphertext_uninit,
+                &protocol,
+                "enc-c1",
+                &self_counterparty(),
+            )
+            .unwrap();
+        let pt2 = wallet
+            .decrypt_sync(&ciphertext_self, &protocol, "enc-c1", &self_counterparty())
+            .unwrap();
+        assert_eq!(pt1, plaintext);
+        assert_eq!(pt2, plaintext);
+    }
 }

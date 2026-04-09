@@ -82,9 +82,16 @@ pub fn serialize_list_certificates_result(
             // Certificate as length-prefixed bytes
             let cert_bytes = serialize_certificate(&cert_result.certificate)?;
             write_bytes(w, &cert_bytes)?;
-            // Keyring (flag byte + sorted map with base64 values)
+            // Keyring (flag byte + sorted map with base64 values).
+            // Preserve the three-state distinction introduced by `Option<HashMap>`:
+            //   None         -> flag=0                (absent)
+            //   Some(empty)  -> flag=1, varint=0      (present but empty)
+            //   Some(map)    -> flag=1, varint=len, sorted entries
+            // Folding `Some(empty)` into flag=0 would silently strip the
+            // "present but empty" marker on binary round-trip and diverge from
+            // the Go SDK encoding (go-sdk/wallet/serializer/list_certificates.go).
             match &cert_result.keyring {
-                Some(keyring) if !keyring.is_empty() => {
+                Some(keyring) => {
                     write_byte(w, 1)?;
                     let mut keys: Vec<&String> = keyring.keys().collect();
                     keys.sort();
@@ -95,7 +102,7 @@ pub fn serialize_list_certificates_result(
                         write_bytes(w, &value_bytes)?;
                     }
                 }
-                _ => {
+                None => {
                     write_byte(w, 0)?;
                 }
             }
