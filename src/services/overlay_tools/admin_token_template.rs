@@ -127,21 +127,48 @@ impl OverlayAdminTokenTemplate {
 
 /// Extract data fields from a PushDrop locking script.
 ///
-/// Reads data push chunks until encountering OP_DROP or OP_2DROP.
+/// PushDrop scripts have the locking pubkey at the start ("before" position):
+///   `<lockingPubKey> OP_CHECKSIG <field0> <field1> ... <fieldN> [<signature>] OP_2DROP... OP_DROP`
+///
+/// Matches TS SDK `PushDrop.decode(script, 'before')` which skips the first
+/// two chunks (pubkey + OP_CHECKSIG) and reads data pushes until the next
+/// chunk is OP_DROP or OP_2DROP.
 fn extract_pushdrop_fields(script: &LockingScript) -> Result<Vec<Vec<u8>>, ServicesError> {
     use crate::script::op::Op;
 
     let chunks = script.chunks();
+
+    // Skip the locking pubkey (chunk 0) and OP_CHECKSIG (chunk 1).
+    // The TS SDK does: startIndex = 2 when lockPosition === 'before'.
+    let start = if chunks.len() >= 2
+        && chunks[0].data.is_some()
+        && chunks[1].op == Op::OpCheckSig
+    {
+        2
+    } else {
+        0
+    };
+
     let mut fields = Vec::new();
 
-    for chunk in chunks {
-        // Stop at DROP opcodes -- remaining chunks are the key + CHECKSIG.
-        if chunk.op == Op::OpDrop || chunk.op == Op::Op2Drop {
+    for i in start..chunks.len() {
+        // Check if NEXT chunk is a DROP — if so, this is the last field.
+        let next_is_drop = chunks.get(i + 1).map_or(false, |next| {
+            next.op == Op::OpDrop || next.op == Op::Op2Drop
+        });
+
+        if let Some(ref data) = chunks[i].data {
+            fields.push(data.clone());
+        }
+
+        if next_is_drop {
             break;
         }
-        // Skip non-push opcodes (should not appear before DROPs in valid PushDrop).
-        if let Some(ref data) = chunk.data {
-            fields.push(data.clone());
+
+        // Also stop if THIS chunk is a DROP (shouldn't happen in valid PushDrop
+        // but prevents reading into the pubkey + CHECKSIG tail).
+        if chunks[i].op == Op::OpDrop || chunks[i].op == Op::Op2Drop {
+            break;
         }
     }
 
@@ -232,5 +259,35 @@ mod tests {
         let hex = hex_encode(&original);
         let decoded = hex_decode(&hex).unwrap();
         assert_eq!(decoded, original);
+    }
+
+    #[tokio::test]
+    #[ignore] // requires network
+    async fn test_decode_production_slap_response() {
+        let client = reqwest::Client::new();
+        let resp = client.post("https://overlay-us-1.bsvb.tech/lookup")
+            .json(&serde_json::json!({"service":"ls_slap","query":{"service":"ls_ship"}}))
+            .send().await.expect("SLAP query");
+        let data: serde_json::Value = resp.json().await.expect("parse JSON");
+        let outputs = data["outputs"].as_array().expect("outputs array");
+        assert!(!outputs.is_empty(), "should have SLAP outputs");
+        
+        let mut parsed_count = 0;
+        for out in outputs {
+            let beef: Vec<u8> = out["beef"].as_array().unwrap()
+                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let idx = out["outputIndex"].as_u64().unwrap() as usize;
+            
+            match OverlayAdminTokenTemplate::decode_from_beef(&beef, idx) {
+                Ok(parsed) => {
+                    eprintln!("  Parsed: {} {} {}", parsed.protocol, parsed.domain, parsed.topic_or_service);
+                    parsed_count += 1;
+                }
+                Err(e) => {
+                    eprintln!("  FAILED output idx={}: {} (beef len={}, first 20 bytes={:?})", idx, e, beef.len(), &beef[..20.min(beef.len())]);
+                }
+            }
+        }
+        assert!(parsed_count > 0, "should parse at least one SLAP entry");
     }
 }
