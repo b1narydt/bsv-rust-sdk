@@ -95,13 +95,22 @@ impl OverlayAdminTokenTemplate {
         })
     }
 
-    /// Decode from serialized transaction bytes and a specific output index.
+    /// Decode from BEEF-encoded transaction bytes and a specific output index.
     ///
-    /// This is a convenience method that extracts the locking script from
-    /// a serialized transaction at the given output index.
+    /// The overlay lookup service returns BEEF-encoded transactions (not raw
+    /// binary). This method hex-encodes the bytes and parses via
+    /// `Transaction::from_beef` which handles the BEEF container format.
+    ///
+    /// Falls back to raw binary parsing if BEEF parsing fails, for backward
+    /// compatibility with callers that pass raw transaction bytes.
     pub fn decode_from_beef(tx_bytes: &[u8], output_index: usize) -> Result<Self, ServicesError> {
-        // Parse the transaction from binary.
-        let tx = crate::transaction::Transaction::from_binary(&mut &tx_bytes[..])
+        // Primary path: parse as BEEF (hex-encoded bytes → from_beef).
+        let beef_hex: String = tx_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        let tx = crate::transaction::Transaction::from_beef(&beef_hex)
+            .or_else(|_| {
+                // Fallback: try raw binary in case caller passed non-BEEF bytes.
+                crate::transaction::Transaction::from_binary(&mut &tx_bytes[..])
+            })
             .map_err(|e| ServicesError::Overlay(format!("Failed to parse transaction: {}", e)))?;
 
         let output = tx.outputs.get(output_index).ok_or_else(|| {
