@@ -59,9 +59,13 @@ impl OverlayAdminTokenTemplate {
 
     /// Decode a SHIP or SLAP advertisement from a locking script.
     ///
-    /// Extracts PushDrop data fields and parses them as an admin token.
+    /// Uses the SDK's PushDrop::decode with "before" lock position (matching
+    /// the TS SDK default). The PushDrop fields are [protocol, identityKey,
+    /// domain, topicOrService, signature?].
     pub fn decode(script: &LockingScript) -> Result<Self, ServicesError> {
-        let fields = extract_pushdrop_fields(script)?;
+        let pd = crate::script::templates::PushDrop::decode(script)
+            .map_err(|e| ServicesError::Overlay(format!("PushDrop decode failed: {e}")))?;
+        let fields = pd.fields;
         if fields.len() < 4 {
             return Err(ServicesError::Overlay(
                 "Invalid SHIP/SLAP advertisement: fewer than 4 fields".to_string(),
@@ -123,56 +127,6 @@ impl OverlayAdminTokenTemplate {
 
         Self::decode(&output.locking_script)
     }
-}
-
-/// Extract data fields from a PushDrop locking script.
-///
-/// PushDrop scripts have the locking pubkey at the start ("before" position):
-///   `<lockingPubKey> OP_CHECKSIG <field0> <field1> ... <fieldN> [<signature>] OP_2DROP... OP_DROP`
-///
-/// Matches TS SDK `PushDrop.decode(script, 'before')` which skips the first
-/// two chunks (pubkey + OP_CHECKSIG) and reads data pushes until the next
-/// chunk is OP_DROP or OP_2DROP.
-fn extract_pushdrop_fields(script: &LockingScript) -> Result<Vec<Vec<u8>>, ServicesError> {
-    use crate::script::op::Op;
-
-    let chunks = script.chunks();
-
-    // Skip the locking pubkey (chunk 0) and OP_CHECKSIG (chunk 1).
-    // The TS SDK does: startIndex = 2 when lockPosition === 'before'.
-    let start = if chunks.len() >= 2
-        && chunks[0].data.is_some()
-        && chunks[1].op == Op::OpCheckSig
-    {
-        2
-    } else {
-        0
-    };
-
-    let mut fields = Vec::new();
-
-    for i in start..chunks.len() {
-        // Check if NEXT chunk is a DROP — if so, this is the last field.
-        let next_is_drop = chunks.get(i + 1).map_or(false, |next| {
-            next.op == Op::OpDrop || next.op == Op::Op2Drop
-        });
-
-        if let Some(ref data) = chunks[i].data {
-            fields.push(data.clone());
-        }
-
-        if next_is_drop {
-            break;
-        }
-
-        // Also stop if THIS chunk is a DROP (shouldn't happen in valid PushDrop
-        // but prevents reading into the pubkey + CHECKSIG tail).
-        if chunks[i].op == Op::OpDrop || chunks[i].op == Op::Op2Drop {
-            break;
-        }
-    }
-
-    Ok(fields)
 }
 
 /// Hex-encode bytes.
