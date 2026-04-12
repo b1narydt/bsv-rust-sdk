@@ -21,18 +21,13 @@ use crate::script::templates::{ScriptTemplateLock, ScriptTemplateUnlock};
 use crate::script::unlocking_script::UnlockingScript;
 
 /// Lock position for the public key in the PushDrop script.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum LockPosition {
     /// `<pubkey> OP_CHECKSIG <fields...> OP_2DROP...` (TS default)
+    #[default]
     Before,
     /// `<fields...> OP_2DROP... <pubkey> OP_CHECKSIG`
     After,
-}
-
-impl Default for LockPosition {
-    fn default() -> Self {
-        LockPosition::Before
-    }
 }
 
 /// PushDrop script template for embedding data with spending control.
@@ -153,9 +148,9 @@ impl PushDrop {
         let mut fields = Vec::new();
         for i in 2..chunks.len() {
             // Check if next chunk is a DROP — if so, this is the last field
-            let next_is_drop = chunks.get(i + 1).map_or(false, |next| {
-                next.op == Op::OpDrop || next.op == Op::Op2Drop
-            });
+            let next_is_drop = chunks
+                .get(i + 1)
+                .is_some_and(|next| next.op == Op::OpDrop || next.op == Op::Op2Drop);
 
             // Stop if THIS chunk is a DROP
             if chunks[i].op == Op::OpDrop || chunks[i].op == Op::Op2Drop {
