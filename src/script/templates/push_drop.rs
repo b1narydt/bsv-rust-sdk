@@ -348,7 +348,12 @@ mod tests {
     #[test]
     fn test_before_decode_roundtrip() {
         let key = PrivateKey::from_hex("1").unwrap();
-        let fields = vec![b"SLAP".to_vec(), vec![0x02, 0x79], b"https://example.com".to_vec(), b"ls_ship".to_vec()];
+        let fields = vec![
+            b"SLAP".to_vec(),
+            vec![0x02, 0x79],
+            b"https://example.com".to_vec(),
+            b"ls_ship".to_vec(),
+        ];
         let pd = PushDrop::new(fields.clone(), key);
         let lock_script = pd.lock().unwrap();
 
@@ -365,8 +370,7 @@ mod tests {
     fn test_after_lock_one_field() {
         let key = PrivateKey::from_hex("1").unwrap();
         let data = vec![0xca, 0xfe];
-        let pd = PushDrop::new(vec![data.clone()], key)
-            .with_lock_position(LockPosition::After);
+        let pd = PushDrop::new(vec![data.clone()], key).with_lock_position(LockPosition::After);
         let lock_script = pd.lock().unwrap();
         let chunks = lock_script.chunks();
 
@@ -382,8 +386,7 @@ mod tests {
     fn test_after_decode_roundtrip() {
         let key = PrivateKey::from_hex("1").unwrap();
         let fields = vec![vec![0x01, 0x02], vec![0x03, 0x04]];
-        let pd = PushDrop::new(fields.clone(), key)
-            .with_lock_position(LockPosition::After);
+        let pd = PushDrop::new(fields.clone(), key).with_lock_position(LockPosition::After);
         let lock_script = pd.lock().unwrap();
 
         let decoded = PushDrop::decode_with_position(&lock_script, LockPosition::After).unwrap();

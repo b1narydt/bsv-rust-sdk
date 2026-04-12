@@ -219,26 +219,42 @@ mod tests {
     #[ignore] // requires network
     async fn test_decode_production_slap_response() {
         let client = reqwest::Client::new();
-        let resp = client.post("https://overlay-us-1.bsvb.tech/lookup")
+        let resp = client
+            .post("https://overlay-us-1.bsvb.tech/lookup")
             .json(&serde_json::json!({"service":"ls_slap","query":{"service":"ls_ship"}}))
-            .send().await.expect("SLAP query");
+            .send()
+            .await
+            .expect("SLAP query");
         let data: serde_json::Value = resp.json().await.expect("parse JSON");
         let outputs = data["outputs"].as_array().expect("outputs array");
         assert!(!outputs.is_empty(), "should have SLAP outputs");
-        
+
         let mut parsed_count = 0;
         for out in outputs {
-            let beef: Vec<u8> = out["beef"].as_array().unwrap()
-                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let beef: Vec<u8> = out["beef"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
             let idx = out["outputIndex"].as_u64().unwrap() as usize;
-            
+
             match OverlayAdminTokenTemplate::decode_from_beef(&beef, idx) {
                 Ok(parsed) => {
-                    eprintln!("  Parsed: {} {} {}", parsed.protocol, parsed.domain, parsed.topic_or_service);
+                    eprintln!(
+                        "  Parsed: {} {} {}",
+                        parsed.protocol, parsed.domain, parsed.topic_or_service
+                    );
                     parsed_count += 1;
                 }
                 Err(e) => {
-                    eprintln!("  FAILED output idx={}: {} (beef len={}, first 20 bytes={:?})", idx, e, beef.len(), &beef[..20.min(beef.len())]);
+                    eprintln!(
+                        "  FAILED output idx={}: {} (beef len={}, first 20 bytes={:?})",
+                        idx,
+                        e,
+                        beef.len(),
+                        &beef[..20.min(beef.len())]
+                    );
                 }
             }
         }

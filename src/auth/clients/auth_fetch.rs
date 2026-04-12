@@ -140,11 +140,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
                 AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
             })?;
-            let cached_identity = auth_peer
-                .identity_key
-                .as_deref()
-                .unwrap_or("")
-                .to_string();
+            let cached_identity = auth_peer.identity_key.as_deref().unwrap_or("").to_string();
             let mut peer = auth_peer.peer.lock().await;
             let session = peer.get_authenticated_session(&cached_identity).await?;
             // Store the server identity key learned during handshake
