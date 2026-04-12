@@ -130,12 +130,23 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // Trigger handshake first (if not already authenticated).
         // This ensures the session is established BEFORE we send the general
         // message, allowing certificate exchange to happen in between.
+        //
+        // Use the cached identity key from a prior handshake if available,
+        // so SessionManager can find the existing session directly instead
+        // of falling through to a fresh handshake every time. The first call
+        // passes "" (unknown server), which triggers the initial handshake;
+        // subsequent calls reuse the learned identity key for session lookup.
         {
             let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
                 AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
             })?;
+            let cached_identity = auth_peer
+                .identity_key
+                .as_deref()
+                .unwrap_or("")
+                .to_string();
             let mut peer = auth_peer.peer.lock().await;
-            let session = peer.get_authenticated_session("").await?;
+            let session = peer.get_authenticated_session(&cached_identity).await?;
             // Store the server identity key learned during handshake
             drop(peer);
             if let Some(ap) = self.peers.get_mut(&base_url) {
