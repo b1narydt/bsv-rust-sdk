@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-04-12
+
+### Added
+
+- **PushDrop `lock_position` support** — aligns with TS SDK parity for lock positioning in PushDrop script construction.
+
+### Fixed
+
+- **`AuthFetch` session reuse** (#18) — `AuthFetch::fetch()` now passes the cached `auth_peer.identity_key` to `get_authenticated_session()` after the first handshake, eliminating a redundant handshake on every subsequent request. Matches TS SDK behavior where `peers[baseURL].identityKey` is learned from the server's initial response and reused.
+- **BRC-100 arg structs accept omitted optional fields** (#11/#12) — added `#[serde(default)]` to boolean, `BooleanDefaultTrue`, `BooleanDefaultFalse`, and `Counterparty` fields across 16 arg structs so TS SDK clients can omit optional fields without triggering 422 errors.
+- **`Counterparty::default()` now returns `Uninitialized`** (#12) — preserves `ProtoWallet::default_counterparty()` per-op dispatch so `createSignature` with an omitted `counterparty` correctly defaults to `Anyone` (matching TS `ProtoWallet.ts:259`) instead of silently deriving against `Self_`. Fixes cross-SDK signature divergence.
+- **`Counterparty::deserialize` accepts explicit JSON `null`** (#12) — both omitted and `null` `counterparty` now map to `Uninitialized`, matching TS `??` nullish-coalesce semantics.
+- **`list_certificates` keyring three-state serialization** (#12) — serializer preserves `None` / `Some(empty)` / `Some(populated)` distinction on the wire per Go SDK `list_certificates.go:101-119`. Previously `Some(empty)` was folded into the same flag byte as `None`.
+- **Overlay `PushDrop` field extraction for SHIP/SLAP tokens** (#15) — corrected field extraction logic.
+- **`OverlayAdminTokenTemplate::decode_from_beef` parses BEEF format** (#14) — previously failed on BEEF-encoded inputs.
+
 ## [0.2.4] - 2026-04-06
 
 ### Fixed
