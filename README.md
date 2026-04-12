@@ -1,21 +1,21 @@
 # BSV SDK (Rust)
 
+[![Crates.io](https://img.shields.io/crates/v/bsv-sdk.svg)](https://crates.io/crates/bsv-sdk)
+[![Downloads](https://img.shields.io/crates/d/bsv-sdk.svg)](https://crates.io/crates/bsv-sdk)
+[![Docs.rs](https://img.shields.io/docsrs/bsv-sdk)](https://docs.rs/bsv-sdk)
+
 Pure Rust implementation of the BSV Blockchain SDK, providing cryptographic primitives, transaction building, script interpretation, wallet operations, and authenticated overlay network services -- all without external crypto dependencies.
 
 ## Installation
 
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-bsv-sdk = "0.2.5"
+```sh
+cargo add bsv-sdk
 ```
 
 To enable async HTTP and WebSocket functionality (wallet services, overlay networks):
 
-```toml
-[dependencies]
-bsv-sdk = { version = "0.2.5", features = ["network"] }
+```sh
+cargo add bsv-sdk --features network
 ```
 
 ## Quick Start
