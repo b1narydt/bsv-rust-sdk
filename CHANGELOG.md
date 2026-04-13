@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-04-13
+
+### Added
+
+- **`AuthFetch` HTTP 402 Payment Required auto-retry** (#21) — ports TS SDK `AuthFetch.handlePaymentAndRetry`. When a paid endpoint returns 402, `AuthFetch::fetch` now automatically reads `x-bsv-payment-version`, `x-bsv-payment-satoshis-required`, and `x-bsv-payment-derivation-prefix` from the response, derives a BRC-29 payee key (`Protocol { security_level: 2, protocol: "3241645161d8" }`, `keyID = "{prefix} {suffix}"`, `counterparty = serverIdentityKey`), builds a P2PKH locking script, calls `wallet.create_action`, and re-sends the request with an `x-bsv-payment` header carrying `{derivationPrefix, derivationSuffix, transaction}` camelCase JSON. Wire-compatible with TS AuthFetch.
+- **`AuthFetch::fetch_with_options`** public API — accepts a `FetchOptions { payment_retry_attempts: Option<u32> }` for configurable retry limits. Default is 3 attempts, clamped to minimum 1.
+- **Public types**: `FetchOptions`, `PaymentErrorLogEntry`, `PaymentRetryContext`, `PAYMENT_VERSION` constant. Re-exported from `bsv::auth::clients` and `bsv::auth`.
+- **New `AuthError` variants**: `Payment(String)` for per-attempt failures (missing/invalid headers, no tx bytes from wallet), `PaymentFailed { attempts, max_attempts, message }` for retry exhaustion.
+
+### Changed
+
+- **Retry transaction regeneration** — intentional divergence from TS SDK: the Rust implementation regenerates the payment transaction on every retry attempt, rather than reusing a cached transaction when server parameters haven't changed. The TS cache (`isPaymentContextCompatible`) risks double-spend rejection if the server rebroadcasts the same tx on a second 402. Rust always creates a fresh `PaymentRetryContext` per attempt — safer, with identical wire behavior per attempt.
+- Retry backoff is linear: `250ms × min(attempt, 5)`, matching TS `getPaymentRetryDelay` exactly.
+
 ## [0.2.6] - 2026-04-12
 
 ### Added

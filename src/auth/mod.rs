@@ -19,6 +19,9 @@ pub use session_manager::SessionManager;
 pub use types::*;
 
 #[cfg(feature = "network")]
-pub use clients::{AuthFetch, AuthFetchResponse};
+pub use clients::{
+    AuthFetch, AuthFetchResponse, FetchOptions, PaymentErrorLogEntry, PaymentRetryContext,
+    PAYMENT_VERSION,
+};
 #[cfg(feature = "network")]
 pub use peer::Peer;
