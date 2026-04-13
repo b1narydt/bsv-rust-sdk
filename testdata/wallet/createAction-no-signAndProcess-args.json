@@ -1,0 +1,24 @@
+{
+  "json": {
+    "description": "Test action description with trust self and no-send",
+    "outputs": [
+      {
+        "lockingScript": "76a9143cf53c49c322d9d811728182939aee2dca087f9888ac",
+        "satoshis": 999,
+        "outputDescription": "Test output",
+        "basket": "test-basket",
+        "customInstructions": "Test instructions",
+        "tags": [
+          "test-tag"
+        ]
+      }
+    ],
+    "labels": [
+      "test-label"
+    ],
+    "options": {
+      "signAndProcess": false
+    }
+  },
+  "wire": "0100335465737420616374696f6e206465736372697074696f6e20776974682074727573742073656c6620616e64206e6f2d73656e64ffffffffffffffffffffffffffffffffffff011976a9143cf53c49c322d9d811728182939aee2dca087f9888acfde7030b54657374206f75747075740b746573742d6261736b6574115465737420696e737472756374696f6e730108746573742d746167ffffffffffffffffffffffffffffffffffff010a746573742d6c6162656c0100ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+}
