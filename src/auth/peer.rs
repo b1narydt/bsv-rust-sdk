@@ -5,6 +5,7 @@
 //!
 //! Translated from TS SDK Peer.ts (991 lines) and Go SDK peer.go (1163 lines).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -16,11 +17,27 @@ use super::transports::Transport;
 use super::types::{
     AuthMessage, MessageType, PeerSession, RequestedCertificateSet, AUTH_PROTOCOL_ID, AUTH_VERSION,
 };
+use super::utils::certificates::get_verifiable_certificates;
 use super::utils::nonce::{create_nonce, verify_nonce};
 use crate::wallet::interfaces::{
     Certificate, CreateSignatureArgs, GetPublicKeyArgs, VerifySignatureArgs, WalletInterface,
 };
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
+
+// ---------------------------------------------------------------------------
+// Listener callback type
+// ---------------------------------------------------------------------------
+
+/// Callback invoked when an incoming `certificateRequest` (or an initial
+/// message carrying `requestedCertificates`) is received. Registered via
+/// [`Peer::listen_for_certificates_requested`].
+///
+/// Mirrors TS SDK `Peer.listenForCertificatesRequested`. Fire-and-forget:
+/// Peer does not await any async work the callback spawns. If the callback
+/// needs to perform async work (e.g. reading the wallet + sending a cert
+/// response) it should spawn its own task.
+pub type OnCertificateRequestReceived =
+    dyn Fn(String, RequestedCertificateSet) + Send + Sync + 'static;
 
 // ---------------------------------------------------------------------------
 // Base64 helpers (self-contained, matching nonce module pattern)
@@ -135,6 +152,11 @@ pub struct Peer<W: WalletInterface> {
 
     // Transport incoming message receiver
     transport_rx: Option<mpsc::Receiver<AuthMessage>>,
+
+    // Listener callbacks for incoming certificateRequest messages.
+    // Mirrors TS SDK `onCertificateRequestReceivedCallbacks`.
+    on_certificate_request_received_callbacks: HashMap<u64, Arc<OnCertificateRequestReceived>>,
+    callback_id_counter: u64,
 }
 
 impl<W: WalletInterface> Peer<W> {
@@ -159,6 +181,8 @@ impl<W: WalletInterface> Peer<W> {
             certificate_rx: Some(cert_rx),
             certificate_request_rx: Some(cert_req_rx),
             transport_rx: Some(transport_rx),
+            on_certificate_request_received_callbacks: HashMap::new(),
+            callback_id_counter: 0,
         }
     }
 
@@ -183,10 +207,60 @@ impl<W: WalletInterface> Peer<W> {
     }
 
     /// Take the certificate request receiver. Returns None if already taken.
+    ///
+    /// Exposes a pure observer channel: the receiver is notified for every
+    /// incoming cert-request (and embedded cert-requests from the handshake).
+    /// Taking the receiver does NOT disable the default auto-response — use
+    /// [`Peer::listen_for_certificates_requested`] to override the response
+    /// behaviour with an explicit handler.
     pub fn on_certificate_request(
         &mut self,
     ) -> Option<mpsc::Receiver<(String, RequestedCertificateSet)>> {
         self.certificate_request_rx.take()
+    }
+
+    /// Register a handler that overrides the default certificate-request
+    /// auto-response.
+    ///
+    /// Mirrors TS SDK `Peer.listenForCertificatesRequested`. When one or
+    /// more callbacks are registered, an incoming `certificateRequest`
+    /// (or a handshake message carrying `requestedCertificates`) fires each
+    /// registered callback and the Peer does NOT auto-respond — the handler
+    /// is expected to call [`Peer::send_certificate_response`] itself once
+    /// it has resolved the verifiable certificates for the verifier.
+    ///
+    /// Returns a `callback_id` that can be passed to
+    /// [`Peer::stop_listening_for_certificates_requested`] to remove the
+    /// handler. The observer channel exposed via `on_certificate_request`
+    /// continues to fire regardless of listener registration.
+    pub fn listen_for_certificates_requested(
+        &mut self,
+        callback: Arc<OnCertificateRequestReceived>,
+    ) -> u64 {
+        let id = self.callback_id_counter;
+        self.callback_id_counter = self.callback_id_counter.wrapping_add(1);
+        self.on_certificate_request_received_callbacks
+            .insert(id, callback);
+        id
+    }
+
+    /// Remove a previously registered certificate-request handler.
+    ///
+    /// Mirrors TS SDK `Peer.stopListeningForCertificatesRequested`.
+    pub fn stop_listening_for_certificates_requested(&mut self, callback_id: u64) {
+        self.on_certificate_request_received_callbacks
+            .remove(&callback_id);
+    }
+
+    /// Fire all registered cert-request listeners with the given payload.
+    fn fire_certificate_request_listeners(
+        &self,
+        identity_key: &str,
+        requested: &RequestedCertificateSet,
+    ) {
+        for cb in self.on_certificate_request_received_callbacks.values() {
+            (cb)(identity_key.to_string(), requested.clone());
+        }
     }
 
     /// Get a reference to the session manager.
@@ -324,29 +398,82 @@ impl<W: WalletInterface> Peer<W> {
 
     /// Send a certificate response to a peer.
     ///
-    /// Sends a CertificateResponse message containing the given certificates.
-    /// The peer must already have an authenticated session.
+    /// Sends a signed CertificateResponse message containing the given
+    /// certificates. Initiates a handshake if no authenticated session
+    /// exists with the peer.
     ///
-    /// Translated from TS SDK Peer.sendCertificateResponse().
+    /// Translated from TS SDK `Peer.sendCertificateResponse` (signs the
+    /// JSON-serialized certificate array with `keyID = "{requestNonce} {peerNonce}"`).
     pub async fn send_certificate_response(
         &mut self,
         identity_key: &str,
         certificates: Vec<Certificate>,
     ) -> Result<(), AuthError> {
         let session = self.get_authenticated_session(identity_key).await?;
+        self.send_certificate_response_for_session(&session, certificates)
+            .await
+    }
+
+    /// Inner helper: build + sign + send a CertificateResponse for an
+    /// already-resolved session. Used by both the public API (which performs
+    /// handshake first) and the dispatch-message auto-response paths (which
+    /// already hold an authenticated session and must avoid re-entering
+    /// `get_authenticated_session` to break async recursion).
+    async fn send_certificate_response_for_session(
+        &self,
+        session: &PeerSession,
+        certificates: Vec<Certificate>,
+    ) -> Result<(), AuthError> {
         let identity_key_str = self.get_identity_public_key().await?;
+
+        // Fresh request nonce for this outgoing message (32 random bytes,
+        // base64-encoded), matching TS `Utils.toBase64(Random(32))`.
+        let request_nonce = base64_encode(&crate::primitives::random::random_bytes(32));
+
+        // Sign over the JSON-serialized certificates array, matching TS.
+        let sign_data = serde_json::to_vec(&certificates).map_err(|e| {
+            AuthError::SerializationError(format!(
+                "failed to serialize certificates for signing: {}",
+                e
+            ))
+        })?;
+        let key_id = format!("{} {}", request_nonce, session.peer_nonce);
+        let peer_pubkey = parse_public_key(&session.peer_identity_key)?;
+
+        let sig_result = self
+            .wallet
+            .create_signature(
+                CreateSignatureArgs {
+                    data: Some(sign_data),
+                    hash_to_directly_sign: None,
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id,
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(peer_pubkey),
+                    },
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await?;
 
         let cert_response = AuthMessage {
             version: AUTH_VERSION.to_string(),
             message_type: MessageType::CertificateResponse,
             identity_key: identity_key_str,
-            nonce: None,
+            nonce: Some(request_nonce),
             your_nonce: Some(session.peer_nonce.clone()),
             initial_nonce: Some(session.session_nonce.clone()),
             certificates: Some(certificates),
             requested_certificates: None,
             payload: None,
-            signature: None,
+            signature: Some(sig_result.signature),
         };
 
         self.transport.send(cert_response).await
@@ -519,12 +646,36 @@ impl<W: WalletInterface> Peer<W> {
             }
         }
 
-        // Handle certificate requests from peer
+        // Handle certificate requests from peer embedded in the
+        // initialResponse (TS Peer.ts:653-684). Same branching as the
+        // standalone certificateRequest path.
         if let Some(ref requested) = response.requested_certificates {
-            let _ = self
-                .certificate_request_tx
-                .send((response.identity_key.clone(), requested.clone()))
-                .await;
+            if !requested.certifiers.is_empty() {
+                // Observer channel: non-blocking. If no one has taken the
+                // receiver (or the buffer is full), drop silently rather
+                // than stall dispatch.
+                let _ = self
+                    .certificate_request_tx
+                    .try_send((response.identity_key.clone(), requested.clone()));
+
+                if !self.on_certificate_request_received_callbacks.is_empty() {
+                    self.fire_certificate_request_listeners(&response.identity_key, requested);
+                } else {
+                    let verifier_pubkey = parse_public_key(&response.identity_key)?;
+                    let verifiable =
+                        get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
+                            .await?;
+                    if !verifiable.is_empty() {
+                        let certs: Vec<Certificate> =
+                            verifiable.into_iter().map(|vc| vc.certificate).collect();
+                        // Use the session we just authenticated (breaks the
+                        // async recursion that would otherwise occur through
+                        // `get_authenticated_session` → `initiate_handshake`).
+                        self.send_certificate_response_for_session(&session, certs)
+                            .await?;
+                    }
+                }
+            }
         }
 
         Ok(session)
@@ -550,15 +701,7 @@ impl<W: WalletInterface> Peer<W> {
                 // If we get one here unexpectedly, ignore it.
                 Ok(())
             }
-            MessageType::CertificateRequest => {
-                if let Some(ref requested) = msg.requested_certificates {
-                    let _ = self
-                        .certificate_request_tx
-                        .send((msg.identity_key.clone(), requested.clone()))
-                        .await;
-                }
-                Ok(())
-            }
+            MessageType::CertificateRequest => self.process_certificate_request(msg).await,
             MessageType::CertificateResponse => {
                 if let Some(certs) = msg.certificates {
                     if !certs.is_empty() {
@@ -572,6 +715,120 @@ impl<W: WalletInterface> Peer<W> {
             }
             MessageType::General => self.handle_general_message(msg).await,
         }
+    }
+
+    /// Process an inbound `certificateRequest` message.
+    ///
+    /// Mirrors TS SDK `Peer.processCertificateRequest`:
+    /// 1. Verify `yourNonce` was created by us.
+    /// 2. Look up the session for that nonce.
+    /// 3. Verify the signature over `JSON.stringify(requestedCertificates)`
+    ///    (counterparty = peer identity key, keyID = "{nonce} {sessionNonce}").
+    /// 4. If `requestedCertificates.certifiers` is non-empty, either fire
+    ///    registered listeners OR auto-respond via the wallet.
+    ///
+    /// The observer channel is notified in all cases (even when no certifiers
+    /// are requested or when verification fails) *only* for the non-failure
+    /// path, matching the existing observer semantics.
+    async fn process_certificate_request(&mut self, msg: AuthMessage) -> Result<(), AuthError> {
+        let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
+            AuthError::InvalidMessage("missing yourNonce in certificateRequest".to_string())
+        })?;
+
+        // 1. Verify our nonce
+        let valid_nonce = verify_nonce(&self.wallet, your_nonce).await?;
+        if !valid_nonce {
+            return Err(AuthError::InvalidNonce(format!(
+                "certificateRequest nonce verification failed from: {}",
+                msg.identity_key
+            )));
+        }
+
+        // 2. Look up session
+        let session = self
+            .session_manager
+            .get_session_by_identifier(your_nonce)
+            .cloned()
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!("session not found for nonce: {}", your_nonce))
+            })?;
+
+        // 3. Verify signature over JSON.stringify(requestedCertificates)
+        let requested = msg.requested_certificates.as_ref().ok_or_else(|| {
+            AuthError::InvalidMessage("missing requestedCertificates in certificateRequest".into())
+        })?;
+
+        let sign_data = serde_json::to_vec(requested).map_err(|e| {
+            AuthError::SerializationError(format!(
+                "failed to serialize requestedCertificates for verification: {}",
+                e
+            ))
+        })?;
+        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
+        let key_id = format!("{} {}", msg_nonce, session.session_nonce);
+        let peer_pubkey = parse_public_key(&session.peer_identity_key)?;
+
+        let verify_result = self
+            .wallet
+            .verify_signature(
+                VerifySignatureArgs {
+                    data: Some(sign_data),
+                    hash_to_directly_verify: None,
+                    signature: msg.signature.clone().unwrap_or_default(),
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id,
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(peer_pubkey),
+                    },
+                    for_self: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await?;
+
+        if !verify_result.valid {
+            return Err(AuthError::InvalidSignature(format!(
+                "invalid signature in certificateRequest from {}",
+                session.peer_identity_key
+            )));
+        }
+
+        // Observer channel: non-blocking. Separate from handler listeners;
+        // fire-and-forget if no consumer / buffer full.
+        let _ = self
+            .certificate_request_tx
+            .try_send((msg.identity_key.clone(), requested.clone()));
+
+        // 4. Decide handler vs auto-response path
+        if requested.certifiers.is_empty() {
+            return Ok(());
+        }
+
+        if !self.on_certificate_request_received_callbacks.is_empty() {
+            // Handler mode: delegate to registered listeners and stop.
+            self.fire_certificate_request_listeners(&msg.identity_key, requested);
+            return Ok(());
+        }
+
+        // Auto-response path: mirror TS fallback — fetch + send. Use the
+        // session we already resolved to avoid re-entering
+        // `get_authenticated_session` (which would cycle through handshake).
+        let verifier_pubkey = parse_public_key(&msg.identity_key)?;
+        let verifiable =
+            get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey).await?;
+        if verifiable.is_empty() {
+            return Ok(());
+        }
+        let certs: Vec<Certificate> = verifiable.into_iter().map(|vc| vc.certificate).collect();
+        self.send_certificate_response_for_session(&session, certs)
+            .await
     }
 
     /// Handle an incoming initialRequest message.
@@ -598,6 +855,34 @@ impl<W: WalletInterface> Peer<W> {
             peer_nonce: peer_initial_nonce.to_string(),
             is_authenticated: true,
         });
+
+        // If the peer requested certificates in their initialRequest, resolve
+        // them here so we can embed the response in the single-round-trip
+        // initialResponse (TS Peer.ts:509-528). Listener mode notifies the
+        // handler and leaves `certificates_to_include` as None — the handler
+        // can issue a separate certificateResponse if needed.
+        let mut certificates_to_include: Option<Vec<Certificate>> = None;
+        if let Some(ref requested) = msg.requested_certificates {
+            if !requested.certifiers.is_empty() {
+                // Observer channel: non-blocking fire-and-forget.
+                let _ = self
+                    .certificate_request_tx
+                    .try_send((msg.identity_key.clone(), requested.clone()));
+
+                if !self.on_certificate_request_received_callbacks.is_empty() {
+                    self.fire_certificate_request_listeners(&msg.identity_key, requested);
+                } else {
+                    let verifier_pubkey = parse_public_key(&msg.identity_key)?;
+                    let verifiable =
+                        get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
+                            .await?;
+                    if !verifiable.is_empty() {
+                        certificates_to_include =
+                            Some(verifiable.into_iter().map(|vc| vc.certificate).collect());
+                    }
+                }
+            }
+        }
 
         // Sign the response: data = decode(peer_nonce) ++ decode(our_nonce)
         // IMPORTANT: decode each nonce separately then concatenate bytes
@@ -657,7 +942,7 @@ impl<W: WalletInterface> Peer<W> {
             nonce: None,
             your_nonce: Some(peer_initial_nonce.to_string()),
             initial_nonce: Some(session_nonce),
-            certificates: None,
+            certificates: certificates_to_include,
             requested_certificates: self.certificates_to_request.clone(),
             payload: None,
             signature: Some(sig_result.signature),
@@ -1190,6 +1475,312 @@ mod tests {
                 assert!(
                     sessions_b[0].is_authenticated,
                     "Peer B session should be authenticated"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_cert_request_listener_fires_on_handshake_requested_certs() {
+        // When peer A asks peer B for certificates (via
+        // set_certificates_to_request -> initialRequest.requestedCertificates),
+        // peer B's handle_initial_request fires any registered listener
+        // instead of attempting to fetch+include certs itself.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+
+                let identity_b = wallet_b
+                    .get_public_key(
+                        GetPublicKeyArgs {
+                            identity_key: true,
+                            protocol_id: None,
+                            key_id: None,
+                            counterparty: None,
+                            privileged: false,
+                            privileged_reason: None,
+                            for_self: None,
+                            seek_permission: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .public_key
+                    .to_der_hex();
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let mut peer_a = Peer::new(wallet_a, transport_a);
+                let mut peer_b = Peer::new(wallet_b, transport_b);
+
+                // Peer A requests a certificate type from peer B.
+                let mut requested = RequestedCertificateSet::default();
+                requested.certifiers.push("certifier-key-1".to_string());
+                requested.insert("dGVzdA==".to_string(), vec!["name".to_string()]);
+                peer_a.set_certificates_to_request(requested);
+
+                // Register a listener on peer B that records invocations.
+                let seen = Arc::new(StdMutex::new(
+                    Vec::<(String, RequestedCertificateSet)>::new(),
+                ));
+                let seen_cb = seen.clone();
+                peer_b.listen_for_certificates_requested(Arc::new(move |key, req| {
+                    seen_cb.lock().unwrap().push((key, req));
+                }));
+
+                let identity_b_clone = identity_b.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    peer_a
+                        .send_message(&identity_b_clone, b"hello".to_vec())
+                        .await
+                        .unwrap();
+                    peer_a
+                });
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                peer_b.process_pending().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _peer_a = send_handle.await.unwrap();
+
+                let recorded = seen.lock().unwrap();
+                assert_eq!(
+                    recorded.len(),
+                    1,
+                    "listener on peer B should fire exactly once during handshake"
+                );
+                assert_eq!(recorded[0].1.certifiers, vec!["certifier-key-1"]);
+                assert!(recorded[0].1.types.contains_key("dGVzdA=="));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_stop_listening_removes_only_targeted_callback() {
+        // Verify stop_listening_for_certificates_requested removes only the
+        // named callback. Register two listeners, stop one, handshake with
+        // a cert request, and assert only the non-removed listener fires.
+        // (This avoids exercising the auto-response path whose wallet
+        // stubs would otherwise panic inside process_pending.)
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+
+                let identity_b = wallet_b
+                    .get_public_key(
+                        GetPublicKeyArgs {
+                            identity_key: true,
+                            protocol_id: None,
+                            key_id: None,
+                            counterparty: None,
+                            privileged: false,
+                            privileged_reason: None,
+                            for_self: None,
+                            seek_permission: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .public_key
+                    .to_der_hex();
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let mut peer_a = Peer::new(wallet_a, transport_a);
+                let mut peer_b = Peer::new(wallet_b, transport_b);
+
+                let mut requested = RequestedCertificateSet::default();
+                requested.certifiers.push("certifier-key-1".to_string());
+                requested.insert("dGVzdA==".to_string(), vec!["name".to_string()]);
+                peer_a.set_certificates_to_request(requested);
+
+                let hits_removed = Arc::new(StdMutex::new(0u32));
+                let hits_kept = Arc::new(StdMutex::new(0u32));
+                let hr = hits_removed.clone();
+                let hk = hits_kept.clone();
+
+                let id_removed =
+                    peer_b.listen_for_certificates_requested(Arc::new(move |_k, _r| {
+                        *hr.lock().unwrap() += 1;
+                    }));
+                peer_b.listen_for_certificates_requested(Arc::new(move |_k, _r| {
+                    *hk.lock().unwrap() += 1;
+                }));
+                peer_b.stop_listening_for_certificates_requested(id_removed);
+
+                let identity_b_clone = identity_b.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    peer_a
+                        .send_message(&identity_b_clone, b"hello".to_vec())
+                        .await
+                        .unwrap();
+                    peer_a
+                });
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                peer_b.process_pending().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _ = send_handle.await.unwrap();
+
+                assert_eq!(
+                    *hits_removed.lock().unwrap(),
+                    0,
+                    "removed listener must not fire"
+                );
+                assert_eq!(
+                    *hits_kept.lock().unwrap(),
+                    1,
+                    "remaining listener must still fire"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_cert_request_listener_receives_with_empty_certifiers_skipped() {
+        // Guard: TS Peer.ts:512-515 only branches into listener/auto-response
+        // when certifiers.len() > 0. Rust must match — otherwise a peer
+        // advertising empty certifiers could trigger spurious listener
+        // fires. Verified here by sending handshake with empty certifiers
+        // and asserting the listener does not fire.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let identity_b = wallet_b
+                    .get_public_key(
+                        GetPublicKeyArgs {
+                            identity_key: true,
+                            protocol_id: None,
+                            key_id: None,
+                            counterparty: None,
+                            privileged: false,
+                            privileged_reason: None,
+                            for_self: None,
+                            seek_permission: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .public_key
+                    .to_der_hex();
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let mut peer_a = Peer::new(wallet_a, transport_a);
+                let mut peer_b = Peer::new(wallet_b, transport_b);
+
+                // Empty certifiers means "no cert request" per TS parity.
+                let requested = RequestedCertificateSet::default();
+                peer_a.set_certificates_to_request(requested);
+
+                let seen = Arc::new(StdMutex::new(0u32));
+                let seen_cb = seen.clone();
+                peer_b.listen_for_certificates_requested(Arc::new(move |_k, _r| {
+                    *seen_cb.lock().unwrap() += 1;
+                }));
+
+                let identity_b_clone = identity_b.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    peer_a
+                        .send_message(&identity_b_clone, b"hello".to_vec())
+                        .await
+                        .unwrap();
+                    peer_a
+                });
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                peer_b.process_pending().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _ = send_handle.await.unwrap();
+
+                assert_eq!(
+                    *seen.lock().unwrap(),
+                    0,
+                    "listener must not fire when certifiers is empty (TS parity)"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_send_certificate_response_is_signed() {
+        // Regression guard for the TS-parity signing fix: outgoing
+        // CertificateResponse must carry a non-empty `signature`.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+
+                let identity_b = wallet_b
+                    .get_public_key(
+                        GetPublicKeyArgs {
+                            identity_key: true,
+                            protocol_id: None,
+                            key_id: None,
+                            counterparty: None,
+                            privileged: false,
+                            privileged_reason: None,
+                            for_self: None,
+                            seek_permission: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .public_key
+                    .to_der_hex();
+
+                // Build a one-way transport that captures what peer A sends
+                // so we can inspect the CertificateResponse wire message.
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let mut peer_a = Peer::new(wallet_a, transport_a);
+                let mut peer_b = Peer::new(wallet_b, transport_b);
+
+                // Handshake via send_message so both sides end up with
+                // authenticated sessions.
+                let identity_b_clone = identity_b.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    peer_a
+                        .send_message(&identity_b_clone, b"setup".to_vec())
+                        .await
+                        .unwrap();
+                    peer_a
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                peer_b.process_pending().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let mut peer_a = send_handle.await.unwrap();
+                peer_b.process_pending().await.unwrap(); // absorb the general msg
+
+                // Now peer A explicitly sends an empty-cert-list response to B.
+                peer_a
+                    .send_certificate_response(&identity_b, Vec::new())
+                    .await
+                    .unwrap();
+
+                // Peer B's transport should have received a signed
+                // CertificateResponse. Intercept by draining the incoming
+                // channel directly.
+                let mut rx = peer_b.transport_rx.take().expect("transport_rx available");
+                let msg = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+                    .await
+                    .expect("transport recv timed out")
+                    .expect("transport channel closed");
+
+                assert_eq!(msg.message_type, MessageType::CertificateResponse);
+                assert!(msg.nonce.is_some(), "request nonce must be populated");
+                assert!(
+                    msg.signature
+                        .as_ref()
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false),
+                    "CertificateResponse must carry a non-empty signature (TS parity)"
                 );
             })
             .await;
