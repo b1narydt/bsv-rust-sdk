@@ -1,6 +1,6 @@
 //! Test vector validation for wallet wire protocol serializers.
 //!
-//! Reads 54 JSON test vectors from testdata/wallet/ and validates that
+//! Reads 62 JSON test vectors from testdata/wallet/ and validates that
 //! Rust serializers produce byte-identical output to the Go SDK.
 
 use std::collections::HashMap;
@@ -183,6 +183,8 @@ const OUTPOINT_STR: &str = "aec245f27b7640c8b1865045107731bfb848115c573f7da38166
 const TXID_HEX: &str = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
 const LOCKING_SCRIPT_HEX: &str = "76a9143cf53c49c322d9d811728182939aee2dca087f9888ac";
 const LOCK_SCRIPT_HEX: &str = "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac";
+const RESULT_TX_HEX: &str = "01000000017cd347a6a099f82cde68faec941e888ebc3489b25403e3ffedd3280f3fa4cc03000000006b483045022100f269c3f340a9cfae580b057429f91e1fcb2d0afccb5a3b9d194d705b4decfbda0220725a74244d4618654335f3e14b9fceb50ada1f679bb8a00c087571643eb974714121034d2d6d23fbcb6eefe3e80c47044e36797dcb80d0ac5e96e732ef03c3c550a116ffffffff01e7030000000000001976a9143cf53c49c322d9d811728182939aee2dca087f9888ac00000000";
+const RESULT_TXID: &str = "03895fb984362a4196bc9931629318fcbb2aeba7c6293638119ea653fa31d119";
 
 // ---------------------------------------------------------------------------
 // AbortAction
@@ -1325,3 +1327,171 @@ fn test_list_certificates_keyring_three_state_roundtrip() {
         .expect("Some(populated) keyring must round-trip as Some(_)");
     assert_eq!(populated_roundtripped, &populated);
 }
+
+// ---------------------------------------------------------------------------
+// GetNetwork args (empty args, like isAuthenticated)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_network_simple_args() {
+    let (_, wire) = read_vector("getNetwork-simple-args");
+    let (call, params) = strip_request_frame(&wire);
+    assert_eq!(call, CALL_GET_NETWORK);
+    assert!(params.is_empty(), "getNetwork args should be empty");
+}
+
+// ---------------------------------------------------------------------------
+// GetVersion args (empty args, like isAuthenticated)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_version_simple_args() {
+    let (_, wire) = read_vector("getVersion-simple-args");
+    let (call, params) = strip_request_frame(&wire);
+    assert_eq!(call, CALL_GET_VERSION);
+    assert!(params.is_empty(), "getVersion args should be empty");
+}
+
+// ---------------------------------------------------------------------------
+// CreateAction with options.signAndProcess = false
+// ---------------------------------------------------------------------------
+
+test_args_vector!(
+    test_create_action_no_sign_and_process_args,
+    "createAction-no-signAndProcess-args",
+    CALL_CREATE_ACTION,
+    create_action::serialize_create_action_args,
+    create_action::deserialize_create_action_args,
+    CreateActionArgs {
+        description: "Test action description with trust self and no-send".to_string(),
+        input_beef: None,
+        inputs: vec![],
+        outputs: vec![CreateActionOutput {
+            locking_script: Some(hex_decode(LOCKING_SCRIPT_HEX).unwrap()),
+            satoshis: 999,
+            output_description: "Test output".to_string(),
+            basket: Some("test-basket".to_string()),
+            custom_instructions: Some("Test instructions".to_string()),
+            tags: vec!["test-tag".to_string()],
+        }],
+        lock_time: None,
+        version: None,
+        labels: vec!["test-label".to_string()],
+        options: Some(CreateActionOptions {
+            sign_and_process: BooleanDefaultTrue(Some(false)),
+            accept_delayed_broadcast: BooleanDefaultTrue(None),
+            trust_self: None,
+            known_txids: vec![],
+            return_txid_only: BooleanDefaultFalse(None),
+            no_send: BooleanDefaultFalse(None),
+            no_send_change: vec![],
+            send_with: vec![],
+            randomize_outputs: BooleanDefaultTrue(None),
+        }),
+        reference: None,
+    }
+);
+
+// ---------------------------------------------------------------------------
+// CreateAction result (1-out, with txid and tx)
+// ---------------------------------------------------------------------------
+
+test_result_vector!(
+    test_create_action_1_out_result,
+    "createAction-1-out-result",
+    create_action::serialize_create_action_result,
+    create_action::deserialize_create_action_result,
+    CreateActionResult {
+        txid: Some(RESULT_TXID.to_string()),
+        tx: Some(hex_decode(RESULT_TX_HEX).unwrap()),
+        no_send_change: vec![],
+        send_with_results: vec![],
+        signable_transaction: None,
+    }
+);
+
+// ---------------------------------------------------------------------------
+// CreateAction result (no signAndProcess, returns signableTransaction)
+// ---------------------------------------------------------------------------
+
+test_result_vector!(
+    test_create_action_no_sign_and_process_result,
+    "createAction-no-signAndProcess-result",
+    create_action::serialize_create_action_result,
+    create_action::deserialize_create_action_result,
+    CreateActionResult {
+        txid: None,
+        tx: None,
+        no_send_change: vec![],
+        send_with_results: vec![],
+        signable_transaction: Some(SignableTransaction {
+            tx: hex_decode(RESULT_TX_HEX).unwrap(),
+            reference: base64_std_decode("dGVzdA=="),
+        }),
+    }
+);
+
+// ---------------------------------------------------------------------------
+// SignAction result (with txid and tx)
+// ---------------------------------------------------------------------------
+
+test_result_vector!(
+    test_sign_action_simple_result,
+    "signAction-simple-result",
+    sign_action::serialize_sign_action_result,
+    sign_action::deserialize_sign_action_result,
+    SignActionResult {
+        txid: Some(RESULT_TXID.to_string()),
+        tx: Some(hex_decode(RESULT_TX_HEX).unwrap()),
+        send_with_results: vec![],
+    }
+);
+
+// ---------------------------------------------------------------------------
+// AcquireCertificate issuance result (Certificate)
+// ---------------------------------------------------------------------------
+
+test_result_vector!(
+    test_acquire_certificate_issuance_result,
+    "acquireCertificate-issuance-result",
+    certificate_ser::serialize_certificate,
+    certificate_ser::deserialize_certificate,
+    {
+        let mut fields = HashMap::new();
+        fields.insert("email".to_string(), "alice@example.com".to_string());
+        fields.insert("name".to_string(), "Alice".to_string());
+        Certificate {
+            cert_type: type_from_base64(TYPE_B64),
+            serial_number: serial_from_base64(SERIAL_B64),
+            subject: pk_from_hex(PUB_KEY_HEX),
+            certifier: pk_from_hex(COUNTERPARTY_HEX),
+            revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+            fields: Some(fields),
+            signature: Some(sig_from_hex(SIG_HEX)),
+        }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// ListCertificates full args
+// ---------------------------------------------------------------------------
+
+test_args_vector!(
+    test_list_certificates_full_args,
+    "listCertificates-full-args",
+    CALL_LIST_CERTIFICATES,
+    list_certificates::serialize_list_certificates_args,
+    list_certificates::deserialize_list_certificates_args,
+    ListCertificatesArgs {
+        certifiers: vec![pk_from_hex(COUNTERPARTY_HEX), pk_from_hex(VERIFIER_HEX)],
+        types: vec![
+            type_from_base64("dGVzdC10eXBlMSAgICAgICAgICAgICAgICAgICAgICA="),
+            type_from_base64("dGVzdC10eXBlMiAgICAgICAgICAgICAgICAgICAgICA="),
+        ],
+        limit: Some(5),
+        offset: Some(0),
+        privileged: BooleanDefaultFalse(Some(true)),
+        privileged_reason: Some("list-cert-reason".to_string()),
+        partial: None,
+    }
+);

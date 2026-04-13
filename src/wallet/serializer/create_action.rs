@@ -376,6 +376,10 @@ pub(crate) fn write_send_with_results(
     w: &mut impl std::io::Write,
     results: &[SendWithResult],
 ) -> Result<(), WalletError> {
+    if results.is_empty() {
+        write_varint(w, NEGATIVE_ONE)?;
+        return Ok(());
+    }
     write_varint(w, results.len() as u64)?;
     for res in results {
         let txid_bytes = hex_decode(&res.txid)?;
@@ -394,7 +398,7 @@ pub(crate) fn read_send_with_results(
     r: &mut impl std::io::Read,
 ) -> Result<Vec<SendWithResult>, WalletError> {
     let count = read_varint(r)?;
-    if count == 0 {
+    if count == 0 || count == NEGATIVE_ONE {
         return Ok(Vec::new());
     }
     let mut results = Vec::with_capacity(count as usize);
