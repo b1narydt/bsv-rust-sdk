@@ -5,4 +5,7 @@
 
 pub mod auth_fetch;
 
-pub use auth_fetch::{AuthFetch, AuthFetchResponse};
+pub use auth_fetch::{
+    AuthFetch, AuthFetchResponse, FetchOptions, PaymentErrorLogEntry, PaymentRetryContext,
+    PAYMENT_VERSION,
+};

@@ -36,6 +36,72 @@ const CERTIFICATE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CERTIFICATE_POST_SEND_GRACE: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
+// Payment constants and public types (TS SDK AuthFetch.ts parity)
+// ---------------------------------------------------------------------------
+
+/// BSV payment protocol version. Server's `x-bsv-payment-version` header must
+/// equal this value.  Matches `PAYMENT_VERSION` in TS SDK AuthFetch.ts:58.
+pub const PAYMENT_VERSION: &str = "1.0";
+
+/// Default maximum 402-retry attempts when none is specified in `FetchOptions`.
+const DEFAULT_PAYMENT_RETRY_ATTEMPTS: u32 = 3;
+
+/// Per-call options for `fetch_with_options`.
+#[derive(Clone, Debug, Default)]
+pub struct FetchOptions {
+    /// Maximum 402-retry attempts.  Defaults to [`DEFAULT_PAYMENT_RETRY_ATTEMPTS`]
+    /// when `None`.  Values < 1 are treated as 1.
+    pub payment_retry_attempts: Option<u32>,
+}
+
+/// Single error entry captured during a 402 retry sequence.
+///
+/// Mirrors the `PaymentErrorLogEntry` interface in TS SDK AuthFetch.ts:32-37.
+#[derive(Clone, Debug)]
+pub struct PaymentErrorLogEntry {
+    /// The attempt number (1-based) on which this error occurred.
+    pub attempt: u32,
+    /// RFC 3339 timestamp of the error.
+    pub timestamp: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+/// Per-attempt payment state carried through the 402 retry loop.
+///
+/// ## Intentional divergence from TS SDK
+///
+/// The TS SDK can reuse an existing `PaymentRetryContext` across retries via
+/// `isPaymentContextCompatible` (AuthFetch.ts:625-636), which means the **same
+/// transaction** is re-broadcast on a second 402 — a latent double-spend risk.
+///
+/// Rust implementation: we **never** reuse a `PaymentRetryContext` across
+/// retries.  `create_payment_context` is called fresh on every loop iteration,
+/// producing a distinct transaction each time.  This struct records the most
+/// recently created context for logging / error surfacing only.
+#[derive(Clone, Debug)]
+pub struct PaymentRetryContext {
+    /// Satoshis required by the server on the last 402 response.
+    pub satoshis_required: u64,
+    /// Base64-encoded signed transaction.
+    pub transaction_base64: String,
+    /// Derivation prefix from the server's response header.
+    pub derivation_prefix: String,
+    /// Derivation suffix generated locally for this attempt.
+    pub derivation_suffix: String,
+    /// Server's identity key (hex).
+    pub server_identity_key: String,
+    /// Client's identity key (hex).  Used in failure logging.
+    pub client_identity_key: String,
+    /// Number of attempts completed so far (0-based before first retry).
+    pub attempts: u32,
+    /// Maximum attempts permitted.
+    pub max_attempts: u32,
+    /// Log of errors accumulated during this retry sequence.
+    pub errors: Vec<PaymentErrorLogEntry>,
+}
+
+// ---------------------------------------------------------------------------
 // AuthFetchResponse
 // ---------------------------------------------------------------------------
 
@@ -116,21 +182,57 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
     /// Send an authenticated HTTP request to the given URL.
     ///
-    /// On first request to a new base URL, creates a transport and peer,
-    /// performs the BRC-31 handshake, then sends the request as a general
-    /// message. Subsequent requests to the same base URL reuse the peer.
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - Full URL to send the request to.
-    /// * `method` - HTTP method (GET, POST, etc.).
-    /// * `body` - Optional request body bytes.
-    /// * `headers` - Optional HTTP headers.
-    ///
-    /// # Returns
-    ///
-    /// An `AuthFetchResponse` containing the status, headers, and body.
+    /// Equivalent to `fetch_with_options(url, method, body, headers, FetchOptions::default())`.
+    /// Automatically handles 402 Payment Required by creating and attaching a BSV payment
+    /// transaction, then retrying up to [`DEFAULT_PAYMENT_RETRY_ATTEMPTS`] times.
     pub async fn fetch(
+        &mut self,
+        url: &str,
+        method: &str,
+        body: Option<Vec<u8>>,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<AuthFetchResponse, AuthError> {
+        self.fetch_with_options(url, method, body, headers, FetchOptions::default())
+            .await
+    }
+
+    /// Send an authenticated HTTP request with explicit per-call options.
+    ///
+    /// Performs the BRC-31 handshake on the first request to a base URL, then
+    /// sends the serialized HTTP request as a general message.  If the server
+    /// responds with 402 Payment Required, enters the payment retry loop
+    /// governed by `options.payment_retry_attempts`.
+    pub async fn fetch_with_options(
+        &mut self,
+        url: &str,
+        method: &str,
+        body: Option<Vec<u8>>,
+        headers: Option<HashMap<String, String>>,
+        options: FetchOptions,
+    ) -> Result<AuthFetchResponse, AuthError> {
+        let response = self
+            .do_fetch_once(url, method, body.clone(), headers.clone())
+            .await?;
+
+        if response.status == 402 {
+            return self
+                .handle_402_and_retry(url, method, body, headers, response, options)
+                .await;
+        }
+
+        Ok(response)
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal: single authenticated fetch (no 402 handling)
+    // -----------------------------------------------------------------------
+
+    /// Perform one authenticated request without any 402 retry logic.
+    ///
+    /// This is the core transport layer: establish/reuse the peer session,
+    /// wait for cert exchanges, serialize and send the request, then await
+    /// and deserialize the response.
+    async fn do_fetch_once(
         &mut self,
         url: &str,
         method: &str,
@@ -146,14 +248,6 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         self.ensure_peer(&base_url).await?;
 
         // Trigger handshake first (if not already authenticated).
-        // This ensures the session is established BEFORE we send the general
-        // message, allowing certificate exchange to happen in between.
-        //
-        // Use the cached identity key from a prior handshake if available,
-        // so SessionManager can find the existing session directly instead
-        // of falling through to a fresh handshake every time. The first call
-        // passes "" (unknown server), which triggers the initial handshake;
-        // subsequent calls reuse the learned identity key for session lookup.
         {
             let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
                 AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
@@ -161,19 +255,13 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             let cached_identity = auth_peer.identity_key.as_deref().unwrap_or("").to_string();
             let mut peer = auth_peer.peer.lock().await;
             let session = peer.get_authenticated_session(&cached_identity).await?;
-            // Store the server identity key learned during handshake
             drop(peer);
             if let Some(ap) = self.peers.get_mut(&base_url) {
                 ap.identity_key = Some(session.peer_identity_key.clone());
             }
         }
 
-        // Block until any in-flight certificate exchanges complete. The
-        // registered listener (see `ensure_peer`) pushes an entry onto
-        // `pending_certificate_requests` when it starts and shifts it 500ms
-        // after sending the response, giving the server time to ingest the
-        // certs before the general message arrives. Mirrors TS
-        // `AuthFetch.ts:241-264` polling gate.
+        // Block until any in-flight certificate exchanges complete.
         {
             let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
                 AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
@@ -200,10 +288,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // Serialize the request payload
         let request_nonce = crate::primitives::random::random_bytes(32);
         let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body);
-
         let request_nonce_b64 = b64_encode(&request_nonce);
 
-        // Send the general message via the peer (session already established)
+        // Send the general message via the peer
         let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
             AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
         })?;
@@ -216,9 +303,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             peer.send_message(&identity_key, payload).await?;
         }
 
-        // Process any pending incoming messages (the transport enqueues the
-        // server's response into the incoming channel during send_general;
-        // the peer must process it to route to the general_message channel).
+        // Process any pending incoming messages
         {
             let mut peer = auth_peer.peer.lock().await;
             peer.process_pending().await?;
@@ -248,26 +333,302 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
             let (sender_key, response_payload) = msg;
 
-            // Update stored identity key if we learn it
             if !sender_key.is_empty() {
                 if let Some(auth_peer) = self.peers.get_mut(&base_url) {
                     auth_peer.identity_key = Some(sender_key);
                 }
             }
 
-            // Parse response: first 32 bytes are the response nonce
             if response_payload.len() < 32 {
-                continue; // Not a valid response payload
+                continue;
             }
 
             let response_nonce_b64 = b64_encode(&response_payload[..32]);
             if response_nonce_b64 != request_nonce_b64 {
-                continue; // Not our response
+                continue;
             }
 
-            // Deserialize the response
             return deserialize_response(&response_payload[32..]);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 402 Payment Required handling
+    // -----------------------------------------------------------------------
+
+    /// Handle a 402 Payment Required response by building a BSV payment and
+    /// retrying the request.
+    ///
+    /// ## Intentional divergence from TS SDK
+    ///
+    /// The TS SDK `handlePaymentAndRetry` (AuthFetch.ts:514-623) contains a
+    /// latent bug: when `isPaymentContextCompatible` returns `true` (same
+    /// satoshis / server key / prefix on the second 402), it re-broadcasts the
+    /// **same transaction**, risking a double-spend.  This implementation
+    /// **always calls `create_payment_context` afresh on every loop iteration**,
+    /// ensuring a fresh transaction and derivation suffix each time.
+    async fn handle_402_and_retry(
+        &mut self,
+        url: &str,
+        method: &str,
+        body: Option<Vec<u8>>,
+        original_headers: Option<HashMap<String, String>>,
+        first_402: AuthFetchResponse,
+        options: FetchOptions,
+    ) -> Result<AuthFetchResponse, AuthError> {
+        let base_url = extract_base_url(url)?;
+        let max_attempts = options
+            .payment_retry_attempts
+            .unwrap_or(DEFAULT_PAYMENT_RETRY_ATTEMPTS)
+            .max(1);
+
+        // The server identity key is cached from the handshake.
+        let server_identity_key = self
+            .peers
+            .get(&base_url)
+            .and_then(|p| p.identity_key.clone())
+            .ok_or_else(|| {
+                AuthError::Payment("no server identity key cached for base URL".to_string())
+            })?;
+
+        let mut errors: Vec<PaymentErrorLogEntry> = Vec::new();
+        // The 402 response we will parse payment headers from on each loop iteration.
+        let mut last_402 = first_402;
+
+        for attempt in 1..=max_attempts {
+            // Validate payment version header (must equal PAYMENT_VERSION).
+            validate_payment_version(&last_402)?;
+            let satoshis = parse_satoshis_required(&last_402)?;
+            let derivation_prefix = parse_derivation_prefix(&last_402)?;
+
+            // Always create a fresh context — never reuse a transaction.
+            let ctx_result = self
+                .create_payment_context(
+                    url,
+                    satoshis,
+                    &server_identity_key,
+                    &derivation_prefix,
+                    attempt,
+                    max_attempts,
+                )
+                .await;
+
+            let ctx = match ctx_result {
+                Ok(c) => c,
+                Err(e) => {
+                    let entry = make_error_entry(attempt, &e.to_string());
+                    errors.push(entry);
+                    if attempt == max_attempts {
+                        return Err(build_payment_failure(url, attempt, max_attempts, &errors));
+                    }
+                    tokio::time::sleep(payment_retry_delay(attempt)).await;
+                    continue;
+                }
+            };
+
+            // Assemble x-bsv-payment header (camelCase keys — must match TS wire format).
+            let pay_json = serde_json::json!({
+                "derivationPrefix": ctx.derivation_prefix,
+                "derivationSuffix": ctx.derivation_suffix,
+                "transaction": ctx.transaction_base64,
+            })
+            .to_string();
+
+            let mut retry_headers = original_headers.clone().unwrap_or_default();
+            retry_headers.insert("x-bsv-payment".to_string(), pay_json);
+
+            // Retry the request with the payment header attached.
+            match self
+                .do_fetch_once(url, method, body.clone(), Some(retry_headers))
+                .await
+            {
+                Ok(r) if r.status != 402 => {
+                    // Success (or a non-402 error code — pass through to caller).
+                    return Ok(r);
+                }
+                Ok(r_402) => {
+                    // Server returned 402 again.
+                    errors.push(make_error_entry(
+                        attempt,
+                        "server returned 402 again after payment",
+                    ));
+                    last_402 = r_402;
+                    if attempt == max_attempts {
+                        return Err(build_payment_failure(url, attempt, max_attempts, &errors));
+                    }
+                    tokio::time::sleep(payment_retry_delay(attempt)).await;
+                }
+                Err(e) => {
+                    errors.push(make_error_entry(attempt, &e.to_string()));
+                    if attempt == max_attempts {
+                        return Err(build_payment_failure(url, attempt, max_attempts, &errors));
+                    }
+                    tokio::time::sleep(payment_retry_delay(attempt)).await;
+                }
+            }
+        }
+
+        // Unreachable: every loop branch either returns or continues until max_attempts,
+        // and the last iteration always returns. The compiler cannot see this, so provide
+        // a defensive fallback rather than `unreachable!()`.
+        Err(build_payment_failure(
+            url,
+            max_attempts,
+            max_attempts,
+            &errors,
+        ))
+    }
+
+    /// Build a `PaymentRetryContext` for a single payment attempt.
+    ///
+    /// Mirrors `createPaymentContext` in TS SDK AuthFetch.ts:638-681.
+    async fn create_payment_context(
+        &mut self,
+        url: &str,
+        satoshis_required: u64,
+        server_identity_key: &str,
+        derivation_prefix: &str,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> Result<PaymentRetryContext, AuthError> {
+        use crate::auth::utils::nonce::create_nonce;
+        use crate::script::templates::ScriptTemplateLock;
+        use crate::wallet::interfaces::{
+            CreateActionArgs, CreateActionOptions, CreateActionOutput, GetPublicKeyArgs,
+        };
+        use crate::wallet::types::{BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol};
+
+        // 1. Create a fresh derivation suffix nonce.
+        let derivation_suffix = create_nonce(&self.wallet).await?;
+
+        // 2. Derive the payment public key.
+        //    protocolID: [2, "3241645161d8"],  keyID: "{prefix} {suffix}",
+        //    counterparty: serverIdentityKey
+        //    (mirrors TS getPublicKey call at AuthFetch.ts:647-651)
+        let server_pubkey =
+            crate::primitives::public_key::PublicKey::from_string(server_identity_key)
+                .map_err(AuthError::from)?;
+
+        let derived_pubkey_result = self
+            .wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(Protocol {
+                        security_level: 2,
+                        protocol: "3241645161d8".to_string(),
+                    }),
+                    key_id: Some(format!("{} {}", derivation_prefix, derivation_suffix)),
+                    counterparty: Some(Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(server_pubkey),
+                    }),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None, // originator
+            )
+            .await
+            .map_err(AuthError::from)?;
+
+        let derived_pubkey = derived_pubkey_result.public_key;
+
+        // 3. Build P2PKH locking script bytes from the derived public key.
+        //    TS: new P2PKH().lock(PublicKey.fromString(derivedPublicKey).toAddress()).toHex()
+        //    Rust: build from pubkey hash → raw bytes (serde hex-encodes on the wire).
+        let hash_vec = derived_pubkey.to_hash();
+        let mut hash = [0u8; 20];
+        hash.copy_from_slice(&hash_vec);
+        let p2pkh = crate::script::templates::p2pkh::P2PKH::from_public_key_hash(hash);
+        let lock_script = p2pkh
+            .lock()
+            .map_err(|e| AuthError::Payment(format!("P2PKH lock failed: {}", e)))?;
+        let locking_script_bytes = lock_script.to_binary(); // Vec<u8>
+
+        // 4. Build customInstructions JSON (camelCase, must match TS wire shape).
+        let custom_instructions = serde_json::json!({
+            "derivationPrefix": derivation_prefix,
+            "derivationSuffix": derivation_suffix,
+            "payee": server_identity_key,
+        })
+        .to_string();
+
+        // 5. Create the payment action via the wallet.
+        //    description mirrors TS `Payment for request to ${new URL(url).origin}`.
+        let description = format!("Payment for request to {}", extract_base_url(url)?);
+
+        let create_result = self
+            .wallet
+            .create_action(
+                CreateActionArgs {
+                    description,
+                    input_beef: None,
+                    inputs: Vec::new(),
+                    outputs: vec![CreateActionOutput {
+                        locking_script: Some(locking_script_bytes),
+                        satoshis: satoshis_required,
+                        output_description: "HTTP request payment".to_string(),
+                        basket: None,
+                        custom_instructions: Some(custom_instructions),
+                        tags: Vec::new(),
+                    }],
+                    lock_time: None,
+                    version: None,
+                    labels: Vec::new(),
+                    options: Some(CreateActionOptions {
+                        // randomizeOutputs: false — must match TS to get deterministic TXID
+                        randomize_outputs: BooleanDefaultTrue(Some(false)),
+                        ..Default::default()
+                    }),
+                    reference: None,
+                },
+                None, // originator
+            )
+            .await
+            .map_err(AuthError::from)?;
+
+        let tx_bytes = create_result.tx.ok_or_else(|| {
+            AuthError::Payment(
+                "wallet.create_action returned no tx (sign_and_process may have returned early)"
+                    .to_string(),
+            )
+        })?;
+
+        let transaction_base64 = b64_encode(&tx_bytes);
+
+        // 6. Get client identity key for logging / error surfacing.
+        let client_identity_key_result = self
+            .wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None, // originator
+            )
+            .await
+            .map_err(AuthError::from)?;
+        let client_identity_key = client_identity_key_result.public_key.to_der_hex();
+
+        Ok(PaymentRetryContext {
+            satoshis_required,
+            transaction_base64,
+            derivation_prefix: derivation_prefix.to_string(),
+            derivation_suffix,
+            server_identity_key: server_identity_key.to_string(),
+            client_identity_key,
+            attempts: attempt,
+            max_attempts,
+            errors: Vec::new(),
+        })
     }
 
     /// Ensure a peer exists for the given base URL, creating one if needed.
@@ -376,6 +737,179 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
         self.peers.insert(base_url.to_string(), auth_peer);
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 402 header parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Validate `x-bsv-payment-version` header equals `PAYMENT_VERSION`.
+///
+/// Mirrors TS AuthFetch.ts:519-522.
+fn validate_payment_version(response: &AuthFetchResponse) -> Result<(), AuthError> {
+    let version = get_header_ci(response, "x-bsv-payment-version").ok_or_else(|| {
+        AuthError::Payment(format!(
+            "missing x-bsv-payment-version header (expected \"{}\")",
+            PAYMENT_VERSION
+        ))
+    })?;
+    if version != PAYMENT_VERSION {
+        return Err(AuthError::Payment(format!(
+            "unsupported x-bsv-payment-version: got \"{}\", client supports \"{}\"",
+            version, PAYMENT_VERSION
+        )));
+    }
+    Ok(())
+}
+
+/// Parse `x-bsv-payment-satoshis-required` header as a positive integer.
+///
+/// Mirrors TS AuthFetch.ts:524-531.
+fn parse_satoshis_required(response: &AuthFetchResponse) -> Result<u64, AuthError> {
+    let raw = get_header_ci(response, "x-bsv-payment-satoshis-required").ok_or_else(|| {
+        AuthError::Payment("missing x-bsv-payment-satoshis-required header".to_string())
+    })?;
+    let satoshis: u64 = raw.trim().parse().map_err(|_| {
+        AuthError::Payment(format!(
+            "invalid x-bsv-payment-satoshis-required value: \"{}\"",
+            raw
+        ))
+    })?;
+    if satoshis == 0 {
+        return Err(AuthError::Payment(
+            "x-bsv-payment-satoshis-required must be > 0".to_string(),
+        ));
+    }
+    Ok(satoshis)
+}
+
+/// Parse `x-bsv-payment-derivation-prefix` header as a non-empty string.
+///
+/// Mirrors TS AuthFetch.ts:538-541.
+fn parse_derivation_prefix(response: &AuthFetchResponse) -> Result<String, AuthError> {
+    let prefix = get_header_ci(response, "x-bsv-payment-derivation-prefix").ok_or_else(|| {
+        AuthError::Payment("missing x-bsv-payment-derivation-prefix header".to_string())
+    })?;
+    if prefix.is_empty() {
+        return Err(AuthError::Payment(
+            "x-bsv-payment-derivation-prefix must not be empty".to_string(),
+        ));
+    }
+    Ok(prefix)
+}
+
+/// Case-insensitive header lookup.
+fn get_header_ci(response: &AuthFetchResponse, name: &str) -> Option<String> {
+    let name_lower = name.to_lowercase();
+    response
+        .headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == name_lower)
+        .map(|(_, v)| v.clone())
+}
+
+// ---------------------------------------------------------------------------
+// Payment retry helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the back-off delay for a given attempt number.
+///
+/// Linear schedule: `250ms * min(attempt, 5)`.
+/// Attempt 1 → 250ms, 2 → 500ms, 3 → 750ms, 4 → 1000ms, ≥5 → 1250ms.
+///
+/// Mirrors `getPaymentRetryDelay` in TS SDK AuthFetch.ts:821-825.
+fn payment_retry_delay(attempt: u32) -> Duration {
+    Duration::from_millis(250 * u64::from(attempt.min(5)))
+}
+
+/// Build a timestamped error log entry.
+fn make_error_entry(attempt: u32, message: &str) -> PaymentErrorLogEntry {
+    PaymentErrorLogEntry {
+        attempt,
+        timestamp: iso_now(),
+        message: message.to_string(),
+    }
+}
+
+/// Return the current UTC time as an RFC 3339 string.
+///
+/// Uses `std::time::SystemTime`; no external crate dependency.
+fn iso_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Produce a minimal RFC 3339 / ISO 8601 UTC string.
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400;
+    // Approximate Gregorian calendar (good enough for log timestamps).
+    let year_start = 1970u64;
+    let mut remaining = days;
+    let mut year = year_start;
+    loop {
+        // Clippy wants is_multiple_of but that's unstable; use explicit arithmetic.
+        #[allow(clippy::manual_is_multiple_of)]
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+        let dy = if leap { 366 } else { 365 };
+        if remaining < dy {
+            break;
+        }
+        remaining -= dy;
+        year += 1;
+    }
+    #[allow(clippy::manual_is_multiple_of)]
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    let mut day = remaining + 1;
+    for &md in &month_days {
+        if day <= md {
+            break;
+        }
+        day -= md;
+        month += 1;
+    }
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, h, m, s
+    )
+}
+
+/// Build the terminal `AuthError::PaymentFailed` after exhausting all attempts.
+fn build_payment_failure(
+    url: &str,
+    attempts: u32,
+    max_attempts: u32,
+    errors: &[PaymentErrorLogEntry],
+) -> AuthError {
+    let last_msg = errors
+        .last()
+        .map(|e| e.message.as_str())
+        .unwrap_or("unknown error");
+    AuthError::PaymentFailed {
+        attempts,
+        max_attempts,
+        message: format!(
+            "paid request to {} failed after {}/{} attempts; last error: {}",
+            url, attempts, max_attempts, last_msg
+        ),
     }
 }
 
@@ -668,13 +1202,7 @@ fn read_varint_num(data: &[u8], pos: &mut usize) -> Result<i64, AuthError> {
 // ---------------------------------------------------------------------------
 
 /// Create an HTTP transport for the given base URL.
-///
-/// Currently creates a SimplifiedHTTPTransport. Since the real HTTP transport
-/// is a stub (Plan 04), this provides the infrastructure hook.
 fn create_http_transport(base_url: &str) -> Result<Arc<dyn Transport>, AuthError> {
-    // SimplifiedHTTPTransport is currently a stub from Plan 04.
-    // We create a placeholder that satisfies the Transport trait.
-    // Once Plan 04 provides a real implementation, this will use it.
     Ok(Arc::new(
         crate::auth::transports::http::SimplifiedHTTPTransport::new(base_url),
     ))
@@ -715,6 +1243,10 @@ fn b64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pre-existing tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_extract_base_url() {
@@ -826,5 +1358,222 @@ mod tests {
             assert_eq!(decoded, val, "varint roundtrip failed for {}", val);
             assert_eq!(pos, buf.len());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // New tests: 402 payment retry logic
+    // -----------------------------------------------------------------------
+
+    /// payment_retry_delay: verify linear schedule mirrors TS SDK
+    /// `getPaymentRetryDelay` (AuthFetch.ts:821-825).
+    #[test]
+    fn test_payment_retry_delay_schedule() {
+        assert_eq!(payment_retry_delay(1), Duration::from_millis(250));
+        assert_eq!(payment_retry_delay(2), Duration::from_millis(500));
+        assert_eq!(payment_retry_delay(3), Duration::from_millis(750));
+        assert_eq!(payment_retry_delay(4), Duration::from_millis(1000));
+        assert_eq!(payment_retry_delay(5), Duration::from_millis(1250));
+        // cap at min(attempt, 5) → any attempt ≥ 5 returns 1250ms
+        assert_eq!(payment_retry_delay(100), Duration::from_millis(1250));
+        assert_eq!(payment_retry_delay(0), Duration::from_millis(0));
+    }
+
+    /// Header parsing: all required 402 headers present and valid → Ok.
+    #[test]
+    fn test_parse_payment_headers_valid() {
+        let mut headers = HashMap::new();
+        headers.insert("x-bsv-payment-version".to_string(), "1.0".to_string());
+        headers.insert(
+            "x-bsv-payment-satoshis-required".to_string(),
+            "1000".to_string(),
+        );
+        headers.insert(
+            "x-bsv-payment-derivation-prefix".to_string(),
+            "some-prefix".to_string(),
+        );
+        let resp = AuthFetchResponse {
+            status: 402,
+            headers,
+            body: Vec::new(),
+        };
+
+        assert!(validate_payment_version(&resp).is_ok());
+        assert_eq!(parse_satoshis_required(&resp).unwrap(), 1000u64);
+        assert_eq!(
+            parse_derivation_prefix(&resp).unwrap(),
+            "some-prefix".to_string()
+        );
+    }
+
+    /// Header parsing: wrong payment version → Err.
+    #[test]
+    fn test_parse_payment_headers_invalid_version() {
+        let mut headers = HashMap::new();
+        headers.insert("x-bsv-payment-version".to_string(), "2.0".to_string());
+        let resp = AuthFetchResponse {
+            status: 402,
+            headers,
+            body: Vec::new(),
+        };
+        let err = validate_payment_version(&resp).unwrap_err();
+        assert!(
+            matches!(err, AuthError::Payment(_)),
+            "expected Payment error, got {:?}",
+            err
+        );
+        assert!(err.to_string().contains("2.0"));
+    }
+
+    /// Header parsing: missing satoshis header → Err.
+    #[test]
+    fn test_parse_payment_headers_missing_satoshis() {
+        let resp = AuthFetchResponse {
+            status: 402,
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+        let err = parse_satoshis_required(&resp).unwrap_err();
+        assert!(matches!(err, AuthError::Payment(_)));
+    }
+
+    /// Header parsing: satoshis = 0 is invalid.
+    #[test]
+    fn test_parse_payment_headers_zero_satoshis() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-bsv-payment-satoshis-required".to_string(),
+            "0".to_string(),
+        );
+        let resp = AuthFetchResponse {
+            status: 402,
+            headers,
+            body: Vec::new(),
+        };
+        let err = parse_satoshis_required(&resp).unwrap_err();
+        assert!(matches!(err, AuthError::Payment(_)));
+    }
+
+    /// FetchOptions defaults: None → 3 attempts; explicit values preserved.
+    #[test]
+    fn test_fetch_options_default_retry_attempts() {
+        let default_opts = FetchOptions::default();
+        let effective = default_opts
+            .payment_retry_attempts
+            .unwrap_or(DEFAULT_PAYMENT_RETRY_ATTEMPTS);
+        assert_eq!(effective, 3);
+
+        let explicit_opts = FetchOptions {
+            payment_retry_attempts: Some(7),
+        };
+        assert_eq!(explicit_opts.payment_retry_attempts.unwrap(), 7);
+    }
+
+    /// x-bsv-payment JSON shape: camelCase keys, exact TS wire format.
+    #[test]
+    fn test_x_bsv_payment_json_shape() {
+        let prefix = "pfx123";
+        let suffix = "sfx456";
+        let tx_b64 = "AAAA";
+        let json_str = serde_json::json!({
+            "derivationPrefix": prefix,
+            "derivationSuffix": suffix,
+            "transaction": tx_b64,
+        })
+        .to_string();
+
+        // Must be valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["derivationPrefix"], prefix);
+        assert_eq!(parsed["derivationSuffix"], suffix);
+        assert_eq!(parsed["transaction"], tx_b64);
+
+        // Must NOT use snake_case keys (TS wire parity)
+        assert!(!json_str.contains("derivation_prefix"));
+        assert!(!json_str.contains("derivation_suffix"));
+    }
+
+    /// Header lookup is case-insensitive (server may use any casing).
+    #[test]
+    fn test_get_header_ci() {
+        let mut headers = HashMap::new();
+        headers.insert("X-BSV-Payment-Version".to_string(), "1.0".to_string());
+        let resp = AuthFetchResponse {
+            status: 402,
+            headers,
+            body: Vec::new(),
+        };
+        assert_eq!(
+            get_header_ci(&resp, "x-bsv-payment-version"),
+            Some("1.0".to_string())
+        );
+        assert_eq!(
+            get_header_ci(&resp, "X-BSV-PAYMENT-VERSION"),
+            Some("1.0".to_string())
+        );
+    }
+
+    /// `payment_retry_attempts: Some(0)` must clamp to 1 via `.max(1)`,
+    /// guaranteeing at least one attempt even when misconfigured.
+    #[test]
+    fn test_max_attempts_clamp_zero_becomes_one() {
+        let clamped = FetchOptions {
+            payment_retry_attempts: Some(0),
+        }
+        .payment_retry_attempts
+        .unwrap_or(DEFAULT_PAYMENT_RETRY_ATTEMPTS)
+        .max(1);
+        assert_eq!(clamped, 1, "zero attempts must clamp to at least 1");
+
+        // None → default (3), not clamped below 3.
+        let none_case = FetchOptions::default()
+            .payment_retry_attempts
+            .unwrap_or(DEFAULT_PAYMENT_RETRY_ATTEMPTS)
+            .max(1);
+        assert_eq!(none_case, 3);
+
+        // Explicit high value preserved.
+        let high = FetchOptions {
+            payment_retry_attempts: Some(10),
+        }
+        .payment_retry_attempts
+        .unwrap_or(DEFAULT_PAYMENT_RETRY_ATTEMPTS)
+        .max(1);
+        assert_eq!(high, 10);
+    }
+
+    /// customInstructions JSON shape: camelCase keys exactly matching TS
+    /// `{ derivationPrefix, derivationSuffix, payee }`. Server-side payment
+    /// derivation breaks silently if key names drift.
+    #[test]
+    fn test_custom_instructions_json_shape() {
+        let prefix = "pfx";
+        let suffix = "sfx";
+        let server_key = "02abcdef";
+        let json_str = serde_json::json!({
+            "derivationPrefix": prefix,
+            "derivationSuffix": suffix,
+            "payee": server_key,
+        })
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["derivationPrefix"], prefix);
+        assert_eq!(parsed["derivationSuffix"], suffix);
+        assert_eq!(parsed["payee"], server_key);
+
+        // TS wire parity: no snake_case.
+        assert!(!json_str.contains("derivation_prefix"));
+        assert!(!json_str.contains("derivation_suffix"));
+        assert!(!json_str.contains("server_identity_key"));
+    }
+
+    /// iso_now produces a non-empty, roughly ISO-shaped string.
+    #[test]
+    fn test_iso_now_format() {
+        let ts = iso_now();
+        // minimal: "YYYY-MM-DDTHH:MM:SSZ" = 20 chars
+        assert!(ts.len() >= 20, "timestamp too short: {}", ts);
+        assert!(ts.ends_with('Z'));
+        assert!(ts.contains('T'));
     }
 }

@@ -60,4 +60,16 @@ pub enum AuthError {
     /// Error from the primitives layer.
     #[error("primitives error: {0}")]
     Primitives(#[from] crate::primitives::PrimitivesError),
+
+    /// Generic payment flow error (bad header, missing tx, etc.).
+    #[error("payment flow error: {0}")]
+    Payment(String),
+
+    /// Paid request exhausted all retry attempts.
+    #[error("paid request failed after {attempts}/{max_attempts} attempts: {message}")]
+    PaymentFailed {
+        attempts: u32,
+        max_attempts: u32,
+        message: String,
+    },
 }
