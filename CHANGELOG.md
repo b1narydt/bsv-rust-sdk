@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-04-13
+
+### Fixed
+
+- **`write_send_with_results` empty-array encoding** (#23) — writer now emits the `NEGATIVE_ONE` varint sentinel (9 bytes of `0xFF`) for empty `sendWithResults`, matching BRC-100 canonical universal test vectors and the Go SDK wire format. Previously wrote `varint(0)`. Reader accepts both `0` and `NEGATIVE_ONE` as empty for backward compatibility. Affects both `serialize_create_action_result` and `serialize_sign_action_result` (shared helper in `src/wallet/serializer/create_action.rs`).
+
+### Tests
+
+- Added 8 BRC-100 universal test vectors, bringing wire-format coverage from 54 to 62 (all canonical vectors now covered): `getNetwork-simple-args`, `getVersion-simple-args`, `createAction-1-out-result`, `createAction-no-signAndProcess-{args,result}`, `signAction-simple-result`, `acquireCertificate-issuance-result`, `listCertificates-full-args`. All vector files are byte-identical copies from `universal-test-vectors/generated/brc100/`.
+
 ## [0.2.7] - 2026-04-13
 
 ### Added
