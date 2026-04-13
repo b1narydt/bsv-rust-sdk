@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-04-12
+
+### Added
+
+- **`Peer::listen_for_certificates_requested` / `stop_listening_for_certificates_requested`** (#19) — new public API mirroring TS SDK `Peer.listenForCertificatesRequested` / `stopListeningForCertificatesRequested`. Registered callbacks override the default auto-response so consumers can supply their own certificate-resolution logic. Observer channel exposed via `on_certificate_request()` continues to fire regardless of listener registration.
+- **`OnCertificateRequestReceived`** public type alias (`dyn Fn(String, RequestedCertificateSet) + Send + Sync + 'static`) for the listener callback.
+
+### Fixed
+
+- **`Peer::dispatch_message` auto-responds to inbound `CertificateRequest`** (#19) — previously the `CertificateRequest` arm forwarded the message to the `certificate_request_tx` observer channel and returned `Ok(())` without invoking `send_certificate_response`. Downstream middleware (e.g. `bsv-auth-axum-middleware` 0.1.1) had to re-implement the auto-response round trip with a 500ms timeout workaround. Now ports the full TS `Peer.processCertificateRequest` flow: nonce verification, signature verification over `JSON.stringify(requestedCertificates)`, then listener-registered callbacks OR wallet-driven auto-response via `get_verifiable_certificates` + `send_certificate_response`. Same branching added to `handle_initial_request` (single-round-trip embed in `initialResponse.certificates`) and `complete_handshake` (separate follow-up `CertificateResponse`).
+- **`Peer::send_certificate_response` signs outgoing messages** (#19) — the Rust port previously shipped `CertificateResponse` AuthMessages with `signature: None`, causing any receiver performing TS-parity signature verification to reject them. Now signs `JSON.stringify(certificates)` inline at the Peer level with `keyID = "{requestNonce} {peerNonce}"` and `counterparty = peerIdentityKey`, matching TS `Peer.sendCertificateResponse` exactly.
+- **`AuthFetch` cert-exchange serialization matches TS `pendingCertificateRequests` semantics** (#19) — replaced the inline channel-drain (`process_certificate_requests`) with a registered cert-request listener. `fetch()` now polls an `Arc<Mutex<Vec<bool>>>` queue (30s timeout, 100ms interval — `CERTIFICATE_WAIT_TIMEOUT` / `CERTIFICATE_WAIT_POLL_INTERVAL`) before emitting its general message, and the listener sleeps `CERTIFICATE_POST_SEND_GRACE` (500ms) after sending the `CertificateResponse` before shifting the queue. Mirrors TS `AuthFetch.ts:131-264`.
+- **`Peer` observer channel is non-blocking** — the three sites that push to `certificate_request_tx` now use `try_send` instead of awaiting `send`. A full buffer with no consumer can no longer stall `dispatch_message`.
+
 ## [0.2.5] - 2026-04-12
 
 ### Added

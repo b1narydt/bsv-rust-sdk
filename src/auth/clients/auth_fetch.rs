@@ -181,7 +181,10 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             let pending = auth_peer.pending_certificate_requests.clone();
             let start = tokio::time::Instant::now();
             loop {
-                let empty = pending.lock().expect("pending queue mutex poisoned").is_empty();
+                let empty = pending
+                    .lock()
+                    .expect("pending queue mutex poisoned")
+                    .is_empty();
                 if empty {
                     break;
                 }
@@ -308,8 +311,8 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             let peer_cb = peer_arc.clone();
             let pending_cb = pending.clone();
             let wallet = self.wallet.clone();
-            let listener: Arc<crate::auth::peer::OnCertificateRequestReceived> =
-                Arc::new(move |verifier_key: String, requested: RequestedCertificateSet| {
+            let listener: Arc<crate::auth::peer::OnCertificateRequestReceived> = Arc::new(
+                move |verifier_key: String, requested: RequestedCertificateSet| {
                     // Push marker synchronously so `fetch` sees a non-empty
                     // queue before it starts its polling wait.
                     pending_cb
@@ -332,12 +335,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                                     &verifier_key,
                                 )
                                 .map_err(AuthError::from)?;
-                            let verifiable = get_verifiable_certificates(
-                                &wallet,
-                                &requested,
-                                &verifier_pubkey,
-                            )
-                            .await?;
+                            let verifiable =
+                                get_verifiable_certificates(&wallet, &requested, &verifier_pubkey)
+                                    .await?;
                             if !verifiable.is_empty() {
                                 let certs: Vec<Certificate> =
                                     verifiable.into_iter().map(|vc| vc.certificate).collect();
@@ -353,13 +353,13 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                         // ingest the certificates before the general
                         // message arrives — mirrors TS listener finally.
                         tokio::time::sleep(CERTIFICATE_POST_SEND_GRACE).await;
-                        let mut queue =
-                            pending.lock().expect("pending queue mutex poisoned");
+                        let mut queue = pending.lock().expect("pending queue mutex poisoned");
                         if !queue.is_empty() {
                             queue.remove(0);
                         }
                     });
-                });
+                },
+            );
 
             peer_arc
                 .lock()

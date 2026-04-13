@@ -821,8 +821,8 @@ impl<W: WalletInterface> Peer<W> {
         // session we already resolved to avoid re-entering
         // `get_authenticated_session` (which would cycle through handshake).
         let verifier_pubkey = parse_public_key(&msg.identity_key)?;
-        let verifiable = get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
-            .await?;
+        let verifiable =
+            get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey).await?;
         if verifiable.is_empty() {
             return Ok(());
         }
@@ -1767,22 +1767,19 @@ mod tests {
                 // Peer B's transport should have received a signed
                 // CertificateResponse. Intercept by draining the incoming
                 // channel directly.
-                let mut rx = peer_b
-                    .transport_rx
-                    .take()
-                    .expect("transport_rx available");
-                let msg = tokio::time::timeout(
-                    std::time::Duration::from_millis(500),
-                    rx.recv(),
-                )
-                .await
-                .expect("transport recv timed out")
-                .expect("transport channel closed");
+                let mut rx = peer_b.transport_rx.take().expect("transport_rx available");
+                let msg = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+                    .await
+                    .expect("transport recv timed out")
+                    .expect("transport channel closed");
 
                 assert_eq!(msg.message_type, MessageType::CertificateResponse);
                 assert!(msg.nonce.is_some(), "request nonce must be populated");
                 assert!(
-                    msg.signature.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+                    msg.signature
+                        .as_ref()
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false),
                     "CertificateResponse must carry a non-empty signature (TS parity)"
                 );
             })
