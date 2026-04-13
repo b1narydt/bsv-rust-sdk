@@ -7,7 +7,8 @@
 //! Translated from TS SDK AuthFetch.ts (924 lines) and Go SDK authhttp.go (782 lines).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
 
@@ -18,6 +19,21 @@ use crate::auth::transports::Transport;
 use crate::auth::types::RequestedCertificateSet;
 use crate::auth::utils::certificates::get_verifiable_certificates;
 use crate::wallet::interfaces::{Certificate, WalletInterface};
+
+/// Maximum time `fetch` will wait for in-flight certificate exchanges to
+/// complete before sending the general message. Matches TS SDK's
+/// `CERTIFICATE_WAIT_TIMEOUT_MS` in `AuthFetch.ts`.
+const CERTIFICATE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll interval while waiting for the pending-certificate-requests queue
+/// to drain. Matches TS SDK's `CHECK_INTERVAL_MS`.
+const CERTIFICATE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Post-send grace window: after the client sends its CertificateResponse,
+/// wait this long before releasing the queue entry so the server has time
+/// to ingest the certificates before the next general message arrives.
+/// Matches the 500ms `setTimeout` inside the TS listener's `finally` block.
+const CERTIFICATE_POST_SEND_GRACE: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // AuthFetchResponse
@@ -44,10 +60,12 @@ struct AuthPeer<W: WalletInterface> {
     identity_key: Option<String>,
     #[allow(clippy::type_complexity)]
     general_rx: Arc<Mutex<mpsc::Receiver<(String, Vec<u8>)>>>,
-    /// Receiver for certificate requests from the server.
-    /// Taken from the Peer during creation; consumed to auto-respond with certs.
-    #[allow(clippy::type_complexity)]
-    cert_request_rx: Arc<Mutex<mpsc::Receiver<(String, RequestedCertificateSet)>>>,
+    /// Tracks in-flight certificate exchanges for this peer. Each inbound
+    /// `certificateRequest` (or handshake-embedded cert request) pushes an
+    /// entry; the listener task shifts it 500ms after sending the response.
+    /// `fetch` blocks before sending its general message until this is empty,
+    /// mirroring TS `pendingCertificateRequests` semantics in `AuthFetch.ts`.
+    pending_certificate_requests: Arc<StdMutex<Vec<bool>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,12 +168,31 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             }
         }
 
-        // Process any pending certificate requests from the server.
-        // During the handshake, the server may have sent requested_certificates
-        // in the initialResponse. The client must respond with matching
-        // certificates BEFORE sending the general message, so the server
-        // receives certs before processing the actual request.
-        self.process_certificate_requests(&base_url).await?;
+        // Block until any in-flight certificate exchanges complete. The
+        // registered listener (see `ensure_peer`) pushes an entry onto
+        // `pending_certificate_requests` when it starts and shifts it 500ms
+        // after sending the response, giving the server time to ingest the
+        // certs before the general message arrives. Mirrors TS
+        // `AuthFetch.ts:241-264` polling gate.
+        {
+            let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
+                AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
+            })?;
+            let pending = auth_peer.pending_certificate_requests.clone();
+            let start = tokio::time::Instant::now();
+            loop {
+                let empty = pending.lock().expect("pending queue mutex poisoned").is_empty();
+                if empty {
+                    break;
+                }
+                if tokio::time::Instant::now() - start > CERTIFICATE_WAIT_TIMEOUT {
+                    return Err(AuthError::Timeout(
+                        "timeout waiting for certificate request to complete".to_string(),
+                    ));
+                }
+                tokio::time::sleep(CERTIFICATE_WAIT_POLL_INTERVAL).await;
+            }
+        }
 
         // Serialize the request payload
         let request_nonce = crate::primitives::random::random_bytes(32);
@@ -231,6 +268,11 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     }
 
     /// Ensure a peer exists for the given base URL, creating one if needed.
+    ///
+    /// Registers a certificate-request listener on the new Peer that mirrors
+    /// TS SDK `AuthFetch` behaviour: pushes a marker onto the pending queue,
+    /// fetches verifiable certificates from the wallet, sends the response,
+    /// sleeps 500ms, then shifts the queue to release the gate on `fetch`.
     async fn ensure_peer(&mut self, base_url: &str) -> Result<(), AuthError> {
         if self.peers.contains_key(base_url) {
             return Ok(());
@@ -255,71 +297,84 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             AuthError::InvalidMessage("general message receiver already taken".to_string())
         })?;
 
-        // Take the certificate request receiver for auto-response
-        let cert_request_rx = peer.on_certificate_request().ok_or_else(|| {
-            AuthError::InvalidMessage("certificate request receiver already taken".to_string())
-        })?;
+        let peer_arc = Arc::new(Mutex::new(peer));
+        let pending = Arc::new(StdMutex::new(Vec::<bool>::new()));
+
+        // Register the cert-request listener. Captures Arc<Peer>, wallet,
+        // and the pending queue. Fires synchronously inside dispatch, then
+        // spawns an async task that waits for dispatch to release the lock
+        // before sending the response.
+        {
+            let peer_cb = peer_arc.clone();
+            let pending_cb = pending.clone();
+            let wallet = self.wallet.clone();
+            let listener: Arc<crate::auth::peer::OnCertificateRequestReceived> =
+                Arc::new(move |verifier_key: String, requested: RequestedCertificateSet| {
+                    // Push marker synchronously so `fetch` sees a non-empty
+                    // queue before it starts its polling wait.
+                    pending_cb
+                        .lock()
+                        .expect("pending queue mutex poisoned")
+                        .push(true);
+
+                    let peer_arc = peer_cb.clone();
+                    let pending = pending_cb.clone();
+                    let wallet = wallet.clone();
+                    tokio::spawn(async move {
+                        // Mirror TS listener: fetch + send inside a
+                        // try-block; on success or failure, still run the
+                        // 500ms grace + shift in the finally. Errors are
+                        // swallowed — fire-and-forget, matching TS which
+                        // calls the callback without awaiting its result.
+                        let _result: Result<(), AuthError> = async {
+                            let verifier_pubkey =
+                                crate::primitives::public_key::PublicKey::from_string(
+                                    &verifier_key,
+                                )
+                                .map_err(AuthError::from)?;
+                            let verifiable = get_verifiable_certificates(
+                                &wallet,
+                                &requested,
+                                &verifier_pubkey,
+                            )
+                            .await?;
+                            if !verifiable.is_empty() {
+                                let certs: Vec<Certificate> =
+                                    verifiable.into_iter().map(|vc| vc.certificate).collect();
+                                let mut peer = peer_arc.lock().await;
+                                peer.send_certificate_response(&verifier_key, certs).await?;
+                            }
+                            Ok(())
+                        }
+                        .await;
+
+                        // Release the queue entry 500ms after the send (or
+                        // the failure path) so the server has time to
+                        // ingest the certificates before the general
+                        // message arrives — mirrors TS listener finally.
+                        tokio::time::sleep(CERTIFICATE_POST_SEND_GRACE).await;
+                        let mut queue =
+                            pending.lock().expect("pending queue mutex poisoned");
+                        if !queue.is_empty() {
+                            queue.remove(0);
+                        }
+                    });
+                });
+
+            peer_arc
+                .lock()
+                .await
+                .listen_for_certificates_requested(listener);
+        }
 
         let auth_peer = AuthPeer {
-            peer: Arc::new(Mutex::new(peer)),
+            peer: peer_arc,
             identity_key: None,
             general_rx: Arc::new(Mutex::new(general_rx)),
-            cert_request_rx: Arc::new(Mutex::new(cert_request_rx)),
+            pending_certificate_requests: pending,
         };
 
         self.peers.insert(base_url.to_string(), auth_peer);
-        Ok(())
-    }
-
-    /// Process any pending certificate requests from the server.
-    ///
-    /// After handshake, the server may have requested certificates from the
-    /// client. This method checks for pending requests, retrieves matching
-    /// certificates from the wallet via get_verifiable_certificates, and
-    /// sends them back as a CertificateResponse.
-    ///
-    /// Mirrors TS SDK AuthFetch.listenForCertificatesRequested callback.
-    async fn process_certificate_requests(&mut self, base_url: &str) -> Result<(), AuthError> {
-        let auth_peer = match self.peers.get(base_url) {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let cert_request_rx = auth_peer.cert_request_rx.clone();
-        let peer = auth_peer.peer.clone();
-
-        // Drain any pending certificate requests (non-blocking)
-        let mut requests = Vec::new();
-        {
-            let mut rx = cert_request_rx.lock().await;
-            while let Ok(req) = rx.try_recv() {
-                requests.push(req);
-            }
-        }
-
-        for (verifier_key, requested_certs) in requests {
-            // Get verifiable certificates from our wallet
-            let verifier_pubkey =
-                crate::primitives::public_key::PublicKey::from_string(&verifier_key)
-                    .map_err(AuthError::from)?;
-            let verifiable_certs =
-                get_verifiable_certificates(&self.wallet, &requested_certs, &verifier_pubkey)
-                    .await?;
-
-            if !verifiable_certs.is_empty() {
-                // Convert VerifiableCertificate to Certificate for sending
-                let certs_to_send: Vec<Certificate> = verifiable_certs
-                    .into_iter()
-                    .map(|vc| vc.certificate)
-                    .collect();
-
-                let mut peer_guard = peer.lock().await;
-                peer_guard
-                    .send_certificate_response(&verifier_key, certs_to_send)
-                    .await?;
-            }
-        }
-
         Ok(())
     }
 }
