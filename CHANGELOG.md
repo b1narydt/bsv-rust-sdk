@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.81] - 2026-04-14
+
+### Fixed
+
+- **BRC-100 JSON wire-format parity with TS SDK** (#24) — two classes of drift in `HttpWalletJson` substrate types (`src/wallet/interfaces.rs`). Binary serializers under `src/wallet/serializer/` were already correct and are unchanged.
+  - **`reference` field encoding**: `SignActionArgs.reference`, `AbortActionArgs.reference`, and `SignableTransaction.reference` now use `serde_helpers::bytes_as_base64` instead of `bytes_as_array`, matching the TS `Base64String` type. Previously, deserializing TS-produced JSON failed outright (`invalid type: string "dGVzdA==", expected a sequence`). `SignableTransaction.tx` correctly stays on `bytes_as_array` (TS type is `AtomicBEEF = Byte[]`).
+  - **Default-valued field omission**: TS uses `JSON.stringify(args)` which omits `undefined` properties. Rust was emitting `"forSelf": null`, `"identityKey": false`, `"seekPermission": true`, etc. for fields the caller never set. Resolution: `BooleanDefaultTrue` / `BooleanDefaultFalse` newtypes gain a `none()` constructor returning `Self(None)`; all 22 `BooleanDefault*` field annotations now use `default = "BooleanDefault*::none"` + `skip_serializing_if = "BooleanDefault*::is_none"` so missing JSON deserializes to `None` (omitted on re-serialize) while explicit `true`/`false` round-trips intact. `Default::default()` still returns `Self(Some(default))` for runtime convenience, so no caller breaks. Also added `skip_serializing_if = "Option::is_none"` to 9 `Option<bool>` fields (`VerifySignatureArgs.for_self` + 8 `seek_permission` occurrences) and an `is_false` skip on `GetPublicKeyArgs.identity_key`. Verified against `rust-wallet-toolbox/tests/brc100_vectors.rs` reproducer: 49 pass / 8 fail → 57 pass / 0 fail.
+
 ## [0.2.8] - 2026-04-13
 
 ### Fixed

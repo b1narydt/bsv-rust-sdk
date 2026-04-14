@@ -91,9 +91,23 @@ impl From<Option<bool>> for BooleanDefaultTrue {
 
 impl BooleanDefaultTrue {
     /// Returns true if the inner value is None.
-    /// Used by serde skip_serializing_if.
+    /// Used by serde `skip_serializing_if` to omit fields that were absent in
+    /// the source JSON (or constructed via `none()`), matching TS's
+    /// `JSON.stringify(undefined)` omission. Explicit `Some(true)` /
+    /// `Some(false)` round-trip as `true` / `false`.
     pub fn is_none(&self) -> bool {
         self.0.is_none()
+    }
+
+    /// Constructs the "absent" representation: `Self(None)`.
+    ///
+    /// Used as a serde `default` for missing-field deserialization so the
+    /// distinction between "field absent" (round-trips as omitted) and "field
+    /// present at default value" (round-trips as the explicit value) is
+    /// preserved. `Default::default()` still returns `Self(Some(true))` for
+    /// runtime convenience — `None` is reserved for the wire-absent state.
+    pub fn none() -> Self {
+        BooleanDefaultTrue(None)
     }
 }
 
@@ -139,9 +153,23 @@ impl From<Option<bool>> for BooleanDefaultFalse {
 
 impl BooleanDefaultFalse {
     /// Returns true if the inner value is None.
-    /// Used by serde skip_serializing_if.
+    /// Used by serde `skip_serializing_if` to omit fields that were absent in
+    /// the source JSON (or constructed via `none()`), matching TS's
+    /// `JSON.stringify(undefined)` omission. Explicit `Some(true)` /
+    /// `Some(false)` round-trip as `true` / `false`.
     pub fn is_none(&self) -> bool {
         self.0.is_none()
+    }
+
+    /// Constructs the "absent" representation: `Self(None)`.
+    ///
+    /// Used as a serde `default` for missing-field deserialization so the
+    /// distinction between "field absent" (round-trips as omitted) and "field
+    /// present at default value" (round-trips as the explicit value) is
+    /// preserved. `Default::default()` still returns `Self(Some(false))` for
+    /// runtime convenience — `None` is reserved for the wire-absent state.
+    pub fn none() -> Self {
+        BooleanDefaultFalse(None)
     }
 }
 
