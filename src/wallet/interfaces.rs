@@ -364,6 +364,16 @@ pub(crate) mod serde_helpers {
     }
 }
 
+/// Serde `skip_serializing_if` predicate that skips `false` values.
+///
+/// Used for plain `bool` fields whose TS wire form is `?: true` (the literal
+/// type `true | undefined`) — those must serialize only when `true`, and be
+/// omitted when `false` to match TS's `JSON.stringify(undefined)` behavior.
+#[cfg(feature = "network")]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -886,9 +896,21 @@ pub struct CreateActionOutput {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct CreateActionOptions {
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub sign_and_process: BooleanDefaultTrue,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
     #[cfg_attr(
         feature = "network",
@@ -900,9 +922,21 @@ pub struct CreateActionOptions {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub known_txids: Vec<TXIDHexString>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub return_txid_only: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
@@ -914,7 +948,13 @@ pub struct CreateActionOptions {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub send_with: Vec<TXIDHexString>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub randomize_outputs: BooleanDefaultTrue,
 }
 
@@ -973,9 +1013,12 @@ pub struct CreateActionArgs {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct SignableTransaction {
+    // bytes_as_array: TS types `tx` as `AtomicBEEF = Byte[]` (number array).
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
     pub tx: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    // bytes_as_base64: TS types `reference` as `Base64String`, so the wire
+    // format is a base64 string (not a number array). See BRC-100.
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
 }
 
@@ -1072,11 +1115,29 @@ pub struct SignActionSpend {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct SignActionOptions {
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub return_txid_only: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
@@ -1090,7 +1151,8 @@ pub struct SignActionOptions {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct SignActionArgs {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    // bytes_as_base64: TS types `reference` as `Base64String` on the wire.
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
     pub spends: HashMap<u32, SignActionSpend>,
     #[cfg_attr(
@@ -1128,7 +1190,8 @@ pub struct SignActionResult {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct AbortActionArgs {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    // bytes_as_base64: TS types `reference` as `Base64String` on the wire.
+    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
 }
 
@@ -1249,17 +1312,53 @@ pub struct ListActionsArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub label_query_mode: Option<QueryMode>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_labels: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_inputs: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_input_source_locking_scripts: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_input_unlocking_scripts: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_outputs: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub include_output_locking_scripts: BooleanDefaultFalse,
     #[cfg_attr(feature = "network", serde(default))]
     pub limit: PositiveIntegerDefault10Max10000,
@@ -1268,7 +1367,13 @@ pub struct ListActionsArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<PositiveIntegerOrZero>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub seek_permission: BooleanDefaultTrue,
 }
 
@@ -1356,7 +1461,13 @@ pub struct InternalizeActionArgs {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
+    )]
     pub seek_permission: BooleanDefaultTrue,
     pub outputs: Vec<InternalizeOutput>,
 }
@@ -1396,17 +1507,26 @@ pub struct ListOutputsArgs {
     pub include: Option<OutputInclude>,
     #[cfg_attr(
         feature = "network",
-        serde(skip_serializing_if = "BooleanDefaultFalse::is_none", default)
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
     )]
     pub include_custom_instructions: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
-        serde(skip_serializing_if = "BooleanDefaultFalse::is_none", default)
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
     )]
     pub include_tags: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
-        serde(skip_serializing_if = "BooleanDefaultFalse::is_none", default)
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
     )]
     pub include_labels: BooleanDefaultFalse,
     #[cfg_attr(
@@ -1421,7 +1541,10 @@ pub struct ListOutputsArgs {
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(
         feature = "network",
-        serde(skip_serializing_if = "BooleanDefaultTrue::is_none", default)
+        serde(
+            default = "BooleanDefaultTrue::none",
+            skip_serializing_if = "BooleanDefaultTrue::is_none"
+        )
     )]
     pub seek_permission: BooleanDefaultTrue,
 }
@@ -1509,7 +1632,10 @@ pub struct RelinquishOutputResult {
 #[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
 pub struct GetPublicKeyArgs {
-    #[cfg_attr(feature = "network", serde(default))]
+    // TS types this as `identityKey?: true` (literal `true | undefined`),
+    // so the wire form is either present-and-true or absent. Skip when false
+    // to match TS's `JSON.stringify(undefined)` omission.
+    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "is_false"))]
     pub identity_key: bool,
     #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
     #[cfg_attr(
@@ -1576,7 +1702,10 @@ pub struct EncryptArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1609,7 +1738,10 @@ pub struct DecryptArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1642,7 +1774,10 @@ pub struct CreateHmacArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1677,7 +1812,10 @@ pub struct VerifyHmacArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1725,7 +1863,10 @@ pub struct CreateSignatureArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1772,7 +1913,10 @@ pub struct VerifySignatureArgs {
     // bytes_as_array: matches TS Byte[] and Go BytesList format.
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
     pub signature: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub for_self: Option<bool>,
     #[cfg_attr(feature = "network", serde(default))]
     pub privileged: bool,
@@ -1781,7 +1925,10 @@ pub struct VerifySignatureArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -1877,7 +2024,13 @@ pub struct ListCertificatesArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<PositiveIntegerOrZero>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub privileged: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
@@ -1931,7 +2084,13 @@ pub struct ProveCertificateArgs {
     pub fields_to_reveal: Vec<String>,
     #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(
+            default = "BooleanDefaultFalse::none",
+            skip_serializing_if = "BooleanDefaultFalse::is_none"
+        )
+    )]
     pub privileged: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "network",
@@ -2024,7 +2183,10 @@ pub struct DiscoverByIdentityKeyArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<u32>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
@@ -2044,7 +2206,10 @@ pub struct DiscoverByAttributesArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<u32>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(
+        feature = "network",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub seek_permission: Option<bool>,
 }
 
