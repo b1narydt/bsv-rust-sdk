@@ -129,14 +129,13 @@ impl TopicBroadcaster {
         }
 
         let url = format!("{}/submit", host);
+        let topics_json = serde_json::to_string(&tagged_beef.topics)
+            .map_err(|e| ServicesError::Serialization(format!("failed to serialize X-Topics: {}", e)))?;
         let response = self
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header(
-                "X-Topics",
-                serde_json::to_string(&tagged_beef.topics).unwrap_or_default(),
-            )
+            .header("X-Topics", topics_json)
             .body(tagged_beef.beef.clone())
             .send()
             .await
@@ -193,10 +192,10 @@ impl TopicBroadcaster {
 impl Broadcaster for TopicBroadcaster {
     /// Broadcast a transaction to overlay services via SHIP.
     async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
-        let beef = tx.to_bytes().map_err(|e| BroadcastFailure {
+        let beef = tx.to_beef().map_err(|e| BroadcastFailure {
             status: 0,
             code: "ERR_BEEF_SERIALIZE".to_string(),
-            description: format!("Transaction must be serializable: {}", e),
+            description: format!("Transaction must be serializable to BEEF: {}", e),
         })?;
 
         let interested_hosts =
@@ -221,6 +220,7 @@ impl Broadcaster for TopicBroadcaster {
 
         let mut host_acks: HashMap<String, HashSet<String>> = HashMap::new();
         let mut success_count = 0u32;
+        let mut host_errors: Vec<(String, String)> = Vec::new();
 
         for (host, topics) in &interested_hosts {
             let tagged_beef = TaggedBEEF {
@@ -246,18 +246,27 @@ impl Broadcaster for TopicBroadcaster {
                     host_acks.insert(host.clone(), acked_topics);
                     success_count += 1;
                 }
-                Err(_) => {
-                    // Host failed; continue to others.
+                Err(e) => {
+                    host_errors.push((host.clone(), e.to_string()));
                     continue;
                 }
             }
         }
 
         if success_count == 0 {
+            let details = host_errors
+                .iter()
+                .map(|(h, e)| format!("{}: {}", h, e))
+                .collect::<Vec<_>>()
+                .join("; ");
             return Err(BroadcastFailure {
                 status: 0,
                 code: "ERR_ALL_HOSTS_REJECTED".to_string(),
-                description: "All topical hosts have rejected the transaction".to_string(),
+                description: if details.is_empty() {
+                    "All topical hosts have rejected the transaction".to_string()
+                } else {
+                    format!("All topical hosts have rejected the transaction. Details: {}", details)
+                },
             });
         }
 
@@ -270,9 +279,15 @@ impl Broadcaster for TopicBroadcaster {
             });
         }
 
+        let txid = tx.id().map_err(|e| BroadcastFailure {
+            status: 0,
+            code: "ERR_TXID_COMPUTE".to_string(),
+            description: format!("broadcast succeeded but could not compute txid: {}", e),
+        })?;
+
         Ok(BroadcastResponse {
             status: "success".to_string(),
-            txid: tx.id().unwrap_or_default(),
+            txid,
             message: format!(
                 "Sent to {} Overlay Services {}",
                 success_count,

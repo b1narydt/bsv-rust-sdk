@@ -177,14 +177,28 @@ impl Beef {
             .clone()
             .ok_or_else(|| TransactionError::BeefError("subject tx is txid-only".into()))?;
 
+        // Set merkle_path on subject tx from its bump_index.
+        if let Some(bi) = self.txs[subject_idx].bump_index {
+            if bi < self.bumps.len() && tx.merkle_path.is_none() {
+                tx.merkle_path = Some(self.bumps[bi].clone());
+            }
+        }
+
         // Link source transactions: for each input, find source tx in BEEF
+        // and set merkle_path from bump_index.
         for input in &mut tx.inputs {
             if let Some(ref source_txid) = input.source_txid {
                 if input.source_transaction.is_none() {
                     for btx in &self.txs {
                         if btx.txid == *source_txid {
                             if let Some(ref source_tx) = btx.tx {
-                                input.source_transaction = Some(Box::new(source_tx.clone()));
+                                let mut linked = source_tx.clone();
+                                if let Some(bi) = btx.bump_index {
+                                    if bi < self.bumps.len() && linked.merkle_path.is_none() {
+                                        linked.merkle_path = Some(self.bumps[bi].clone());
+                                    }
+                                }
+                                input.source_transaction = Some(Box::new(linked));
                             }
                             break;
                         }
@@ -321,7 +335,7 @@ impl Beef {
     }
 
     /// Remove an existing transaction with the given txid.
-    fn remove_existing_txid(&mut self, txid: &str) {
+    pub fn remove_existing_txid(&mut self, txid: &str) {
         if let Some(pos) = self.txs.iter().position(|btx| btx.txid == txid) {
             self.txs.remove(pos);
         }
