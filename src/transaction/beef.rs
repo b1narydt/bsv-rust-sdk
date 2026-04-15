@@ -179,7 +179,13 @@ impl Beef {
 
         // Set merkle_path on subject tx from its bump_index.
         if let Some(bi) = self.txs[subject_idx].bump_index {
-            if bi < self.bumps.len() && tx.merkle_path.is_none() {
+            if bi >= self.bumps.len() {
+                return Err(TransactionError::BeefError(format!(
+                    "bump_index {} out of bounds (only {} bumps)",
+                    bi, self.bumps.len()
+                )));
+            }
+            if tx.merkle_path.is_none() {
                 tx.merkle_path = Some(self.bumps[bi].clone());
             }
         }
@@ -194,7 +200,13 @@ impl Beef {
                             if let Some(ref source_tx) = btx.tx {
                                 let mut linked = source_tx.clone();
                                 if let Some(bi) = btx.bump_index {
-                                    if bi < self.bumps.len() && linked.merkle_path.is_none() {
+                                    if bi >= self.bumps.len() {
+                                        return Err(TransactionError::BeefError(format!(
+                                            "bump_index {} out of bounds (only {} bumps) for source tx {}",
+                                            bi, self.bumps.len(), btx.txid
+                                        )));
+                                    }
+                                    if linked.merkle_path.is_none() {
                                         linked.merkle_path = Some(self.bumps[bi].clone());
                                     }
                                 }
@@ -838,6 +850,55 @@ mod tests {
             new_beef.bumps.len(),
             1,
             "should still be 1 bump after re-merge"
+        );
+    }
+
+    #[test]
+    fn test_into_transaction_sets_merkle_path_from_bumps() {
+        // Vector 1 has 2 txs: a proven source tx and an unproven subject tx.
+        // into_transaction should set merkle_path on the linked source tx.
+        let vectors = load_test_vectors();
+        let beef = Beef::from_hex(&vectors[1].hex).expect("parse vector 1");
+        assert_eq!(beef.txs.len(), 2, "vector 1 should have 2 txs");
+
+        // Find which tx has a bump (the proven one)
+        let proven_count = beef.txs.iter().filter(|t| t.bump_index.is_some()).count();
+        assert!(proven_count >= 1, "at least one tx should have a bump");
+
+        let tx = beef.into_transaction().expect("into_transaction");
+
+        // The subject tx (last in BEEF) is the unproven one — check if it
+        // has a merkle_path set when appropriate.
+        // Check source transactions have merkle_path set from bumps.
+        for input in &tx.inputs {
+            if let Some(ref source_txid) = input.source_txid {
+                if let Some(ref source_tx) = input.source_transaction {
+                    // Source tx was in the BEEF with a bump — merkle_path should be set
+                    assert!(
+                        source_tx.merkle_path.is_some(),
+                        "source tx {} should have merkle_path set from BEEF bump",
+                        source_txid
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_into_transaction_sets_merkle_path_on_subject() {
+        // Vector 0 has 1 tx with a bump. into_transaction should set
+        // merkle_path on the subject tx itself.
+        let vectors = load_test_vectors();
+        let beef = Beef::from_hex(&vectors[0].hex).expect("parse vector 0");
+        assert!(
+            beef.txs[0].bump_index.is_some(),
+            "vector 0 tx should have a bump"
+        );
+
+        let tx = beef.into_transaction().expect("into_transaction");
+        assert!(
+            tx.merkle_path.is_some(),
+            "subject tx with bump should have merkle_path set"
         );
     }
 }

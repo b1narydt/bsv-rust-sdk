@@ -326,7 +326,7 @@ impl Broadcaster for TopicBroadcaster {
         let txid = tx.id().map_err(|e| BroadcastFailure {
             status: 0,
             code: "ERR_TXID_COMPUTE".to_string(),
-            description: format!("broadcast succeeded but could not compute txid: {}", e),
+            description: format!("Failed to compute txid: {}", e),
         })?;
 
         self.broadcast_beef_inner(beef, txid).await
