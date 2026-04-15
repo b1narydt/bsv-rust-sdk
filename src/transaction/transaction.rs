@@ -2,15 +2,12 @@
 
 use std::io::{Cursor, Read, Write};
 
-use std::collections::{HashMap, HashSet};
-
 use crate::primitives::hash::hash256;
 use crate::primitives::transaction_signature::{
     SIGHASH_ANYONECANPAY, SIGHASH_FORKID, SIGHASH_NONE, SIGHASH_SINGLE,
 };
 use crate::script::locking_script::LockingScript;
 use crate::script::templates::ScriptTemplateUnlock;
-use crate::transaction::beef::BEEF_V1;
 use crate::transaction::error::TransactionError;
 use crate::transaction::merkle_path::MerklePath;
 use crate::transaction::transaction_input::TransactionInput;
@@ -125,91 +122,6 @@ impl Transaction {
     pub fn to_bytes(&self) -> Result<Vec<u8>, TransactionError> {
         let mut buf = Vec::new();
         self.to_binary(&mut buf)?;
-        Ok(buf)
-    }
-
-    /// Serialize this transaction and its input chain to BEEF (BRC-62) format.
-    ///
-    /// Walks the `source_transaction` tree recursively to collect all ancestor
-    /// transactions and their merkle paths, then serializes as BEEF V1.
-    /// Matches the TS SDK's `Transaction.toBEEF()`.
-    pub fn to_beef(&self) -> Result<Vec<u8>, TransactionError> {
-        let mut bumps: Vec<MerklePath> = Vec::new();
-        // Map from (blockHeight, computedRoot) → bump index for deduplication.
-        let mut bump_index_by_root: HashMap<String, usize> = HashMap::new();
-        let mut txs: Vec<(&Transaction, Option<usize>)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        fn get_bump_index(
-            mp: &MerklePath,
-            bumps: &mut Vec<MerklePath>,
-            bump_index_by_root: &mut HashMap<String, usize>,
-        ) -> Result<usize, TransactionError> {
-            let root = mp.compute_root(None)?;
-            let key = format!("{}:{}", mp.block_height, root);
-            if let Some(&idx) = bump_index_by_root.get(&key) {
-                bumps[idx].combine(mp)?;
-                return Ok(idx);
-            }
-            let idx = bumps.len();
-            bumps.push(mp.clone());
-            bump_index_by_root.insert(key, idx);
-            Ok(idx)
-        }
-
-        fn collect<'a>(
-            tx: &'a Transaction,
-            bumps: &mut Vec<MerklePath>,
-            bump_index_by_root: &mut HashMap<String, usize>,
-            txs: &mut Vec<(&'a Transaction, Option<usize>)>,
-            seen: &mut HashSet<String>,
-        ) -> Result<(), TransactionError> {
-            let txid = tx.id()?;
-            if seen.contains(&txid) {
-                return Ok(());
-            }
-
-            let path_index = if let Some(ref mp) = tx.merkle_path {
-                Some(get_bump_index(mp, bumps, bump_index_by_root)?)
-            } else {
-                // No proof — recurse into source transactions.
-                for input in tx.inputs.iter().rev() {
-                    if let Some(ref source_tx) = input.source_transaction {
-                        collect(source_tx, bumps, bump_index_by_root, txs, seen)?;
-                    }
-                }
-                None
-            };
-
-            seen.insert(txid);
-            txs.push((tx, path_index));
-            Ok(())
-        }
-
-        collect(self, &mut bumps, &mut bump_index_by_root, &mut txs, &mut seen)?;
-
-        // Serialize BEEF V1.
-        let mut buf = Vec::new();
-        write_u32_le(&mut buf, BEEF_V1)?;
-
-        // BUMPs
-        write_varint(&mut buf, bumps.len() as u64)?;
-        for bump in &bumps {
-            bump.to_binary(&mut buf)?;
-        }
-
-        // Transactions
-        write_varint(&mut buf, txs.len() as u64)?;
-        for (tx, path_index) in &txs {
-            tx.to_binary(&mut buf)?;
-            if let Some(idx) = path_index {
-                buf.push(1u8); // has_bump = true
-                write_varint(&mut buf, *idx as u64)?;
-            } else {
-                buf.push(0u8); // has_bump = false
-            }
-        }
-
         Ok(buf)
     }
 
@@ -1141,31 +1053,5 @@ mod tests {
 
         let valid = spend.validate().expect("spend validation should not error");
         assert!(valid, "signed transaction should verify successfully");
-    }
-
-    #[test]
-    fn test_to_beef_round_trip() {
-        // Parse a known valid BEEF, re-serialize with to_beef(), parse again,
-        // and verify the round-trip produces the same subject transaction.
-        let vectors_json = std::fs::read_to_string("test-vectors/beef_valid.json").unwrap();
-        let vectors: Vec<serde_json::Value> = serde_json::from_str(&vectors_json).unwrap();
-        let original_hex = vectors[0]["hex"].as_str().unwrap();
-        let expected_txid = vectors[0]["txid"].as_str().unwrap();
-
-        // Parse BEEF → Transaction (populates source_transaction + merkle_path)
-        let tx = Transaction::from_beef(original_hex).expect("from_beef should succeed");
-        assert_eq!(tx.id().unwrap(), expected_txid);
-
-        // Re-serialize to BEEF via to_beef()
-        let beef_bytes = tx.to_beef().expect("to_beef should succeed");
-
-        // Verify BEEF V1 header (0x0100BEEF in LE)
-        assert_eq!(&beef_bytes[0..4], &[0x01, 0x00, 0xBE, 0xEF]);
-
-        // Parse the re-serialized BEEF and verify same txid
-        let re_hex: String = beef_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-        let re_parsed = Transaction::from_beef(&re_hex).expect("round-trip from_beef should succeed");
-        assert_eq!(re_parsed.id().unwrap(), expected_txid);
-        assert_eq!(re_parsed.outputs.len(), tx.outputs.len());
     }
 }

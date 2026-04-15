@@ -193,10 +193,10 @@ impl TopicBroadcaster {
 impl Broadcaster for TopicBroadcaster {
     /// Broadcast a transaction to overlay services via SHIP.
     async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
-        let beef = tx.to_beef().map_err(|e| BroadcastFailure {
+        let beef = tx.to_bytes().map_err(|e| BroadcastFailure {
             status: 0,
             code: "ERR_BEEF_SERIALIZE".to_string(),
-            description: format!("Transaction must be serializable to BEEF: {}", e),
+            description: format!("Transaction must be serializable: {}", e),
         })?;
 
         let interested_hosts =
