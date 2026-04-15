@@ -188,16 +188,38 @@ impl TopicBroadcaster {
     }
 }
 
-#[async_trait]
-impl Broadcaster for TopicBroadcaster {
-    /// Broadcast a transaction to overlay services via SHIP.
-    async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
-        let beef = tx.to_beef().map_err(|e| BroadcastFailure {
+impl TopicBroadcaster {
+    /// Broadcast pre-built BEEF bytes to overlay services via SHIP.
+    ///
+    /// Use this when you already have valid BEEF bytes (e.g. from `create_action`
+    /// or `sign_action`) and want to avoid the `Transaction → to_beef()` round-trip.
+    /// The `txid` parameter is used in the success response.
+    pub async fn broadcast_beef(
+        &self,
+        beef: Vec<u8>,
+    ) -> Result<BroadcastResponse, BroadcastFailure> {
+        // Parse the BEEF to extract the txid for the response.
+        let beef_hex: String = beef.iter().map(|b| format!("{:02x}", b)).collect();
+        let tx = Transaction::from_beef(&beef_hex).map_err(|e| BroadcastFailure {
             status: 0,
-            code: "ERR_BEEF_SERIALIZE".to_string(),
-            description: format!("Transaction must be serializable to BEEF: {}", e),
+            code: "ERR_BEEF_PARSE".to_string(),
+            description: format!("Failed to parse BEEF: {}", e),
+        })?;
+        let txid = tx.id().map_err(|e| BroadcastFailure {
+            status: 0,
+            code: "ERR_TXID_COMPUTE".to_string(),
+            description: format!("Failed to compute txid from BEEF: {}", e),
         })?;
 
+        self.broadcast_beef_inner(beef, txid).await
+    }
+
+    /// Shared broadcast implementation that sends BEEF bytes to interested hosts.
+    async fn broadcast_beef_inner(
+        &self,
+        beef: Vec<u8>,
+        txid: String,
+    ) -> Result<BroadcastResponse, BroadcastFailure> {
         let interested_hosts =
             self.find_interested_hosts()
                 .await
@@ -279,12 +301,6 @@ impl Broadcaster for TopicBroadcaster {
             });
         }
 
-        let txid = tx.id().map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "ERR_TXID_COMPUTE".to_string(),
-            description: format!("broadcast succeeded but could not compute txid: {}", e),
-        })?;
-
         Ok(BroadcastResponse {
             status: "success".to_string(),
             txid,
@@ -294,6 +310,26 @@ impl Broadcaster for TopicBroadcaster {
                 if success_count == 1 { "host" } else { "hosts" }
             ),
         })
+    }
+}
+
+#[async_trait]
+impl Broadcaster for TopicBroadcaster {
+    /// Broadcast a transaction to overlay services via SHIP.
+    async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
+        let beef = tx.to_beef().map_err(|e| BroadcastFailure {
+            status: 0,
+            code: "ERR_BEEF_SERIALIZE".to_string(),
+            description: format!("Transaction must be serializable to BEEF: {}", e),
+        })?;
+
+        let txid = tx.id().map_err(|e| BroadcastFailure {
+            status: 0,
+            code: "ERR_TXID_COMPUTE".to_string(),
+            description: format!("broadcast succeeded but could not compute txid: {}", e),
+        })?;
+
+        self.broadcast_beef_inner(beef, txid).await
     }
 }
 
