@@ -1140,25 +1140,39 @@ mod tests {
             // Parse BEEF at the Beef level to get subject tx with full source chain
             let beef = crate::transaction::beef::Beef::from_hex(hex)
                 .unwrap_or_else(|e| panic!("vector {}: from_hex failed: {}", i, e));
-            let tx = beef.into_transaction()
+            let tx = beef
+                .into_transaction()
                 .unwrap_or_else(|e| panic!("vector {}: into_transaction failed: {}", i, e));
 
             // Re-serialize to BEEF
-            let beef_bytes = tx.to_beef()
+            let beef_bytes = tx
+                .to_beef()
                 .unwrap_or_else(|e| panic!("vector {}: to_beef failed: {}", i, e));
 
             // Verify BEEF V1 header
-            assert_eq!(&beef_bytes[0..4], &[0x01, 0x00, 0xBE, 0xEF],
-                "vector {}: wrong BEEF header", i);
+            assert_eq!(
+                &beef_bytes[0..4],
+                &[0x01, 0x00, 0xBE, 0xEF],
+                "vector {}: wrong BEEF header",
+                i
+            );
 
             // Parse back and verify same subject txid
             let re_hex: String = beef_bytes.iter().map(|b| format!("{:02x}", b)).collect();
             let re_parsed = Transaction::from_beef(&re_hex)
                 .unwrap_or_else(|e| panic!("vector {}: round-trip from_beef failed: {}", i, e));
-            assert_eq!(re_parsed.id().unwrap(), tx.id().unwrap(),
-                "vector {}: txid mismatch after round-trip", i);
-            assert_eq!(re_parsed.outputs.len(), tx.outputs.len(),
-                "vector {}: output count mismatch", i);
+            assert_eq!(
+                re_parsed.id().unwrap(),
+                tx.id().unwrap(),
+                "vector {}: txid mismatch after round-trip",
+                i
+            );
+            assert_eq!(
+                re_parsed.outputs.len(),
+                tx.outputs.len(),
+                "vector {}: output count mismatch",
+                i
+            );
         }
     }
 
@@ -1174,26 +1188,29 @@ mod tests {
         let beef_bytes = tx.to_beef().expect("to_beef");
         let result_hex: String = beef_bytes.iter().map(|b| format!("{:02x}", b)).collect();
 
-        assert_eq!(result_hex, original_hex, "round-trip should produce identical bytes");
+        assert_eq!(
+            result_hex, original_hex,
+            "round-trip should produce identical bytes"
+        );
     }
 
     #[test]
     fn test_to_beef_multi_tx_with_source_chain() {
         // Build a transaction with a source transaction that has a merkle path.
         // This exercises the recursive collect into Beef.
+        use crate::script::locking_script::LockingScript;
         use crate::transaction::merkle_path::{MerklePath, MerklePathLeaf};
         use crate::transaction::transaction_input::TransactionInput;
         use crate::transaction::transaction_output::TransactionOutput;
-        use crate::script::locking_script::LockingScript;
 
         // Create a proven parent transaction.
         let mut parent = Transaction::new();
         parent.add_output(TransactionOutput {
             satoshis: Some(50_000),
-            locking_script: LockingScript::from_binary(&vec![0x76, 0xa9, 0x14,
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-                0x11, 0x12, 0x13, 0x14, 0x88, 0xac]),
+            locking_script: LockingScript::from_binary(&vec![
+                0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac,
+            ]),
             change: false,
         });
         let parent_txid = parent.id().unwrap();
@@ -1240,15 +1257,25 @@ mod tests {
 
         // Parse back via Beef and verify structure.
         let re_beef = crate::transaction::beef::Beef::from_hex(
-            &beef_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
-        ).expect("re-parse BEEF");
+            &beef_bytes
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+        )
+        .expect("re-parse BEEF");
 
         assert_eq!(re_beef.bumps.len(), 1, "should have 1 bump");
         assert_eq!(re_beef.txs.len(), 2, "should have 2 txs (parent + child)");
 
         // Proven parent should come before unproven child (topological order).
-        assert!(re_beef.txs[0].bump_index.is_some(), "first tx should be proven parent");
-        assert!(re_beef.txs[1].bump_index.is_none(), "second tx should be unproven child");
+        assert!(
+            re_beef.txs[0].bump_index.is_some(),
+            "first tx should be proven parent"
+        );
+        assert!(
+            re_beef.txs[1].bump_index.is_none(),
+            "second tx should be unproven child"
+        );
     }
 
     #[test]
@@ -1257,17 +1284,20 @@ mod tests {
         let mut tx = Transaction::new();
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&
-                vec![0x6a, 0x02, 0xab, 0xcd],
-            ),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&vec![
+                0x6a, 0x02, 0xab, 0xcd,
+            ]),
             change: false,
         });
 
         let result = tx.to_beef();
         assert!(result.is_err(), "to_beef should fail with no proofs");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("merkle proof") || err.contains("source transaction"),
-            "error should mention missing proofs, got: {}", err);
+        assert!(
+            err.contains("merkle proof") || err.contains("source transaction"),
+            "error should mention missing proofs, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1287,16 +1317,22 @@ mod tests {
         });
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&
-                vec![0x6a, 0x02, 0xab, 0xcd],
-            ),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&vec![
+                0x6a, 0x02, 0xab, 0xcd,
+            ]),
             change: false,
         });
 
         let result = tx.to_beef();
-        assert!(result.is_err(), "to_beef should fail with missing source tx");
+        assert!(
+            result.is_err(),
+            "to_beef should fail with missing source tx"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("no source transaction"),
-            "error should mention missing source transaction, got: {}", err);
+        assert!(
+            err.contains("no source transaction"),
+            "error should mention missing source transaction, got: {}",
+            err
+        );
     }
 }

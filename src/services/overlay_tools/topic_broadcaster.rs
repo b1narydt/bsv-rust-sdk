@@ -129,8 +129,9 @@ impl TopicBroadcaster {
         }
 
         let url = format!("{}/submit", host);
-        let topics_json = serde_json::to_string(&tagged_beef.topics)
-            .map_err(|e| ServicesError::Serialization(format!("failed to serialize X-Topics: {}", e)))?;
+        let topics_json = serde_json::to_string(&tagged_beef.topics).map_err(|e| {
+            ServicesError::Serialization(format!("failed to serialize X-Topics: {}", e))
+        })?;
         let response = self
             .client
             .post(&url)
@@ -287,7 +288,10 @@ impl TopicBroadcaster {
                 description: if details.is_empty() {
                     "All topical hosts have rejected the transaction".to_string()
                 } else {
-                    format!("All topical hosts have rejected the transaction. Details: {}", details)
+                    format!(
+                        "All topical hosts have rejected the transaction. Details: {}",
+                        details
+                    )
                 },
             });
         }

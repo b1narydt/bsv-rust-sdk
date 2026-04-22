@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.82] - 2026-04-15
+
+### Added
+
+- **`Transaction::to_beef()`** (#28) — serializes a transaction and its source chain to BEEF V1 format by delegating to the existing `Beef` struct, so BUMP deduplication, topological sorting, and wire serialization go through one code path instead of an inline reimplementation. Matches TS SDK `Transaction.toBEEF()`.
+- **`TopicBroadcaster::broadcast_beef(Vec<u8>)`** (#28) — broadcasts pre-built BEEF bytes directly. Lets callers that already hold BEEF (e.g. from `create_action` / `sign_action` results) skip the `Transaction → to_beef()` round-trip. `broadcast()` is refactored to share the HTTP/error-collection path via a shared `broadcast_beef_inner()`.
+
+### Fixed
+
+- **`TopicBroadcaster` sent raw tx bytes instead of BEEF** (#28, redo of reverted #26/#27) — overlay SHIP hosts parse bodies with `Transaction.fromBEEF`, so every Rust-SDK submission was rejected with `ERR_ALL_HOSTS_REJECTED`. `broadcast()` now calls `tx.to_beef()` and posts the BEEF body. Returns a clear error when an input lacks `source_transaction` (required to build BEEF) and validates that the assembled BEEF contains at least one BUMP before submitting.
+- **`Beef::into_transaction()` dropped merkle paths on reconstruction** (#28) — proven txs carry their proof via `bump_index` into `self.bumps`, but `into_transaction()` wasn't copying the referenced `MerklePath` onto the subject tx or any source tx in the chain. Result: `from_beef → to_beef` round-trips lost proofs and re-serialized output differed from input. Now attaches `merkle_path` from the bump index on both the subject and any linked source transactions. Also returns an error on out-of-bounds `bump_index` instead of silently skipping, so corrupt BEEF surfaces immediately rather than producing a half-populated `Transaction`.
+- **Silent failures in `TopicBroadcaster` error paths** (#28) — `unwrap_or_default()` on `tx.id()` produced an empty txid string on failure, and `unwrap_or_default()` on the `X-Topics` header silently dropped serialization errors. Both now propagate real errors. Per-host broadcast failures are collected and included in the `ERR_ALL_HOSTS_REJECTED` message instead of being swallowed, so operators can see which hosts rejected and why. The misleading "broadcast succeeded but..." wording on the final error has been corrected.
+
+### Tests
+
+- Added 5 tests covering the BEEF round-trip and broadcaster error paths: `to_beef` round-trip across all `beef_valid.json` vectors, byte-equal re-serialization, multi-tx source chain with topological ordering, missing-merkle-proofs error, missing-source-transaction error. Plus `into_transaction` coverage for merkle-path attachment on the subject (vector 0) and on a 2-tx source chain (vector 1).
+
 ## [0.2.81] - 2026-04-14
 
 ### Fixed

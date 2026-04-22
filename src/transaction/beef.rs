@@ -182,7 +182,8 @@ impl Beef {
             if bi >= self.bumps.len() {
                 return Err(TransactionError::BeefError(format!(
                     "bump_index {} out of bounds (only {} bumps)",
-                    bi, self.bumps.len()
+                    bi,
+                    self.bumps.len()
                 )));
             }
             if tx.merkle_path.is_none() {
