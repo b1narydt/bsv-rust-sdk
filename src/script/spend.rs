@@ -206,11 +206,9 @@ impl Spend {
                     }
                 }
                 Op::OpEndIf => {
-                    if self.if_stack.pop().is_none() {
-                        return Err(ScriptError::InvalidScript(
-                            "OP_ENDIF without OP_IF".to_string(),
-                        ));
-                    }
+                    self.if_stack.pop().ok_or_else(|| {
+                        ScriptError::InvalidScript("OP_ENDIF without OP_IF".to_string())
+                    })?;
                 }
                 _ => {
                     // Skip all other opcodes in false branch
