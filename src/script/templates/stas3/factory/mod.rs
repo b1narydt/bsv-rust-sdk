@@ -8,6 +8,7 @@
 pub mod common;
 pub mod confiscate;
 pub mod freeze;
+pub mod issue;
 pub mod merge;
 pub mod pieces;
 pub mod redeem;
@@ -21,6 +22,7 @@ pub mod unfreeze;
 
 pub use confiscate::{build_confiscate, ConfiscateRequest};
 pub use freeze::{build_freeze, FreezeRequest};
+pub use issue::{build_issue, IssueDestination, IssueRequest, IssueResult};
 pub use merge::{build_merge, MergeRequest};
 pub use pieces::counterparty_script_from_lock;
 pub use redeem::{build_redeem, RedeemRequest};
