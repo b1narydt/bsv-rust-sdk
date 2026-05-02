@@ -8,7 +8,6 @@
 //! P2PKH unlock — this keeps the factory focused and lets callers reuse
 //! their existing P2PKH signing infrastructure.
 
-use crate::primitives::hash::hash256;
 use crate::script::locking_script::LockingScript;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
@@ -16,18 +15,18 @@ use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
     funding_input_descriptor, funding_txid_le, make_p2pkh_lock as make_p2pkh_lock_internal,
-    pubkey_via_wallet, sign_via_wallet, stas_input_descriptor,
+    sign_with_signing_key, stas_input_descriptor,
 };
 use super::types::{FundingInput, TokenInput};
 
@@ -103,25 +102,23 @@ pub async fn build_transfer<W: WalletInterface>(
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
-    let preimage_hash = hash256(&preimage).to_vec();
 
-    // 5. Sign the STAS input via the wallet (Type-42).
-    let sig_with_hash = sign_via_wallet(
+    // 5. Sign with the input's signing key (P2PKH or P2MPKH).
+    //    `sign_with_signing_key` internally hash256s the preimage and
+    //    dispatches to the right authz shape per spec §10.2.
+    let authz = sign_with_signing_key(
         req.wallet,
-        &req.stas_input.triple,
-        preimage_hash,
         req.originator,
+        &req.stas_input.signing_key,
+        &preimage,
+        SIGHASH_DEFAULT as u8,
     )
     .await?;
 
-    // 6. Get the matching pubkey for the same triple.
-    let pubkey_bytes =
-        pubkey_via_wallet(req.wallet, &req.stas_input.triple, req.originator).await?;
-
-    // 7. Funding pointer (txid in LE bytes; tx serialization is BE-hex).
+    // 6. Funding pointer (txid in LE bytes; tx serialization is BE-hex).
     let txid_le_arr = funding_txid_le(&req.funding_input.txid_hex)?;
 
-    // 8. Build the STAS unlocking script.
+    // 7. Build the STAS unlocking script.
     let unlock_bytes = build_unlocking_script(&UnlockParams {
         stas_outputs: vec![StasOutputWitness {
             satoshis: req.stas_input.satoshis,
@@ -140,10 +137,7 @@ pub async fn build_transfer<W: WalletInterface>(
         tx_type: TxType::Regular,
         spend_type: SpendType::Transfer,
         preimage,
-        authz: AuthzWitness::P2pkh {
-            sig: sig_with_hash,
-            pubkey: pubkey_bytes,
-        },
+        authz,
         trailing: TrailingParams::None,
     })?;
     tx.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock_bytes));

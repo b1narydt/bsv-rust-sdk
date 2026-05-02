@@ -26,26 +26,25 @@
 //! wire-format trap that blocks merge — see `pieces.rs` and
 //! `test_factory_merge_2input_engine_verifies` for the parallel deferral.
 
-use crate::primitives::hash::hash256;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, pubkey_via_wallet,
-    sign_via_wallet, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
+    stas_input_descriptor,
 };
 use super::pieces::{counterparty_script_from_lock, split_by_counterparty_script};
 use super::types::{FundingInput, TokenInput};
@@ -206,16 +205,14 @@ pub async fn build_swap_execute<W: WalletInterface>(
             token.satoshis,
             &token.locking_script,
         )?;
-        let preimage_hash = hash256(&preimage).to_vec();
-        let sig_with_hash = sign_via_wallet(
+        let authz = sign_with_signing_key(
             req.wallet,
-            &token.triple,
-            preimage_hash,
             req.originator,
+            &token.signing_key,
+            &preimage,
+            SIGHASH_DEFAULT as u8,
         )
         .await?;
-        let pubkey_bytes =
-            pubkey_via_wallet(req.wallet, &token.triple, req.originator).await?;
 
         // STAS outputs in the unlocking witness: per spec §7 we declare both
         // STAS outputs (positions 1-3 = output 0, 4-6 = output 1) with their
@@ -253,10 +250,7 @@ pub async fn build_swap_execute<W: WalletInterface>(
             // are owner spends of a swap-marked input).
             spend_type: SpendType::SwapCancellation,
             preimage,
-            authz: AuthzWitness::P2pkh {
-                sig: sig_with_hash,
-                pubkey: pubkey_bytes,
-            },
+            authz,
             trailing: TrailingParams::AtomicSwap {
                 merge_vout: other.vout,
                 pieces,

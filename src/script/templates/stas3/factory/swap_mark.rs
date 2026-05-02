@@ -13,26 +13,25 @@
 //! Owner, redemption_pkh, flags, service_fields, and optional_data are
 //! all carried forward byte-identical to the input. Only var2 changes.
 
-use crate::primitives::hash::hash256;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::{ActionData, SwapDescriptor};
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, pubkey_via_wallet,
-    sign_via_wallet, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
+    stas_input_descriptor,
 };
 use super::types::{FundingInput, TokenInput};
 
@@ -100,18 +99,16 @@ pub async fn build_swap_mark<W: WalletInterface>(
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
-    let preimage_hash = hash256(&preimage).to_vec();
 
-    // 5. Sign with the input owner's triple.
-    let sig_with_hash = sign_via_wallet(
+    // 5. Sign with the input owner's signing key (P2PKH or P2MPKH).
+    let authz = sign_with_signing_key(
         req.wallet,
-        &req.stas_input.triple,
-        preimage_hash,
         req.originator,
+        &req.stas_input.signing_key,
+        &preimage,
+        SIGHASH_DEFAULT as u8,
     )
     .await?;
-    let pubkey_bytes =
-        pubkey_via_wallet(req.wallet, &req.stas_input.triple, req.originator).await?;
 
     let txid_le_arr = funding_txid_le(&req.funding_input.txid_hex)?;
 
@@ -136,10 +133,7 @@ pub async fn build_swap_mark<W: WalletInterface>(
         tx_type: TxType::Regular,
         spend_type: SpendType::Transfer,
         preimage,
-        authz: AuthzWitness::P2pkh {
-            sig: sig_with_hash,
-            pubkey: pubkey_bytes,
-        },
+        authz,
         trailing: TrailingParams::None,
     })?;
     tx.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock_bytes));

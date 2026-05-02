@@ -16,35 +16,34 @@
 //! the caller is responsible for the Type-42 derivation that produced
 //! `receive_addr` in the first place.
 
-use crate::primitives::hash::hash256;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
-use super::super::key_triple::KeyTriple;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, pubkey_via_wallet,
-    sign_via_wallet, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
+    stas_input_descriptor,
 };
-use super::types::{FundingInput, TokenInput};
+use super::types::{FundingInput, SigningKey, TokenInput};
 
 /// Inputs to `build_swap_cancel`.
 ///
 /// `stas_input.current_action_data` MUST be `ActionData::Swap(_)`.
-/// `receive_addr_triple` MUST be the triple under which `descriptor.receive_addr`
-/// was derived — its pubkey's HASH160 must match the descriptor's `receive_addr`.
+/// `receive_addr_signing_key` MUST resolve to a pubkey (P2PKH) or MPKH
+/// (multisig) that matches the descriptor's `receive_addr`. Both
+/// shapes are supported per spec §10.2.
 #[derive(Clone, Debug)]
 pub struct SwapCancelRequest<'a, W: WalletInterface> {
     pub wallet: &'a W,
@@ -52,8 +51,10 @@ pub struct SwapCancelRequest<'a, W: WalletInterface> {
     /// Must carry a swap descriptor in `current_action_data`.
     pub stas_input: TokenInput,
     pub funding_input: FundingInput,
-    /// Type-42 triple that derives a pubkey whose HASH160 = descriptor.receive_addr.
-    pub receive_addr_triple: KeyTriple,
+    /// Signing key for the descriptor's `receive_addr` — single-sig
+    /// P2PKH (`triple.into()`) or multisig P2MPKH
+    /// (`SigningKey::Multi { triples, multisig }`).
+    pub receive_addr_signing_key: SigningKey,
     pub change_pkh: [u8; 20],
     pub change_satoshis: u64,
 }
@@ -108,24 +109,22 @@ pub async fn build_swap_cancel<W: WalletInterface>(
         change: false,
     });
 
-    // 5. Sign with the receive_addr_triple (NOT the input owner — receive_addr
-    //    is who can cancel).
+    // 5. Sign with the receive_addr signing key (NOT the input owner —
+    //    receive_addr is who can cancel). May be P2PKH or P2MPKH.
     let preimage = build_preimage(
         &tx,
         0,
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
-    let preimage_hash = hash256(&preimage).to_vec();
-    let sig_with_hash = sign_via_wallet(
+    let authz = sign_with_signing_key(
         req.wallet,
-        &req.receive_addr_triple,
-        preimage_hash,
         req.originator,
+        &req.receive_addr_signing_key,
+        &preimage,
+        SIGHASH_DEFAULT as u8,
     )
     .await?;
-    let pubkey_bytes =
-        pubkey_via_wallet(req.wallet, &req.receive_addr_triple, req.originator).await?;
 
     let txid_le_arr = funding_txid_le(&req.funding_input.txid_hex)?;
 
@@ -149,10 +148,7 @@ pub async fn build_swap_cancel<W: WalletInterface>(
         tx_type: TxType::Regular,
         spend_type: SpendType::SwapCancellation,
         preimage,
-        authz: AuthzWitness::P2pkh {
-            sig: sig_with_hash,
-            pubkey: pubkey_bytes,
-        },
+        authz,
         trailing: TrailingParams::None,
     })?;
     tx.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock_bytes));

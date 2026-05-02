@@ -73,6 +73,7 @@ pub mod factory;
 pub mod flags;
 pub mod key_triple;
 pub mod lock;
+pub mod multisig;
 pub mod owner_address;
 pub mod eac_template;
 pub mod sighash;
@@ -95,6 +96,9 @@ pub use error::Stas3Error;
 pub use flags::{CONFISCATABLE, FREEZABLE};
 pub use key_triple::KeyTriple;
 pub use lock::{build_locking_script, LockParams};
+pub use multisig::{
+    p2mpkh_locking_script_bytes, MultisigScript, MAX_MULTISIG_KEYS, MIN_MULTISIG_KEYS,
+};
 pub use owner_address::OwnerAddress;
 pub use eac_template::{build_eac_template, EacFieldSlot, EacTemplate};
 
@@ -128,7 +132,7 @@ pub use factory::{
     build_confiscate, build_freeze, build_merge, build_redeem, build_split,
     build_swap_cancel, build_swap_execute, build_swap_mark, build_transfer,
     build_unfreeze, ConfiscateRequest, FreezeRequest, FundingInput, MergeRequest,
-    RedeemRequest, SplitDestination, SplitRequest, SwapCancelRequest,
+    RedeemRequest, SigningKey, SplitDestination, SplitRequest, SwapCancelRequest,
     SwapExecuteRequest, SwapMarkRequest, TokenInput, TransferRequest,
     UnfreezeRequest,
 };
@@ -184,6 +188,40 @@ mod integration_tests {
         let mut pkh = [0u8; 20];
         pkh.copy_from_slice(&hash160(&pk.public_key.to_der()));
         pkh
+    }
+
+    /// Resolve a Type-42 triple to its `PublicKey`. Mirrors `derive_pkh`
+    /// but returns the full public key (33-byte compressed) — used by
+    /// the MPKH/multisig integration tests to assemble the redeem-script
+    /// pubkey vector.
+    async fn derive_pubkey(
+        wallet: &ProtoWallet,
+        protocol: &str,
+        key_id: &str,
+    ) -> crate::primitives::public_key::PublicKey {
+        let pk = wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(Protocol {
+                        security_level: 2,
+                        protocol: protocol.to_string(),
+                    }),
+                    key_id: Some(key_id.to_string()),
+                    counterparty: Some(Counterparty {
+                        counterparty_type: CounterpartyType::Self_,
+                        public_key: None,
+                    }),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: Some(true),
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        pk.public_key
     }
 
     fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
@@ -491,7 +529,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -516,6 +554,217 @@ mod integration_tests {
         // 4. THE GATE: engine-verify the STAS input on the factory-built tx.
         let valid = verify_input(&tx, 0, &stas_lock, stas_amount).unwrap();
         assert!(valid, "engine rejected the factory-built transfer spend");
+    }
+
+    /// Wave-2A.3 gate: MPKH/multisig owner signing across the factory
+    /// pipeline. Mints STAS-3 tokens whose `owner_pkh` is the 20-byte
+    /// `MPKH` of an `M`-of-`N` multisig redeem script (spec §10.2 P2MPKH
+    /// path), transfers them via `SigningKey::Multi { triples, multisig }`,
+    /// and engine-verifies the produced unlock against the lock.
+    ///
+    /// Three sub-shapes exercised by this single test (one assertion
+    /// helper, three call sites — each tagged with the variant):
+    ///   - 2-of-3 (canonical small-multisig case)
+    ///   - 3-of-5 (max threshold, max keys per spec)
+    ///   - 1-of-1 (collapses to a single-sig but still exercises the
+    ///     P2MPKH wire format — useful as a structural sanity check
+    ///     that the P2MPKH path's `OP_0 sig redeem` shape engine-verifies
+    ///     for the trivial threshold).
+    #[tokio::test]
+    async fn test_factory_transfer_with_mpkh_owner_engine_verifies() {
+        use super::factory::types::SigningKey;
+        use super::factory::{build_transfer, FundingInput, TokenInput, TransferRequest};
+        use super::multisig::MultisigScript;
+
+        // Helper closure: mint a STAS-3 UTXO at `owner_mpkh`, then
+        // transfer it via `signing_key`. Returns whether the engine
+        // accepted the spend, plus the produced tx for further
+        // assertions.
+        async fn run_mpkh_transfer_case(
+            owner_root: PrivateKey,
+            funding_root: PrivateKey,
+            triples: Vec<super::key_triple::KeyTriple>,
+            multisig: MultisigScript,
+            label: &'static str,
+        ) {
+            let owner_wallet = ProtoWallet::new(owner_root);
+            let funding_wallet = ProtoWallet::new(funding_root);
+
+            let owner_mpkh = multisig.mpkh();
+            let new_owner_pkh = derive_pkh(&owner_wallet, "stas3owner", "dest").await;
+            let funding_pkh = derive_pkh(&funding_wallet, "stas3fuel", "1").await;
+            let redemption_pkh = [0xab; 20];
+
+            // Build the STAS lock with `owner_pkh = MPKH` per spec §10.2.
+            let stas_amount: u64 = 10_000;
+            let funding_amount: u64 = 5_000;
+            let stas_lock = build_locking_script(&LockParams {
+                owner_pkh: owner_mpkh,
+                action_data: ActionData::Passive(vec![]),
+                redemption_pkh,
+                flags: 0,
+                service_fields: vec![],
+                optional_data: vec![],
+            })
+            .unwrap();
+
+            // Source tx: STAS at vout 0, funding at vout 1.
+            let mut source_tx = Transaction::new();
+            source_tx.outputs.push(TransactionOutput {
+                satoshis: Some(stas_amount),
+                locking_script: stas_lock.clone(),
+                change: false,
+            });
+            source_tx.outputs.push(TransactionOutput {
+                satoshis: Some(funding_amount),
+                locking_script: make_p2pkh_lock(&funding_pkh),
+                change: false,
+            });
+            let source_txid_hex = source_tx.id().expect("source tx id");
+
+            // Build the transfer with a `SigningKey::Multi` for the STAS
+            // input. The factory signs with each triple in input order
+            // and emits an `AuthzWitness::P2mpkh` (OP_0 sig...sig redeem).
+            let req = TransferRequest {
+                wallet: &owner_wallet,
+                originator: None,
+                stas_input: TokenInput {
+                    txid_hex: source_txid_hex.clone(),
+                    vout: 0,
+                    satoshis: stas_amount,
+                    locking_script: stas_lock.clone(),
+                    signing_key: SigningKey::Multi {
+                        triples,
+                        multisig: multisig.clone(),
+                    },
+                    current_action_data: ActionData::Passive(vec![]),
+                    source_tx_bytes: None,
+                },
+                funding_input: FundingInput {
+                    txid_hex: source_txid_hex.clone(),
+                    vout: 1,
+                    satoshis: funding_amount,
+                    locking_script: make_p2pkh_lock(&funding_pkh),
+                    triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                },
+                destination_owner_pkh: new_owner_pkh,
+                redemption_pkh,
+                flags: 0,
+                service_fields: vec![],
+                optional_data: vec![],
+                note: None,
+                change_pkh: funding_pkh,
+                change_satoshis: funding_amount - 200,
+            };
+            let tx = build_transfer(req).await.unwrap();
+
+            // Engine-verify the STAS input.
+            let result = verify_input(&tx, 0, &stas_lock, stas_amount);
+            match &result {
+                Ok(true) => {}
+                Ok(false) => panic!(
+                    "[{label}] engine rejected MPKH transfer (Ok(false))\n\
+                     unlocking_script bytes: {}",
+                    tx.inputs[0]
+                        .unlocking_script
+                        .as_ref()
+                        .map(|s| hex_dump(&s.to_binary()))
+                        .unwrap_or_default()
+                ),
+                Err(e) => panic!(
+                    "[{label}] engine errored on MPKH transfer: {e:?}\n\
+                     unlocking_script bytes: {}",
+                    tx.inputs[0]
+                        .unlocking_script
+                        .as_ref()
+                        .map(|s| hex_dump(&s.to_binary()))
+                        .unwrap_or_default()
+                ),
+            }
+            assert!(
+                result.unwrap(),
+                "[{label}] engine rejected the factory-built MPKH transfer spend"
+            );
+        }
+
+        // ---- 2-of-3 (canonical small multisig) ----
+        {
+            let owner_root = PrivateKey::from_hex("01").unwrap();
+            let owner_wallet = ProtoWallet::new(owner_root.clone());
+            let pk_1 = derive_pubkey(&owner_wallet, "stas3owner", "ms-1").await;
+            let pk_2 = derive_pubkey(&owner_wallet, "stas3owner", "ms-2").await;
+            let pk_3 = derive_pubkey(&owner_wallet, "stas3owner", "ms-3").await;
+            let multisig =
+                MultisigScript::new(2, vec![pk_1, pk_2, pk_3]).expect("2-of-3 valid");
+            // Threshold 2 → caller supplies 2 triples (positions 1, 2).
+            let triples = vec![
+                super::key_triple::KeyTriple::self_under("stas3owner", "ms-1"),
+                super::key_triple::KeyTriple::self_under("stas3owner", "ms-2"),
+            ];
+            run_mpkh_transfer_case(
+                owner_root,
+                PrivateKey::from_hex("02").unwrap(),
+                triples,
+                multisig,
+                "2-of-3",
+            )
+            .await;
+        }
+
+        // ---- 3-of-5 (max-spec multisig) ----
+        {
+            let owner_root = PrivateKey::from_hex("03").unwrap();
+            let owner_wallet = ProtoWallet::new(owner_root.clone());
+            let mut pks = Vec::with_capacity(5);
+            for i in 1..=5 {
+                pks.push(
+                    derive_pubkey(&owner_wallet, "stas3owner", &format!("ms-3of5-{i}")).await,
+                );
+            }
+            let multisig = MultisigScript::new(3, pks).expect("3-of-5 valid");
+            // Threshold 3 → caller supplies 3 triples (positions 1, 2, 3).
+            let triples = (1..=3)
+                .map(|i| {
+                    super::key_triple::KeyTriple::self_under(
+                        "stas3owner",
+                        format!("ms-3of5-{i}"),
+                    )
+                })
+                .collect();
+            run_mpkh_transfer_case(
+                owner_root,
+                PrivateKey::from_hex("04").unwrap(),
+                triples,
+                multisig,
+                "3-of-5",
+            )
+            .await;
+        }
+
+        // ---- 1-of-1 (single-sig collapse via the P2MPKH path) ----
+        // Per spec §10.2, the P2MPKH wire format works for all
+        // 1 <= m <= n <= 5 — including the trivial 1-of-1 where the
+        // redeem script holds a single pubkey. Useful as a structural
+        // sanity check that the engine accepts the `OP_0 sig redeem`
+        // form even when there's only one signature.
+        {
+            let owner_root = PrivateKey::from_hex("05").unwrap();
+            let owner_wallet = ProtoWallet::new(owner_root.clone());
+            let pk_1 = derive_pubkey(&owner_wallet, "stas3owner", "ms-1of1").await;
+            let multisig = MultisigScript::new(1, vec![pk_1]).expect("1-of-1 valid");
+            let triples = vec![super::key_triple::KeyTriple::self_under(
+                "stas3owner",
+                "ms-1of1",
+            )];
+            run_mpkh_transfer_case(
+                owner_root,
+                PrivateKey::from_hex("06").unwrap(),
+                triples,
+                multisig,
+                "1-of-1",
+            )
+            .await;
+        }
     }
 
     /// Phase 5b gate (split, 2-way): build a 1000-sat STAS UTXO and split it
@@ -568,7 +817,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -654,7 +903,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -747,7 +996,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3mint", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -935,7 +1184,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_a,
                     locking_script: lock_a.clone(),
-                    triple: super::key_triple::KeyTriple::self_under("stas3owner", "a"),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "a")),
                     current_action_data: ActionData::Passive(vec![]),
                     source_tx_bytes: Some(src_a_bytes),
                 },
@@ -944,7 +1193,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_b,
                     locking_script: lock_b.clone(),
-                    triple: super::key_triple::KeyTriple::self_under("stas3owner", "b"),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "b")),
                     current_action_data: ActionData::Passive(vec![]),
                     source_tx_bytes: Some(src_b_bytes),
                 },
@@ -1062,7 +1311,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -1073,10 +1322,10 @@ mod integration_tests {
                 locking_script: make_p2pkh_lock(&funding_pkh),
                 triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
             },
-            freeze_authority_triple: super::key_triple::KeyTriple::self_under(
+            freeze_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
                 "stas3freeze",
                 "1",
-            ),
+            )),
             change_pkh: funding_pkh,
             change_satoshis: funding_amount - 200,
         };
@@ -1164,7 +1413,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Frozen(vec![]),
                 source_tx_bytes: None,
             },
@@ -1175,10 +1424,10 @@ mod integration_tests {
                 locking_script: make_p2pkh_lock(&funding_pkh),
                 triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
             },
-            freeze_authority_triple: super::key_triple::KeyTriple::self_under(
+            freeze_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
                 "stas3freeze",
                 "1",
-            ),
+            )),
             change_pkh: funding_pkh,
             change_satoshis: funding_amount - 200,
         };
@@ -1269,7 +1518,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -1280,10 +1529,10 @@ mod integration_tests {
                 locking_script: make_p2pkh_lock(&funding_pkh),
                 triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
             },
-            confiscation_authority_triple: super::key_triple::KeyTriple::self_under(
+            confiscation_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
                 "stas3confiscate",
                 "1",
-            ),
+            )),
             destination_owner_pkh: destination_pkh,
             change_pkh: funding_pkh,
             change_satoshis: funding_amount - 200,
@@ -1379,7 +1628,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -1488,7 +1737,7 @@ mod integration_tests {
                 locking_script: stas_lock.clone(),
                 // The input's owner triple — not used for signing here, but
                 // the type still requires it.
-                triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Swap(descriptor.clone()),
                 source_tx_bytes: None,
             },
@@ -1499,10 +1748,10 @@ mod integration_tests {
                 locking_script: make_p2pkh_lock(&funding_pkh),
                 triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
             },
-            receive_addr_triple: super::key_triple::KeyTriple::self_under(
+            receive_addr_signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
                 "stas3swap",
                 "receive-1",
-            ),
+            )),
             change_pkh: funding_pkh,
             change_satoshis: funding_amount - 200,
         };
@@ -1719,7 +1968,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_a,
                     locking_script: lock_a.clone(),
-                    triple: super::key_triple::KeyTriple::self_under("stas3owner", "a"),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "a")),
                     current_action_data: ActionData::Swap(descriptor_a),
                     source_tx_bytes: Some(src_a_bytes),
                 },
@@ -1728,7 +1977,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_b,
                     locking_script: lock_b.clone(),
-                    triple: super::key_triple::KeyTriple::self_under("stas3owner", "b"),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "b")),
                     current_action_data: ActionData::Swap(descriptor_b),
                     source_tx_bytes: Some(src_b_bytes),
                 },
@@ -1825,7 +2074,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };
@@ -1910,7 +2159,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };
@@ -1997,7 +2246,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            triple: super::key_triple::KeyTriple::self_under("stas3owner", "1"),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };

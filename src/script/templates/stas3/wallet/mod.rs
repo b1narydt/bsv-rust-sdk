@@ -64,7 +64,7 @@ use crate::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 use super::constants::{BASKET_FUEL, BASKET_TOKENS};
 use super::decode::decode_locking_script;
 use super::error::Stas3Error;
-use super::factory::types::{FundingInput, TokenInput};
+use super::factory::types::{FundingInput, SigningKey, TokenInput};
 use super::key_triple::KeyTriple;
 
 mod custom_instructions;
@@ -320,7 +320,12 @@ fn output_to_token_input(o: &Output) -> Result<TokenInput, Stas3Error> {
         vout,
         satoshis: o.satoshis,
         locking_script,
-        triple,
+        // Default to single-sig P2PKH ownership. Multisig-owned tokens
+        // are first-class but the basket-aware path can't yet
+        // distinguish them from `customInstructions` alone — callers
+        // that own multisig tokens build the `TokenInput` directly via
+        // `SigningKey::Multi { triples, multisig }`.
+        signing_key: SigningKey::P2pkh(triple),
         current_action_data: decoded.action_data,
         // For non-merge spends, source_tx_bytes can stay None. Merge needs
         // it; we'll plumb it through a separate `find_token_with_source`

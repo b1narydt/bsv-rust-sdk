@@ -29,5 +29,5 @@ pub use swap_cancel::{build_swap_cancel, SwapCancelRequest};
 pub use swap_execute::{build_swap_execute, SwapExecuteRequest};
 pub use swap_mark::{build_swap_mark, SwapMarkRequest};
 pub use transfer::{build_transfer, TransferRequest};
-pub use types::{FundingInput, TokenInput};
+pub use types::{FundingInput, SigningKey, TokenInput};
 pub use unfreeze::{build_unfreeze, UnfreezeRequest};

@@ -4,6 +4,7 @@
 //! confiscate). These helpers exist to keep each factory module short and
 //! focused on its operation-specific shape.
 
+use crate::primitives::hash::hash256;
 use crate::script::locking_script::LockingScript;
 use crate::transaction::transaction_input::TransactionInput;
 use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInterface};
@@ -11,7 +12,8 @@ use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInt
 use super::super::constants::SIGHASH_DEFAULT;
 use super::super::error::Stas3Error;
 use super::super::key_triple::KeyTriple;
-use super::types::{FundingInput, TokenInput};
+use super::super::unlock::AuthzWitness;
+use super::types::{FundingInput, SigningKey, TokenInput};
 
 /// Build a standard 25-byte P2PKH locking script.
 pub fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
@@ -25,21 +27,6 @@ pub fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
     LockingScript::from_binary(&bytes)
 }
 
-/// Canonical 47-byte STAS-3 P2MPKH locking-script suffix (spec §10.2).
-/// Reference assembly:
-/// `OP_EQUALVERIFY OP_SIZE 0x21 OP_EQUAL OP_IF OP_CHECKSIG OP_ELSE
-///  OP_1 OP_SPLIT (OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF)×5
-///  OP_CHECKMULTISIG OP_ENDIF`
-const P2MPKH_LOCKING_SUFFIX: [u8; 47] = [
-    0x88, 0x82, 0x01, 0x21, 0x87, 0x63, 0xac, 0x67,
-    0x51, 0x7f, 0x51, 0x7f, 0x73, 0x63, 0x7c, 0x7f, 0x68,
-    0x51, 0x7f, 0x73, 0x63, 0x7c, 0x7f, 0x68,
-    0x51, 0x7f, 0x73, 0x63, 0x7c, 0x7f, 0x68,
-    0x51, 0x7f, 0x73, 0x63, 0x7c, 0x7f, 0x68,
-    0x51, 0x7f, 0x73, 0x63, 0x7c, 0x7f, 0x68,
-    0xae, 0x68,
-];
-
 /// Build the canonical 70-byte STAS-3 P2MPKH locking script (spec §10.2).
 ///
 /// Layout: `[3-byte prefix OP_DUP OP_HASH160 PUSH20][20-byte MPKH][47-byte suffix]`.
@@ -49,12 +36,9 @@ const P2MPKH_LOCKING_SUFFIX: [u8; 47] = [
 /// suffix `888201218763ac...ae68`) when the input owner equals the
 /// redemption_pkh and var2 is empty.
 pub fn build_p2mpkh_locking_script(mpkh: &[u8; 20]) -> LockingScript {
-    let mut bytes = Vec::with_capacity(70);
-    bytes.push(0x76); // OP_DUP
-    bytes.push(0xa9); // OP_HASH160
-    bytes.push(0x14); // PUSH20
-    bytes.extend_from_slice(mpkh);
-    bytes.extend_from_slice(&P2MPKH_LOCKING_SUFFIX);
+    // Single-sourced wire format: defer to multisig::p2mpkh_locking_script_bytes
+    // so we don't carry two copies of the canonical 70-byte body.
+    let bytes = super::super::multisig::p2mpkh_locking_script_bytes(*mpkh);
     LockingScript::from_binary(&bytes)
 }
 
@@ -148,4 +132,120 @@ pub async fn pubkey_via_wallet<W: WalletInterface>(
         .await
         .map_err(|e| Stas3Error::InvalidScript(format!("STAS input pubkey: {e}")))?;
     Ok(pk_result.public_key.to_der())
+}
+
+/// Sign the given STAS-3 input preimage under the supplied
+/// [`SigningKey`] shape and return an [`AuthzWitness`] ready to plug
+/// into [`super::super::unlock::UnlockParams`]. This is the single
+/// entry point every factory uses to authorize a STAS-3 input — it
+/// transparently covers both single-sig P2PKH owners and m-of-n
+/// P2MPKH multisig owners per spec §10.2.
+///
+/// `preimage` is the BIP-143 preimage **bytes** (not the preimage
+/// hash); the function applies `hash256` internally so the caller
+/// doesn't have to remember which side of the hash boundary each key
+/// arm expects.
+///
+/// `sighash_byte` is appended to each DER signature. Callers should
+/// pass [`SIGHASH_DEFAULT`] (`0x41`, `SIGHASH_ALL | SIGHASH_FORKID`)
+/// unless they have a specific reason to deviate.
+///
+/// For [`SigningKey::Multi`], the function:
+///   1. Validates `triples.len() == multisig.threshold()`.
+///   2. Signs the same preimage hash under each triple, in input
+///      order (matching the order in which the corresponding
+///      pubkeys appear in the redeem script — required by
+///      `OP_CHECKMULTISIG`).
+///   3. Returns `AuthzWitness::P2mpkh { sigs, redeem_script }` where
+///      `redeem_script` is the canonical
+///      [`super::super::multisig::MultisigScript::to_serialized_bytes`]
+///      buffer.
+///
+/// The function does NOT verify that the multisig's pubkey set
+/// actually matches the wallet-derived pubkeys for the supplied
+/// triples — that invariant is the caller's responsibility (callers
+/// typically derive both the redeem script and the triples from a
+/// single upstream key-derivation pass, so an internal mismatch would
+/// be a program bug, not a runtime error).
+pub async fn sign_with_signing_key<W: WalletInterface>(
+    wallet: &W,
+    originator: Option<&str>,
+    signing_key: &SigningKey,
+    preimage: &[u8],
+    sighash_byte: u8,
+) -> Result<AuthzWitness, Stas3Error> {
+    signing_key.validate()?;
+    let preimage_hash = hash256(preimage).to_vec();
+
+    match signing_key {
+        SigningKey::P2pkh(triple) => {
+            let sig_with_hash = sign_hash_with_byte(
+                wallet,
+                triple,
+                preimage_hash,
+                originator,
+                sighash_byte,
+            )
+            .await?;
+            let pubkey = pubkey_via_wallet(wallet, triple, originator).await?;
+            Ok(AuthzWitness::P2pkh {
+                sig: sig_with_hash,
+                pubkey,
+            })
+        }
+        SigningKey::Multi { triples, multisig } => {
+            // Sign with each triple, in the order the caller supplied
+            // (which must match the corresponding pubkey order in the
+            // redeem script — caller's responsibility per spec §10.2 /
+            // OP_CHECKMULTISIG semantics).
+            let mut sigs: Vec<Vec<u8>> = Vec::with_capacity(triples.len());
+            for triple in triples {
+                let sig = sign_hash_with_byte(
+                    wallet,
+                    triple,
+                    preimage_hash.clone(),
+                    originator,
+                    sighash_byte,
+                )
+                .await?;
+                sigs.push(sig);
+            }
+            Ok(AuthzWitness::P2mpkh {
+                sigs,
+                redeem_script: multisig.to_serialized_bytes(),
+            })
+        }
+    }
+}
+
+/// Internal: sign a hash under a triple and append the requested
+/// sighash byte. Wraps `wallet.create_signature` directly so the byte
+/// is always the caller-specified one (rather than unconditionally
+/// `SIGHASH_DEFAULT` as in [`sign_via_wallet`]).
+async fn sign_hash_with_byte<W: WalletInterface>(
+    wallet: &W,
+    triple: &KeyTriple,
+    hash_to_sign: Vec<u8>,
+    originator: Option<&str>,
+    sighash_byte: u8,
+) -> Result<Vec<u8>, Stas3Error> {
+    let sig_result = wallet
+        .create_signature(
+            CreateSignatureArgs {
+                protocol_id: triple.protocol_id.clone(),
+                key_id: triple.key_id.clone(),
+                counterparty: triple.counterparty.clone(),
+                data: None,
+                hash_to_directly_sign: Some(hash_to_sign),
+                privileged: false,
+                privileged_reason: None,
+                seek_permission: None,
+            },
+            originator,
+        )
+        .await
+        .map_err(|e| Stas3Error::InvalidScript(format!("STAS input sign: {e}")))?;
+    let mut sig_with_hash = sig_result.signature;
+    sig_with_hash.push(sighash_byte);
+    Ok(sig_with_hash)
 }

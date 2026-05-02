@@ -12,44 +12,46 @@
 //! HASH160 of the freeze authority's pubkey. The caller passes the matching
 //! Type-42 triple via `freeze_authority_triple`.
 
-use crate::primitives::hash::hash256;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::flags;
-use super::super::key_triple::KeyTriple;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, pubkey_via_wallet,
-    sign_via_wallet, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
+    stas_input_descriptor,
 };
-use super::types::{FundingInput, TokenInput};
+use super::types::{FundingInput, SigningKey, TokenInput};
 
 /// Inputs to `build_freeze`.
 ///
 /// The `stas_input` MUST have FREEZABLE set in its flags byte. The
-/// `freeze_authority_triple` MUST resolve to a pubkey whose HASH160 matches
-/// the input lock's `service_fields[0]`.
+/// `freeze_authority` SigningKey MUST resolve to a pubkey (P2PKH) or
+/// MPKH (multisig) that matches the input lock's `service_fields[0]`.
+/// Both single-sig and m-of-n multisig freeze authorities are
+/// supported per spec §10.2.
 #[derive(Clone, Debug)]
 pub struct FreezeRequest<'a, W: WalletInterface> {
     pub wallet: &'a W,
     pub originator: Option<&'a str>,
     pub stas_input: TokenInput,
     pub funding_input: FundingInput,
-    /// Type-42 triple for the freeze authority key — signs the spend.
-    pub freeze_authority_triple: KeyTriple,
+    /// Signing key for the freeze authority — single-sig P2PKH (a
+    /// `KeyTriple`, via `triple.into()`) or multisig P2MPKH
+    /// (`SigningKey::Multi { triples, multisig }`).
+    pub freeze_authority: SigningKey,
     pub change_pkh: [u8; 20],
     pub change_satoshis: u64,
 }
@@ -116,23 +118,22 @@ pub async fn build_freeze<W: WalletInterface>(
         change: false,
     });
 
-    // 6. Sign with the FREEZE AUTHORITY (not the input owner).
+    // 6. Sign with the FREEZE AUTHORITY (not the input owner). May be
+    //    P2PKH (single triple) or P2MPKH multisig per spec §10.2.
     let preimage = build_preimage(
         &tx,
         0,
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
-    let preimage_hash = hash256(&preimage).to_vec();
-    let sig_with_hash = sign_via_wallet(
+    let authz = sign_with_signing_key(
         req.wallet,
-        &req.freeze_authority_triple,
-        preimage_hash,
         req.originator,
+        &req.freeze_authority,
+        &preimage,
+        SIGHASH_DEFAULT as u8,
     )
     .await?;
-    let pubkey_bytes =
-        pubkey_via_wallet(req.wallet, &req.freeze_authority_triple, req.originator).await?;
 
     let txid_le_arr = funding_txid_le(&req.funding_input.txid_hex)?;
 
@@ -157,10 +158,7 @@ pub async fn build_freeze<W: WalletInterface>(
         tx_type: TxType::Regular,
         spend_type: SpendType::FreezeUnfreeze,
         preimage,
-        authz: AuthzWitness::P2pkh {
-            sig: sig_with_hash,
-            pubkey: pubkey_bytes,
-        },
+        authz,
         trailing: TrailingParams::None,
     })?;
     tx.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock_bytes));

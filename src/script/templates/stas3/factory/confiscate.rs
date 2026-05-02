@@ -17,44 +17,46 @@
 //! ordering). The caller passes the matching Type-42 triple via
 //! `confiscation_authority_triple`.
 
-use crate::primitives::hash::hash256;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
-use super::super::constants::STAS3_TX_VERSION;
+use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
 use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::flags;
-use super::super::key_triple::KeyTriple;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
 use super::super::spend_type::{SpendType, TxType};
 use super::super::unlock::{
-    build_unlocking_script, AuthzWitness, ChangeWitness, FundingPointer, StasOutputWitness,
+    build_unlocking_script, ChangeWitness, FundingPointer, StasOutputWitness,
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, pubkey_via_wallet,
-    sign_via_wallet, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
+    stas_input_descriptor,
 };
-use super::types::{FundingInput, TokenInput};
+use super::types::{FundingInput, SigningKey, TokenInput};
 
 /// Inputs to `build_confiscate`.
 ///
 /// The `stas_input` MUST have CONFISCATABLE set in its flags byte. The
-/// `confiscation_authority_triple` MUST resolve to a pubkey whose HASH160
-/// matches the CONFISCATABLE service field on the input lock.
+/// `confiscation_authority` SigningKey MUST resolve to a pubkey
+/// (P2PKH) or MPKH (multisig) that matches the CONFISCATABLE service
+/// field on the input lock. Both single-sig and m-of-n multisig
+/// confiscation authorities are supported per spec §10.2.
 #[derive(Clone, Debug)]
 pub struct ConfiscateRequest<'a, W: WalletInterface> {
     pub wallet: &'a W,
     pub originator: Option<&'a str>,
     pub stas_input: TokenInput,
     pub funding_input: FundingInput,
-    /// Type-42 triple for the confiscation authority key — signs the spend.
-    pub confiscation_authority_triple: KeyTriple,
+    /// Signing key for the confiscation authority — single-sig P2PKH
+    /// (a `KeyTriple`, via `triple.into()`) or multisig P2MPKH
+    /// (`SigningKey::Multi { triples, multisig }`).
+    pub confiscation_authority: SigningKey,
     /// The new owner of the confiscated UTXO (typically a regulator).
     pub destination_owner_pkh: [u8; 20],
     pub change_pkh: [u8; 20],
@@ -107,25 +109,19 @@ pub async fn build_confiscate<W: WalletInterface>(
         change: false,
     });
 
-    // 5. Sign with the CONFISCATION AUTHORITY.
+    // 5. Sign with the CONFISCATION AUTHORITY. May be P2PKH or P2MPKH.
     let preimage = build_preimage(
         &tx,
         0,
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
-    let preimage_hash = hash256(&preimage).to_vec();
-    let sig_with_hash = sign_via_wallet(
+    let authz = sign_with_signing_key(
         req.wallet,
-        &req.confiscation_authority_triple,
-        preimage_hash,
         req.originator,
-    )
-    .await?;
-    let pubkey_bytes = pubkey_via_wallet(
-        req.wallet,
-        &req.confiscation_authority_triple,
-        req.originator,
+        &req.confiscation_authority,
+        &preimage,
+        SIGHASH_DEFAULT as u8,
     )
     .await?;
 
@@ -151,10 +147,7 @@ pub async fn build_confiscate<W: WalletInterface>(
         tx_type: TxType::Regular,
         spend_type: SpendType::Confiscation,
         preimage,
-        authz: AuthzWitness::P2pkh {
-            sig: sig_with_hash,
-            pubkey: pubkey_bytes,
-        },
+        authz,
         trailing: TrailingParams::None,
     })?;
     tx.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock_bytes));
