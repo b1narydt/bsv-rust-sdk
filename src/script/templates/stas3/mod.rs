@@ -18,8 +18,8 @@
 //! - A high-level wallet wrapper ([`Stas3Wallet`]) that owns Type-42
 //!   key derivation and basket management
 //! - Engine-side verification ([`verify_input`])
-//! - The EAC schema overlay ([`build_eac_lock`], [`EacFields`]) and a
-//!   Runar template ([`build_eac_runar_template`])
+//! - The EAC schema overlay ([`build_eac_lock`], [`EacFields`]) and an
+//!   EAC byte-template layout exporter ([`build_eac_template`])
 //!
 //! ## Type-42 key policy (spec §1A)
 //!
@@ -74,7 +74,7 @@ pub mod flags;
 pub mod key_triple;
 pub mod lock;
 pub mod owner_address;
-pub mod runar;
+pub mod eac_template;
 pub mod sighash;
 pub mod spend_type;
 pub mod unlock;
@@ -96,7 +96,22 @@ pub use flags::{CONFISCATABLE, FREEZABLE};
 pub use key_triple::KeyTriple;
 pub use lock::{build_locking_script, LockParams};
 pub use owner_address::OwnerAddress;
-pub use runar::{build_eac_runar_template, EacFieldSlot, EacRunarTemplate};
+pub use eac_template::{build_eac_template, EacFieldSlot, EacTemplate};
+
+// Deprecated re-exports under the old names for one-release backwards
+// compatibility. The historical `runar` naming was misleading: the file
+// only exposed an EAC byte-template layout, not an integration with the
+// icellan/runar multi-language smart-contract compiler.
+#[deprecated(
+    since = "0.2.83",
+    note = "renamed: see EacTemplate; runar.rs only exposed an EAC byte-template layout, not a Runar runtime integration"
+)]
+pub use eac_template::EacTemplate as EacRunarTemplate;
+#[deprecated(
+    since = "0.2.83",
+    note = "renamed: see build_eac_template"
+)]
+pub use eac_template::build_eac_template as build_eac_runar_template;
 pub use sighash::{build_preimage, STAS3_SIGHASH_SCOPE};
 pub use spend_type::{SpendType, TxType};
 pub use unlock::{

@@ -383,7 +383,7 @@ src/
         swap_execute.rs
         swap_cancel.rs
       eac.rs                        # MetaWatt EAC field schema + builders
-      runar.rs                      # Runar atomic-mint helpers (template constants for embed)
+      eac_template.rs               # EAC byte-template layout (slot offsets for covenant authors)
       wallet.rs                     # Stas3Wallet<W: WalletInterface> high-level wrapper
       verify.rs                     # engine-verify helpers (script interpreter wiring)
 ```
@@ -496,7 +496,7 @@ The STAS-3 engine does NOT run because no STAS-3 input is being spent. The new E
 All `[u8; 20]` parameters here are **assumed to be Type-42 derived** by the caller (the wallet wrapper, before constructing the Runar event). The helper performs no derivation and exposes no raw-key API.
 
 ```rust
-// In bsv::tokens::stas3::runar
+// In bsv::tokens::stas3::eac_template
 pub const STAS3_ENGINE_BYTES: &[u8; 2899] = include_bytes!("../../script/templates/stas3_body.bin");
 
 pub struct Stas3LockingTemplate {
@@ -525,7 +525,7 @@ pub struct EacFieldSlot {
 /// # Returns
 /// A template the Runar contract embeds in its covenant logic to enforce
 /// `output[i]` matches a valid EAC.
-pub fn build_eac_runar_template(
+pub fn build_eac_template(
     proto_id: [u8; 20],            // Type-42 PKH of the issuer
     flags: u8,
     freeze_auth: [u8; 20],          // Type-42 PKH/MPKH of freeze authority

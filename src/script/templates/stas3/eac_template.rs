@@ -1,10 +1,15 @@
-//! Runar template export (spec §8.6).
+//! EAC (Energy Attribute Certificate) template byte-layout exporter.
 //!
-//! Exposes the byte layout of an EAC locking script with explicit
-//! per-field slot offsets. A Runar VPPA contract embeds the static
-//! portions as constants and validates per-tx fields by byte comparison
-//! at known offsets. This is the bridge between Runar covenants and
-//! STAS-3 tokens for the atomic-mint pattern (spec §8.5).
+//! Exposes the per-field slot offsets within a STAS-3 locking script
+//! that carries an EAC payload, so covenant authors (Runar VPPA,
+//! sCrypt, hand-written, etc.) can byte-compare specific EAC fields
+//! at known offsets without re-parsing the lock.
+//!
+//! NOTE: this file does NOT integrate with the icellan/runar
+//! multi-language smart contract compiler. The historical name was
+//! `runar.rs` because EAC templates were originally consumed by a
+//! Runar VPPA contract; the byte layout itself is engine-agnostic.
+//! For real Runar contract authoring, see <https://github.com/icellan/runar>.
 //!
 //! All `[u8; 20]` PKH inputs MUST be Type-42 derived by the caller — see
 //! spec §1A. This helper performs no derivation.
@@ -42,8 +47,8 @@ use super::error::Stas3Error;
 use super::lock::{build_locking_script, LockParams};
 
 /// One field slot in the EAC locking script that varies per-tx.
-/// The Runar contract validates the bytes at this offset against
-/// the per-tx expected value.
+/// A covenant author (Runar VPPA, sCrypt, hand-written, etc.)
+/// validates the bytes at this offset against the per-tx expected value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EacFieldSlot {
     pub field_name: &'static str,
@@ -52,15 +57,15 @@ pub struct EacFieldSlot {
 }
 
 /// Full EAC locking-script template with sample bytes and per-tx slot
-/// offsets. The Runar contract uses `template_bytes` for the constant
+/// offsets. A covenant author uses `template_bytes` for the constant
 /// byte regions and validates per-tx slots against the actual values
 /// from the settlement event.
 #[derive(Clone, Debug)]
-pub struct EacRunarTemplate {
+pub struct EacTemplate {
     /// Sample EAC locking script bytes with PLACEHOLDER values for all
     /// per-tx slots (owner_pkh = [0; 20], EAC fields all zero).
     pub template_bytes: Vec<u8>,
-    /// Per-tx slots that the Runar contract must validate. Offsets are
+    /// Per-tx slots that the covenant must validate. Offsets are
     /// into `template_bytes`. Order: `owner_pkh` first, then EAC fields
     /// in `optional_data` order.
     pub slots: Vec<EacFieldSlot>,
@@ -74,15 +79,15 @@ pub struct EacRunarTemplate {
 /// helper does not validate this — usage outside this contract violates §1A.
 ///
 /// # Returns
-/// An `EacRunarTemplate` whose `template_bytes` is a sample EAC locking
+/// An `EacTemplate` whose `template_bytes` is a sample EAC locking
 /// script with placeholder values, and whose `slots` describe the byte
-/// offsets the Runar contract must validate.
-pub fn build_eac_runar_template(
+/// offsets the covenant author must validate.
+pub fn build_eac_template(
     redemption_pkh: [u8; 20],
     flags: u8,
     freeze_auth: Option<[u8; 20]>,
     confiscation_auth: Option<[u8; 20]>,
-) -> Result<EacRunarTemplate, Stas3Error> {
+) -> Result<EacTemplate, Stas3Error> {
     let placeholder_owner = [0u8; 20];
     let placeholder_fields = EacFields {
         quantity_wh: 0,
@@ -162,7 +167,7 @@ pub fn build_eac_runar_template(
         "slot walk did not consume entire template_bytes"
     );
 
-    Ok(EacRunarTemplate {
+    Ok(EacTemplate {
         template_bytes,
         slots,
     })
@@ -192,7 +197,7 @@ mod tests {
     /// produced via `build_eac_lock`. This is the load-bearing test: if a
     /// slot offset is wrong by a single byte, this fails.
     #[test]
-    fn test_runar_template_offsets_align_with_real_bytes() {
+    fn test_eac_template_offsets_align_with_real_bytes() {
         let owner_pkh = [0x77; 20];
         let redemption_pkh = [0xbb; 20];
         let fields = realistic_fields();
@@ -200,7 +205,7 @@ mod tests {
         let real_bytes = real_lock.to_binary();
 
         let template =
-            build_eac_runar_template(redemption_pkh, 0, None, None).unwrap();
+            build_eac_template(redemption_pkh, 0, None, None).unwrap();
 
         // Lengths must match — the EAC layout is fixed-size for all per-tx slots.
         assert_eq!(
@@ -270,10 +275,10 @@ mod tests {
     }
 
     #[test]
-    fn test_runar_template_with_no_authorities() {
+    fn test_eac_template_with_no_authorities() {
         let redemption_pkh = [0xbb; 20];
         let template =
-            build_eac_runar_template(redemption_pkh, 0, None, None).unwrap();
+            build_eac_template(redemption_pkh, 0, None, None).unwrap();
 
         // Owner slot must be the very first per-tx slot at offset 1.
         assert_eq!(template.slots[0].field_name, "owner_pkh");
@@ -292,10 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn test_runar_template_with_freeze_only() {
+    fn test_eac_template_with_freeze_only() {
         let redemption_pkh = [0xbb; 20];
         let freeze_auth = [0x11u8; 20];
-        let template = build_eac_runar_template(
+        let template = build_eac_template(
             redemption_pkh,
             FREEZABLE,
             Some(freeze_auth),
@@ -320,11 +325,11 @@ mod tests {
     }
 
     #[test]
-    fn test_runar_template_with_both_authorities() {
+    fn test_eac_template_with_both_authorities() {
         let redemption_pkh = [0xbb; 20];
         let freeze_auth = [0x11u8; 20];
         let confiscate_auth = [0x22u8; 20];
-        let template = build_eac_runar_template(
+        let template = build_eac_template(
             redemption_pkh,
             FREEZABLE | CONFISCATABLE,
             Some(freeze_auth),
