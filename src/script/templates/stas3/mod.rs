@@ -2548,4 +2548,298 @@ mod integration_tests {
         let result = wrapper.pick_fuel(1_000).await;
         assert!(result.is_err(), "expected pick_fuel to fail on ProtoWallet");
     }
+
+    // ===================================================================
+    // Wave 2A.1 — production 2-tx contract+issue (build_issue / mint_eac)
+    // ===================================================================
+
+    /// Wave 2A.1 gate: build_issue produces a (contract, issue) pair where
+    /// the issue tx's outputs are STAS-3 locks honoring the caller-supplied
+    /// destinations, and a freshly-issued lock can subsequently be spent
+    /// (engine-verified) via the standard transfer factory.
+    #[tokio::test]
+    async fn test_factory_issue_two_destinations_engine_verifies() {
+        use super::factory::issue::{
+            build_issue, IssueDestination, IssueRequest,
+        };
+        use super::factory::types::{FundingInput, SigningKey};
+        use super::factory::{build_transfer, TokenInput, TransferRequest};
+
+        // 1. Set up the issuer + two destination keys + a funding key.
+        //    The issuer's pkh will be the redemption_pkh; the issuer also
+        //    owns the funding UTXO (production parity — the same key
+        //    signs both the contract and issue txs).
+        let issuer_root = PrivateKey::from_hex("11").unwrap();
+        let owner_a_root = PrivateKey::from_hex("22").unwrap();
+        let owner_b_root = PrivateKey::from_hex("33").unwrap();
+
+        let issuer_wallet = ProtoWallet::new(issuer_root);
+        let owner_a_wallet = ProtoWallet::new(owner_a_root);
+        let owner_b_wallet = ProtoWallet::new(owner_b_root);
+
+        let issuer_pkh = derive_pkh(&issuer_wallet, "stas3mint", "1").await;
+        let owner_a_pkh = derive_pkh(&owner_a_wallet, "stas3owner", "a").await;
+        let owner_b_pkh = derive_pkh(&owner_b_wallet, "stas3owner", "b").await;
+
+        // 2. Build a synthetic funding UTXO owned by the issuer.
+        //    (We manually construct a "previous tx" that holds a P2PKH
+        //    UTXO at vout 0; the issuance contract tx will spend it.)
+        let funding_amount: u64 = 100_000;
+        let funding_lock = make_p2pkh_lock(&issuer_pkh);
+        let mut prev_tx = Transaction::new();
+        prev_tx.outputs.push(TransactionOutput {
+            satoshis: Some(funding_amount),
+            locking_script: funding_lock.clone(),
+            change: false,
+        });
+        let prev_txid_hex = prev_tx.id().expect("prev tx id");
+
+        let issuer_signing_key = SigningKey::P2pkh(
+            super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+        );
+        let funding_input = FundingInput {
+            txid_hex: prev_txid_hex,
+            vout: 0,
+            satoshis: funding_amount,
+            locking_script: funding_lock,
+            triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+        };
+
+        // 3. Build the 2-tx issuance with two destinations.
+        let dest_a_sats: u64 = 30_000;
+        let dest_b_sats: u64 = 50_000;
+        let req = IssueRequest {
+            wallet: &issuer_wallet,
+            originator: None,
+            issuer_signing_key,
+            redemption_pkh: issuer_pkh,
+            flags: 0,
+            service_fields: vec![],
+            scheme_bytes: b"TEST_SCHEME_v1".to_vec(),
+            funding_input,
+            destinations: vec![
+                IssueDestination {
+                    owner_pkh: owner_a_pkh,
+                    action_data: ActionData::Passive(vec![]),
+                    satoshis: dest_a_sats,
+                    optional_data: vec![],
+                },
+                IssueDestination {
+                    owner_pkh: owner_b_pkh,
+                    action_data: ActionData::Passive(vec![]),
+                    satoshis: dest_b_sats,
+                    optional_data: vec![],
+                },
+            ],
+            fee_rate_sat_per_kb: 500,
+        };
+        let result = build_issue(req).await.expect("build_issue ok");
+
+        // Sanity: contract tx has 1 input, 2 outputs; issue tx has 2
+        // inputs, 3 outputs (2 stas + 1 change).
+        assert_eq!(result.contract_tx.inputs.len(), 1);
+        assert_eq!(result.contract_tx.outputs.len(), 2);
+        assert_eq!(result.issue_tx.inputs.len(), 2);
+        assert_eq!(result.issue_tx.outputs.len(), 3);
+
+        // 4. Take the issue tx output 0 (owner A's STAS-3 token) and
+        //    transfer it via the existing factory — engine-verify the
+        //    transfer to confirm the freshly-minted lock is valid.
+        let stas_lock = result.issue_tx.outputs[0].locking_script.clone();
+        let stas_satoshis = result.issue_tx.outputs[0].satoshis.unwrap();
+        assert_eq!(stas_satoshis, dest_a_sats);
+        let issue_tx_id = result.issue_tx.id().expect("issue tx id");
+
+        // For the transfer's funding, we need a fresh P2PKH UTXO. Use
+        // the issue tx's change output (output index 2).
+        let funding_for_transfer_amount = result.issue_tx.outputs[2].satoshis.unwrap();
+        let funding_for_transfer_lock = result.issue_tx.outputs[2].locking_script.clone();
+
+        let new_owner_pkh = derive_pkh(&owner_a_wallet, "stas3owner", "a-next").await;
+
+        let transfer_req = TransferRequest {
+            wallet: &owner_a_wallet,
+            originator: None,
+            stas_input: TokenInput {
+                txid_hex: issue_tx_id.clone(),
+                vout: 0,
+                satoshis: stas_satoshis,
+                locking_script: stas_lock.clone(),
+                signing_key: super::factory::types::SigningKey::P2pkh(
+                    super::key_triple::KeyTriple::self_under("stas3owner", "a"),
+                ),
+                current_action_data: ActionData::Passive(vec![]),
+                source_tx_bytes: None,
+            },
+            funding_input: super::factory::FundingInput {
+                txid_hex: issue_tx_id,
+                vout: 2,
+                satoshis: funding_for_transfer_amount,
+                locking_script: funding_for_transfer_lock,
+                triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+            },
+            destination_owner_pkh: new_owner_pkh,
+            redemption_pkh: issuer_pkh,
+            flags: 0,
+            service_fields: vec![],
+            optional_data: vec![],
+            note: None,
+            change_pkh: issuer_pkh,
+            change_satoshis: funding_for_transfer_amount.saturating_sub(500),
+        };
+        let transfer_tx = build_transfer(transfer_req).await.expect("build_transfer ok");
+        let valid = verify_input(&transfer_tx, 0, &stas_lock, stas_satoshis)
+            .expect("verify_input no error");
+        assert!(valid, "engine rejected transfer of freshly-issued lock");
+    }
+
+    /// Wave 2A.1: build_issue with FREEZABLE flag; service_fields[0] is
+    /// the freeze authority pkh, and the produced lock decodes back to
+    /// that authority.
+    #[tokio::test]
+    async fn test_factory_issue_with_freezable_flag() {
+        use super::decode::decode_locking_script;
+        use super::factory::issue::{
+            build_issue, IssueDestination, IssueRequest,
+        };
+        use super::factory::types::{FundingInput, SigningKey};
+        use super::flags::FREEZABLE;
+
+        let issuer_root = PrivateKey::from_hex("44").unwrap();
+        let owner_root = PrivateKey::from_hex("55").unwrap();
+        let issuer_wallet = ProtoWallet::new(issuer_root);
+        let owner_wallet = ProtoWallet::new(owner_root);
+
+        let issuer_pkh = derive_pkh(&issuer_wallet, "stas3mint", "1").await;
+        let owner_pkh = derive_pkh(&owner_wallet, "stas3owner", "1").await;
+        let freeze_auth_pkh = [0x77u8; 20];
+
+        let funding_amount: u64 = 50_000;
+        let funding_lock = make_p2pkh_lock(&issuer_pkh);
+        let mut prev_tx = Transaction::new();
+        prev_tx.outputs.push(TransactionOutput {
+            satoshis: Some(funding_amount),
+            locking_script: funding_lock.clone(),
+            change: false,
+        });
+        let prev_txid_hex = prev_tx.id().expect("prev tx id");
+
+        let req = IssueRequest {
+            wallet: &issuer_wallet,
+            originator: None,
+            issuer_signing_key: SigningKey::P2pkh(
+                super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+            ),
+            redemption_pkh: issuer_pkh,
+            flags: FREEZABLE,
+            service_fields: vec![freeze_auth_pkh.to_vec()],
+            scheme_bytes: b"FREEZABLE_TEST".to_vec(),
+            funding_input: FundingInput {
+                txid_hex: prev_txid_hex,
+                vout: 0,
+                satoshis: funding_amount,
+                locking_script: funding_lock,
+                triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+            },
+            destinations: vec![IssueDestination {
+                owner_pkh,
+                action_data: ActionData::Passive(vec![]),
+                satoshis: 10_000,
+                optional_data: vec![],
+            }],
+            fee_rate_sat_per_kb: 500,
+        };
+        let result = build_issue(req).await.expect("build_issue ok");
+
+        // Decode the destination lock and verify the freeze authority.
+        let decoded = decode_locking_script(&result.issue_tx.outputs[0].locking_script)
+            .expect("decode lock ok");
+        assert_eq!(decoded.flags, FREEZABLE);
+        assert_eq!(
+            decoded.service_fields.len(),
+            1,
+            "FREEZABLE-only mints should have exactly 1 service field"
+        );
+        assert_eq!(
+            decoded.service_fields[0],
+            freeze_auth_pkh.to_vec(),
+            "service_fields[0] should be the freeze authority pkh"
+        );
+    }
+
+    /// Wave 2A.1: round-trip via Stas3Wallet::mint_eac with EAC fields,
+    /// then decode the EAC fields off the produced lock and verify
+    /// equality.
+    #[tokio::test]
+    async fn test_mint_eac_wallet_helper() {
+        use super::eac::{EacFields, EnergySource};
+        use super::factory::types::{FundingInput, SigningKey};
+        use super::wallet::Stas3Wallet;
+        use std::sync::Arc;
+
+        let issuer_root = PrivateKey::from_hex("66").unwrap();
+        let owner_root = PrivateKey::from_hex("77").unwrap();
+        let issuer_wallet = Arc::new(ProtoWallet::new(issuer_root));
+        let owner_wallet = ProtoWallet::new(owner_root);
+
+        let issuer_pkh = derive_pkh(&issuer_wallet, "stas3mint", "1").await;
+        let owner_pkh = derive_pkh(&owner_wallet, "stas3owner", "1").await;
+
+        let funding_amount: u64 = 60_000;
+        let funding_lock = make_p2pkh_lock(&issuer_pkh);
+        let mut prev_tx = Transaction::new();
+        prev_tx.outputs.push(TransactionOutput {
+            satoshis: Some(funding_amount),
+            locking_script: funding_lock.clone(),
+            change: false,
+        });
+        let prev_txid_hex = prev_tx.id().expect("prev tx id");
+
+        let fields = EacFields {
+            quantity_wh: 1_500_000,
+            interval_start: 1_700_000_000,
+            interval_end: 1_700_003_600,
+            energy_source: EnergySource::Solar,
+            country: *b"US",
+            device_id: [0x42; 32],
+            id_range: (1, 100),
+            issue_date: 1_700_004_000,
+            storage_tag: 0,
+        };
+
+        let stas = Stas3Wallet::new(issuer_wallet.clone());
+        let result = stas
+            .mint_eac(
+                None,
+                SigningKey::P2pkh(
+                    super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                ),
+                FundingInput {
+                    txid_hex: prev_txid_hex,
+                    vout: 0,
+                    satoshis: funding_amount,
+                    locking_script: funding_lock,
+                    triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                },
+                0,
+                None,
+                None,
+                vec![(owner_pkh, 5_000, fields.clone())],
+                b"EAC_v1_metadata".to_vec(),
+                500,
+            )
+            .await
+            .expect("mint_eac ok");
+
+        // Decode the lock and round-trip the EAC fields.
+        let decoded = super::decode::decode_locking_script(
+            &result.issue_tx.outputs[0].locking_script,
+        )
+        .expect("decode ok");
+        let parsed = EacFields::from_optional_data(&decoded.optional_data)
+            .expect("EacFields round-trip ok");
+        assert_eq!(parsed, fields, "EAC fields should round-trip exactly");
+        assert_eq!(decoded.owner_pkh, owner_pkh);
+        assert_eq!(decoded.redemption_pkh, issuer_pkh);
+    }
 }
