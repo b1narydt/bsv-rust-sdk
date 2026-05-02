@@ -172,9 +172,15 @@ pub async fn build_merge<W: WalletInterface>(
         let token = &req.stas_inputs[input_idx];
 
         // Build the rotation-ordered piece array — flatten pieces from the
-        // (N-1) OTHER inputs in order [(i+1)%N, (i+2)%N, ..., (i+N-1)%N].
-        // For N=2 this collapses to the single OTHER input's piece array,
-        // matching the existing canonical 2-input behavior.
+        // (N-1) OTHER inputs in forward rotation order
+        // [(i+1)%N, (i+2)%N, ..., (i+N-1)%N]. For N=2 this collapses to the
+        // single OTHER input's piece array, matching the existing canonical
+        // 2-input behavior.
+        //
+        // NOTE: For N>2 both forward and reverse rotations were tested and
+        // engine-rejected (Script(VerifyFailed)). The spec §8.1 wire layout
+        // for N>2 trailing piece arrays is ambiguous — see merge.rs module
+        // doc and the corresponding `#[ignore]`d tests.
         let mut pieces: Vec<Vec<u8>> = Vec::new();
         for k in 1..n {
             let other_idx = (input_idx + k) % n;
