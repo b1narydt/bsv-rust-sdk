@@ -7,6 +7,7 @@
 pub mod p2pkh;
 pub mod push_drop;
 pub mod r_puzzle;
+pub mod stas3;
 
 pub use p2pkh::P2PKH;
 pub use push_drop::PushDrop;
