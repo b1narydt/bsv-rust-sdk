@@ -70,6 +70,7 @@ use super::key_triple::KeyTriple;
 mod custom_instructions;
 mod ops_freeze;
 mod ops_merge;
+mod ops_mint;
 mod ops_redeem;
 mod ops_split;
 mod ops_swap;
