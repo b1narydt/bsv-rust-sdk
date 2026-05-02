@@ -17,16 +17,16 @@ use crate::wallet::interfaces::{Certificate, WalletInterface};
 /// When decrypted with the verifier's wallet, each key can decrypt the
 /// corresponding encrypted field value in the certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VerifiableCertificate {
     /// The underlying wallet Certificate.
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// Maps field names to base64-encoded encrypted symmetric keys for the verifier.
     pub keyring: HashMap<String, String>,
     /// Cached decrypted fields (populated after decrypt_fields is called).
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub decrypted_fields: Option<HashMap<String, String>>,
 }
 

@@ -93,6 +93,25 @@ required-features = ["network"]
 name = "token_lifecycle"
 required-features = ["network"]
 
+# ---------------------------------------------------------------------------
+# Feature graph
+# ---------------------------------------------------------------------------
+#
+# `serde` — opt-in JSON (de)serialization for BRC-100 wallet args / results
+#   and other types in this crate. Enables only `serde` + `serde_json`; does
+#   NOT pull in tokio, reqwest, or any async runtime. Use this when you want
+#   to construct or parse JSON wire types (e.g. `CreateActionArgs`) inside an
+#   embedded host that already owns its own HTTP transport.
+#
+# `network` — full networking stack: HTTP/WS clients (reqwest /
+#   tokio-tungstenite), the tokio runtime, plus the JSON wire types above.
+#   `network` transitively enables `serde`, so opting into `network` always
+#   gives you `--features serde` for free.
+#
+# Layered on purpose: callers who need only JSON shape compatibility do not
+# pay the cost of a tokio / reqwest dependency, while callers who do speak
+# HTTP/WS get a single feature flag for the whole stack.
 [features]
 default = []
-network = ["dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util", "dep:serde", "dep:serde_json"]
+serde = ["dep:serde", "dep:serde_json"]
+network = ["serde", "dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util"]

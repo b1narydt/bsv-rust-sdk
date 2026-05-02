@@ -13,18 +13,18 @@ use crate::wallet::interfaces::Certificate;
 /// This is a minimal wrapper -- no additional methods beyond construction.
 /// The MerklePath can be used to verify the certificate's inclusion in a block.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CompoundMerklePathCertificate {
     /// The underlying wallet Certificate.
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// The merkle path proving inclusion of the certificate's transaction.
-    #[cfg_attr(feature = "network", serde(skip, default = "default_merkle_path"))]
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_merkle_path"))]
     pub merkle_path: MerklePath,
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 fn default_merkle_path() -> MerklePath {
     MerklePath {
         block_height: 0,
