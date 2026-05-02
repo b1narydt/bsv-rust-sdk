@@ -120,6 +120,7 @@ pub async fn build_confiscate<W: WalletInterface>(
         req.wallet,
         req.originator,
         &req.confiscation_authority,
+        &decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

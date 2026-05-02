@@ -130,6 +130,7 @@ pub async fn build_freeze<W: WalletInterface>(
         req.wallet,
         req.originator,
         &req.freeze_authority,
+        &decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

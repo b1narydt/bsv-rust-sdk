@@ -205,10 +205,26 @@ pub async fn build_swap_execute<W: WalletInterface>(
             token.satoshis,
             &token.locking_script,
         )?;
+        // For an atomic-swap leg the §10.3 sentinel applies to the
+        // descriptor's `receive_addr` rather than the input owner —
+        // a swap with `receive_addr = EMPTY_HASH160` is the
+        // "arbitrator-free" form where anyone can execute and the
+        // engine accepts a single OP_FALSE in place of an authz tail
+        // for that leg. For transfer-swap legs (no swap descriptor
+        // on this side) we fall back to the input owner's pkh.
+        let auth_pkh: [u8; 20] = match &decoded[input_idx].action_data {
+            ActionData::Swap(d)
+                if d.receive_addr == super::super::constants::EMPTY_HASH160 =>
+            {
+                super::super::constants::EMPTY_HASH160
+            }
+            _ => decoded[input_idx].owner_pkh,
+        };
         let authz = sign_with_signing_key(
             req.wallet,
             req.originator,
             &token.signing_key,
+            &auth_pkh,
             &preimage,
             SIGHASH_DEFAULT as u8,
         )

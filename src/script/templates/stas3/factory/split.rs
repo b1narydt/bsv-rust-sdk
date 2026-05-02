@@ -15,6 +15,7 @@ use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
 use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
+use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
@@ -112,7 +113,11 @@ pub async fn build_split<W: WalletInterface>(
         change: false,
     });
 
-    // 4. Sign STAS input.
+    // 4. Sign STAS input. Honor the §10.3 sentinel by reading the
+    //    input's owner_pkh from the decoded lock; `sign_with_signing_key`
+    //    short-circuits to `AuthzWitness::Suppressed` when it matches
+    //    EMPTY_HASH160.
+    let input_decoded = decode_locking_script(&req.stas_input.locking_script)?;
     let preimage = build_preimage(
         &tx,
         0,
@@ -123,6 +128,7 @@ pub async fn build_split<W: WalletInterface>(
         req.wallet,
         req.originator,
         &req.stas_input.signing_key,
+        &input_decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

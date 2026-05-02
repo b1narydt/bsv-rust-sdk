@@ -105,6 +105,7 @@ pub async fn build_swap_mark<W: WalletInterface>(
         req.wallet,
         req.originator,
         &req.stas_input.signing_key,
+        &decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

@@ -35,6 +35,7 @@ use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
 use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
+use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
@@ -183,10 +184,13 @@ pub async fn build_merge<W: WalletInterface>(
             token.satoshis,
             &token.locking_script,
         )?;
+        // Honor §10.3 sentinel via the input's decoded owner_pkh.
+        let token_decoded = decode_locking_script(&token.locking_script)?;
         let authz = sign_with_signing_key(
             req.wallet,
             req.originator,
             &token.signing_key,
+            &token_decoded.owner_pkh,
             &preimage,
             SIGHASH_DEFAULT as u8,
         )

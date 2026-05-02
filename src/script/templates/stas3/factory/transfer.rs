@@ -16,6 +16,7 @@ use crate::wallet::interfaces::WalletInterface;
 
 use super::super::action_data::ActionData;
 use super::super::constants::{SIGHASH_DEFAULT, STAS3_TX_VERSION};
+use super::super::decode::decode_locking_script;
 use super::super::error::Stas3Error;
 use super::super::lock::{build_locking_script, LockParams};
 use super::super::sighash::build_preimage;
@@ -105,11 +106,15 @@ pub async fn build_transfer<W: WalletInterface>(
 
     // 5. Sign with the input's signing key (P2PKH or P2MPKH).
     //    `sign_with_signing_key` internally hash256s the preimage and
-    //    dispatches to the right authz shape per spec §10.2.
+    //    dispatches to the right authz shape per spec §10.2. When the
+    //    input owner is the HASH160("") sentinel (spec §10.3) it
+    //    returns `AuthzWitness::Suppressed` instead of signing.
+    let input_decoded = decode_locking_script(&req.stas_input.locking_script)?;
     let authz = sign_with_signing_key(
         req.wallet,
         req.originator,
         &req.stas_input.signing_key,
+        &input_decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

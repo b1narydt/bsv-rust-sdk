@@ -84,6 +84,34 @@ impl SwapDescriptor {
         out
     }
 
+    /// `true` if THIS descriptor's `receive_addr` equals the spec §10.3
+    /// `EMPTY_HASH160` sentinel (HASH160 of the empty string). When true,
+    /// the engine accepts a single OP_FALSE in lieu of a real signature
+    /// for this leg of the swap — the "arbitrator-free" / anyone-can-fill
+    /// form. Inspects ONLY the top-level descriptor; recurse via
+    /// [`SwapDescriptor::is_arbitrator_free_recursive`] if you also want
+    /// to consider every nested `NextVar2::Swap`.
+    pub fn is_arbitrator_free(&self) -> bool {
+        self.receive_addr == super::constants::EMPTY_HASH160
+    }
+
+    /// `true` if THIS descriptor — or any swap nested under it via a
+    /// `NextVar2::Swap` chain — has its `receive_addr` set to the
+    /// §10.3 sentinel. `NextVar2::Passive`/`NextVar2::Frozen` terminate
+    /// the recursion (those are not swap descriptors).
+    pub fn is_arbitrator_free_recursive(&self) -> bool {
+        if self.is_arbitrator_free() {
+            return true;
+        }
+        match &self.next {
+            Some(b) => match b.as_ref() {
+                NextVar2::Swap(inner) => inner.is_arbitrator_free_recursive(),
+                NextVar2::Passive(_) | NextVar2::Frozen => false,
+            },
+            None => false,
+        }
+    }
+
     /// Append BODY (no leading 0x01), then any `next` payload.
     fn append_body(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.requested_script_hash);

@@ -9,11 +9,22 @@ use crate::script::locking_script::LockingScript;
 use crate::transaction::transaction_input::TransactionInput;
 use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInterface};
 
-use super::super::constants::SIGHASH_DEFAULT;
+use super::super::constants::{EMPTY_HASH160, SIGHASH_DEFAULT};
 use super::super::error::Stas3Error;
 use super::super::key_triple::KeyTriple;
 use super::super::unlock::AuthzWitness;
 use super::types::{FundingInput, SigningKey, TokenInput};
+
+/// Returns true if the `owner_pkh` is the `HASH160("")` sentinel — engine
+/// accepts a single `OP_FALSE` in place of all auth fields. See spec §10.3.
+///
+/// When this returns `true`, factories MUST emit
+/// [`AuthzWitness::Suppressed`] for that input rather than attempting to
+/// sign — there is no key behind the sentinel hash, and any signing
+/// attempt is guaranteed to derive the wrong key.
+pub fn is_sentinel_owner(owner_pkh: &[u8; 20]) -> bool {
+    owner_pkh == &EMPTY_HASH160
+}
 
 /// Build a standard 25-byte P2PKH locking script.
 pub fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
@@ -141,6 +152,17 @@ pub async fn pubkey_via_wallet<W: WalletInterface>(
 /// transparently covers both single-sig P2PKH owners and m-of-n
 /// P2MPKH multisig owners per spec §10.2.
 ///
+/// `owner_pkh` is the 20-byte hash on the slot we're authorizing
+/// (input owner for STAS spends, freeze authority pkh for freeze /
+/// unfreeze, confiscation authority pkh for confiscate, descriptor
+/// `receive_addr` for swap-cancel, etc.). When it equals the spec
+/// §10.3 `EMPTY_HASH160` sentinel the function short-circuits to
+/// [`AuthzWitness::Suppressed`] (single `OP_FALSE`) WITHOUT touching
+/// the wallet — there is no key behind the sentinel and any signing
+/// attempt is guaranteed to derive the wrong key. This lets callers
+/// thread "arbitrator-free" / signature-suppressed paths through the
+/// same code path used for ordinary signed authorizations.
+///
 /// `preimage` is the BIP-143 preimage **bytes** (not the preimage
 /// hash); the function applies `hash256` internally so the caller
 /// doesn't have to remember which side of the hash boundary each key
@@ -171,9 +193,16 @@ pub async fn sign_with_signing_key<W: WalletInterface>(
     wallet: &W,
     originator: Option<&str>,
     signing_key: &SigningKey,
+    owner_pkh: &[u8; 20],
     preimage: &[u8],
     sighash_byte: u8,
 ) -> Result<AuthzWitness, Stas3Error> {
+    // Spec §10.3: when the slot we're authorizing is the HASH160("")
+    // sentinel, the engine accepts a single OP_FALSE. Skip the wallet
+    // round-trip entirely — there is no key behind the sentinel.
+    if is_sentinel_owner(owner_pkh) {
+        return Ok(AuthzWitness::Suppressed);
+    }
     signing_key.validate()?;
     let preimage_hash = hash256(preimage).to_vec();
 

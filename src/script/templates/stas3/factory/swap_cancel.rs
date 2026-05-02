@@ -117,10 +117,16 @@ pub async fn build_swap_cancel<W: WalletInterface>(
         req.stas_input.satoshis,
         &req.stas_input.locking_script,
     )?;
+    // For swap-cancel the relevant authorization slot is the
+    // descriptor's `receive_addr` (the maker's reclaim address). When
+    // that is the §10.3 sentinel (HASH160("") — "arbitrator-free" /
+    // anyone-can-cancel), `sign_with_signing_key` emits a single
+    // OP_FALSE in lieu of a signature.
     let authz = sign_with_signing_key(
         req.wallet,
         req.originator,
         &req.receive_addr_signing_key,
+        &descriptor.receive_addr,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )

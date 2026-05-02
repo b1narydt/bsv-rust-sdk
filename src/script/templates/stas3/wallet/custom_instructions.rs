@@ -9,7 +9,20 @@
 
 use super::super::error::Stas3Error;
 use super::super::key_triple::KeyTriple;
+use crate::primitives::public_key::PublicKey;
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
+
+/// Length of a SEC1-compressed pubkey hex string (33 bytes × 2 hex chars).
+const COMPRESSED_PUBKEY_HEX_LEN: usize = 66;
+
+/// `true` if `s` is exactly 66 lowercase hex characters — the canonical
+/// wire form for `Counterparty::Other(pk)` in the customInstructions
+/// JSON. Uppercase hex is rejected to keep the wire format byte-stable.
+fn is_compressed_pubkey_hex(s: &str) -> bool {
+    s.len() == COMPRESSED_PUBKEY_HEX_LEN
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
 
 /// JSON shape stored in `customInstructions` for every UTXO this wrapper
 /// creates or consumes (spec §1A.4). Carries the Type-42 triple so subsequent
@@ -22,9 +35,9 @@ pub struct CustomInstructions {
     /// `(security_level, protocol_string)` — e.g. `(2, "stas3owner")`.
     pub protocol_id: (u8, String),
     pub key_id: String,
-    /// Wire form: `"self"`, `"anyone"`, or DER-hex pubkey for `Other`.
-    /// Currently only `self` and `anyone` round-trip; `Other` is rejected on
-    /// `to_triple`.
+    /// Wire form: `"self"`, `"anyone"`, or 66-char lowercase hex of a
+    /// SEC1-compressed pubkey for `Counterparty::Other(pk)` (spec §1A and
+    /// BRC-42 counterparty derivation). All three round-trip cleanly.
     pub counterparty: String,
     /// Optional schema tag (e.g. `"EAC1"`). `None` is omitted from the JSON.
     pub schema: Option<String>,
@@ -32,8 +45,9 @@ pub struct CustomInstructions {
 
 impl CustomInstructions {
     /// Resolve the embedded triple back into a `KeyTriple` suitable for
-    /// passing to a factory call. Returns `InvalidScript` if the
-    /// `counterparty` string is not `"self"` or `"anyone"`.
+    /// passing to a factory call. Accepts `"self"`, `"anyone"`, or a
+    /// 66-char lowercase hex SEC1-compressed pubkey for `Other`. Returns
+    /// `InvalidScript` for any other shape.
     pub fn to_triple(&self) -> Result<KeyTriple, Stas3Error> {
         let cp = match self.counterparty.as_str() {
             "self" => Counterparty {
@@ -44,10 +58,21 @@ impl CustomInstructions {
                 counterparty_type: CounterpartyType::Anyone,
                 public_key: None,
             },
+            other if is_compressed_pubkey_hex(other) => {
+                let pk = PublicKey::from_string(other).map_err(|e| {
+                    Stas3Error::InvalidScript(format!(
+                        "counterparty pubkey hex parse failed: {e:?}"
+                    ))
+                })?;
+                Counterparty {
+                    counterparty_type: CounterpartyType::Other,
+                    public_key: Some(pk),
+                }
+            }
             other => {
                 return Err(Stas3Error::InvalidScript(format!(
                     "unsupported counterparty in customInstructions: {other:?} \
-                     (only \"self\" and \"anyone\" are supported)"
+                     (expected \"self\", \"anyone\", or 66 lowercase hex chars)"
                 )));
             }
         };
@@ -67,9 +92,14 @@ impl CustomInstructions {
         let cp_str = match triple.counterparty.counterparty_type {
             CounterpartyType::Self_ => "self".to_string(),
             CounterpartyType::Anyone => "anyone".to_string(),
-            // Fallback — Other/Uninitialized are not yet supported by
-            // to_triple, so we don't emit them here either.
-            CounterpartyType::Other | CounterpartyType::Uninitialized => "self".to_string(),
+            CounterpartyType::Other => match &triple.counterparty.public_key {
+                Some(pk) => pk.to_der_hex(),
+                // Other without a pubkey is structurally invalid; emit
+                // "self" as a defensive default so downstream JSON parses,
+                // and to_triple rejection makes the inconsistency visible.
+                None => "self".to_string(),
+            },
+            CounterpartyType::Uninitialized => "self".to_string(),
         };
         Self {
             template: template.to_string(),
@@ -358,7 +388,8 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_instructions_rejects_other_counterparty() {
+    fn test_custom_instructions_rejects_malformed_counterparty() {
+        // Wrong length: not "self", not "anyone", not 66 lowercase hex chars.
         let ci = CustomInstructions {
             template: "stas3-token".into(),
             protocol_id: (2, "stas3owner".into()),
@@ -366,10 +397,62 @@ mod tests {
             counterparty: "02deadbeef".into(),
             schema: None,
         };
-        // Round-trips through the JSON layer fine — `to_triple` is what fails.
         let json = ci.to_json();
         let parsed = CustomInstructions::from_json(&json).unwrap();
         assert!(parsed.to_triple().is_err());
+    }
+
+    #[test]
+    fn test_custom_instructions_round_trip_other() {
+        // 66-char lowercase hex SEC1-compressed pubkey for Counterparty::Other.
+        // Pinned to the 03 + secp256k1 generator x-coordinate (a valid pubkey).
+        let pk_hex = "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let ci = CustomInstructions {
+            template: "stas3-token".into(),
+            protocol_id: (2, "stas3owner".into()),
+            key_id: "1".into(),
+            counterparty: pk_hex.into(),
+            schema: None,
+        };
+        let json = ci.to_json();
+        let parsed = CustomInstructions::from_json(&json).unwrap();
+        assert_eq!(parsed.counterparty, pk_hex);
+        let triple = parsed.to_triple().unwrap();
+        assert_eq!(triple.counterparty.counterparty_type, CounterpartyType::Other);
+        let pk = triple.counterparty.public_key.clone().expect("Other carries pubkey");
+        assert_eq!(pk.to_der_hex(), pk_hex);
+
+        // Round-trip back through from_triple — same hex emitted.
+        let again = CustomInstructions::from_triple(&triple, "stas3-token", None);
+        assert_eq!(again.counterparty, pk_hex);
+        assert_eq!(again.to_json(), json);
+    }
+
+    #[test]
+    fn test_custom_instructions_other_uppercase_rejected() {
+        // Uppercase hex is rejected to keep the wire format byte-stable.
+        let pk_hex = "0379BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798";
+        let ci = CustomInstructions {
+            template: "stas3-token".into(),
+            protocol_id: (2, "stas3owner".into()),
+            key_id: "1".into(),
+            counterparty: pk_hex.into(),
+            schema: None,
+        };
+        assert!(ci.to_triple().is_err());
+    }
+
+    #[test]
+    fn test_custom_instructions_other_wrong_length_rejected() {
+        // 64 hex chars (raw 32-byte form) instead of 66 (SEC1-compressed).
+        let ci = CustomInstructions {
+            template: "stas3-token".into(),
+            protocol_id: (2, "stas3owner".into()),
+            key_id: "1".into(),
+            counterparty: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+            schema: None,
+        };
+        assert!(ci.to_triple().is_err());
     }
 
     #[test]

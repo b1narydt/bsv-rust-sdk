@@ -123,6 +123,7 @@ pub async fn build_redeem<W: WalletInterface>(
         req.wallet,
         req.originator,
         &req.stas_input.signing_key,
+        &decoded.owner_pkh,
         &preimage,
         SIGHASH_DEFAULT as u8,
     )
