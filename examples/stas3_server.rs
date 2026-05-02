@@ -396,7 +396,7 @@ async fn handle_merge(
     let tx = state
         .stas
         .merge(
-            [t0, t1],
+            vec![t0, t1],
             funding,
             dest,
             change_pkh,
