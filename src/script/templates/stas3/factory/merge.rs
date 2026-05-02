@@ -5,22 +5,22 @@
 //!
 //! ## Per-input txType
 //!
-//! `txType` (slot 18) for each STAS input encodes the **piece count** of
-//! that input's trailing piece array (per spec §8.1 / Bittoku reference).
-//! That piece count equals the number of STAS-shaped outputs in the
-//! preceding tx of THAT input, plus one (head + N-1 gaps + tail = N pieces
-//! when N-1 outputs are excised — but the engine requires N pieces for
-//! txType=N, so the input's preceding tx must contain exactly N-1 STAS
-//! outputs).
+//! `txType` (slot 18) per spec §8.1 directly encodes the **merge input
+//! count** N (in 2..=7). All N inputs share the same `txType = N` for the
+//! operation. Each input's trailing piece array carries the rotation-ordered
+//! fragments of the N-1 OTHER inputs' source-tx bytes (split at the shared
+//! counterparty script, head+gaps+tail per source).
 //!
-//! In the simple/canonical case where each STAS input comes from a
-//! preceding tx that contains **only that one STAS output**, each input's
-//! piece count is 2 (head + tail) and the per-input txType is `Merge2`.
-//! This matches the engine's per-input piece-count check in spec §9.5.
+//! For N=2 this collapses to the canonical 2-input behavior: each input's
+//! trailing piece array is the OTHER input's source-tx pieces.
 //!
-//! The merge **operation** can have any input count in 2..=7; the per-input
-//! `txType` is independent of the operation's input count and is determined
-//! by each input's preceding-tx shape.
+//! For N>2 the wire format described in spec §8.1 is "piece count (N) +
+//! array of N pieces" — the spec is silent on whether/how to encode multiple
+//! source-tx piece groups in the single per-input trailing array. The
+//! current implementation flattens the N-1 OTHER inputs' piece sequences in
+//! rotation order [(i+1)%N, (i+2)%N, ..., (i+N-1)%N] and is engine-verified
+//! for N=2 only (see integration tests). N>2 cases are wired but engine
+//! verification is deferred — see TODO on the corresponding tests.
 //!
 //! ## STAS output
 //!
@@ -85,15 +85,10 @@ pub async fn build_merge<W: WalletInterface>(
     req: MergeRequest<'_, W>,
 ) -> Result<Transaction, Stas3Error> {
     let n = req.stas_inputs.len();
-    // Spec §5 allows 2..=7 inputs; only 2-input is currently implemented per
-    // the canonical engine's per-input merge-section dispatch (the engine
-    // reads the OTHER input's source-tx via the merge_vout slot — extending
-    // to >2 inputs requires either a different engine ASM block or a wire
-    // contract for multiple counterparty references per input).
-    if n != 2 {
+    // Spec §8.1: txType in 2..=7 directly encodes the merge input count.
+    if !(2..=7).contains(&n) {
         return Err(Stas3Error::InvalidScript(format!(
-            "merge currently supports exactly 2 STAS inputs (canonical engine \
-             dispatch); got {n}"
+            "merge supports 2..=7 STAS inputs (spec §8.1); got {n}"
         )));
     }
     for (i, t) in req.stas_inputs.iter().enumerate() {
@@ -148,35 +143,49 @@ pub async fn build_merge<W: WalletInterface>(
     //    both inputs (matches `Stas3.ts::buildMergeSection`).
     let counterparty_script_shared =
         counterparty_script_from_lock(&req.stas_inputs[0].locking_script)?;
+
+    // Per-input: extract pieces of input i's OWN source tx so we can
+    // assemble per-(i,j) trailing arrays via rotation below. Each token's
+    // pieces are produced by splitting its source tx at the shared
+    // counterparty script (§9.5).
+    let per_input_pieces: Vec<Vec<Vec<u8>>> = req
+        .stas_inputs
+        .iter()
+        .map(|t| {
+            let pre = t.source_tx_bytes.as_ref().expect("validated above");
+            split_by_counterparty_script(pre, &counterparty_script_shared)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // tx_type directly encodes the merge input count (spec §8.1).
+    let tx_type = match n {
+        2 => TxType::Merge2,
+        3 => TxType::Merge3,
+        4 => TxType::Merge4,
+        5 => TxType::Merge5,
+        6 => TxType::Merge6,
+        7 => TxType::Merge7,
+        _ => unreachable!("guarded by 2..=7 check above"),
+    };
+
     for input_idx in 0..n {
         let token = &req.stas_inputs[input_idx];
-        let other_idx = 1 - input_idx;
-        let other = &req.stas_inputs[other_idx];
 
-        let other_preceding_tx = other
-            .source_tx_bytes
-            .as_ref()
-            .expect("validated above");
-        let pieces = split_by_counterparty_script(
-            other_preceding_tx,
-            &counterparty_script_shared,
-        )?;
-        let piece_count = pieces.len();
-        let tx_type = match piece_count {
-            2 => TxType::Merge2,
-            3 => TxType::Merge3,
-            4 => TxType::Merge4,
-            5 => TxType::Merge5,
-            6 => TxType::Merge6,
-            7 => TxType::Merge7,
-            other => {
-                return Err(Stas3Error::InvalidScript(format!(
-                    "merge input {input_idx}: piece count {other} not in 2..=7 \
-                     (other input's source tx must contain 1..=6 occurrences of \
-                      the shared counterparty script)"
-                )));
-            }
-        };
+        // Build the rotation-ordered piece array — flatten pieces from the
+        // (N-1) OTHER inputs in order [(i+1)%N, (i+2)%N, ..., (i+N-1)%N].
+        // For N=2 this collapses to the single OTHER input's piece array,
+        // matching the existing canonical 2-input behavior.
+        let mut pieces: Vec<Vec<u8>> = Vec::new();
+        for k in 1..n {
+            let other_idx = (input_idx + k) % n;
+            pieces.extend(per_input_pieces[other_idx].iter().cloned());
+        }
+
+        // The merge_vout slot points to the FIRST OTHER input — for N=2 this
+        // is the canonical (1 - input_idx). For N>2 the spec is silent on
+        // the multi-input slot encoding, so we default to (i+1)%N.
+        let first_other_idx = (input_idx + 1) % n;
+        let merge_vout = req.stas_inputs[first_other_idx].vout;
 
         let preimage = build_preimage(
             &tx,
@@ -216,7 +225,7 @@ pub async fn build_merge<W: WalletInterface>(
             preimage,
             authz,
             trailing: TrailingParams::Merge {
-                merge_vout: other.vout,
+                merge_vout,
                 pieces,
             },
         })?;
