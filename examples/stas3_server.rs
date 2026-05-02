@@ -20,7 +20,7 @@
 //! POST /tokens/swap_mark           → {tx_hex, txid}
 //! POST /tokens/swap_cancel         → {tx_hex, txid}
 //! POST /tokens/swap_execute        → {tx_hex, txid}
-//! POST /tokens/mint                → 501 Not Implemented (Wave 2A.1 in flight)
+//! POST /tokens/mint                → {contract_tx_hex, contract_txid, issue_tx_hex, issue_txid}
 //! ```
 //!
 //! # Configuration (env vars)
@@ -699,14 +699,200 @@ async fn handle_swap_execute(
 }
 
 // ---------------------------------------------------------------------------
-// /tokens/mint — Wave 2A.1 in flight, returns 501.
+// /tokens/mint — Wave 2A.1 wired to wallet::mint_eac.
 // ---------------------------------------------------------------------------
 
-async fn handle_mint() -> Response {
-    let body = Json(ErrorResponse {
-        error: "mint/issue is not yet implemented (Wave 2A.1)".into(),
-    });
-    (StatusCode::NOT_IMPLEMENTED, body).into_response()
+#[derive(Deserialize)]
+struct MintEacRequestBody {
+    /// Funding UTXO outpoint (`"txid.vout"`) — must be in the fuel basket.
+    funding_outpoint: String,
+    /// Issuer Type-42 triple. The wallet derives the issuer pubkey from
+    /// this triple; HASH160(issuer_pubkey) becomes the redemption_pkh.
+    issuer_protocol: String,
+    issuer_protocol_security_level: u8,
+    issuer_key_id: String,
+    /// Flags byte: bit 0 = FREEZABLE, bit 1 = CONFISCATABLE.
+    flags: u8,
+    /// 40-char lowercase hex HASH160. Required when `flags & 0x01` is set.
+    freeze_auth_pkh: Option<String>,
+    /// 40-char lowercase hex HASH160. Required when `flags & 0x02` is set.
+    confiscate_auth_pkh: Option<String>,
+    /// One destination per output; `eac_fields` carries the schema-1 EAC
+    /// shape per `EacFields::to_optional_data`.
+    destinations: Vec<MintEacDestinationDto>,
+    /// Hex-encoded scheme metadata bytes (written into the contract tx's
+    /// trailing `OP_FALSE OP_RETURN`). Empty string treated as no metadata.
+    scheme_metadata_hex: Option<String>,
+    /// Fee rate in sat/kB. Defaults to 500 if omitted.
+    fee_rate_sat_per_kb: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct MintEacDestinationDto {
+    owner_pkh: String,
+    satoshis: u64,
+    eac_fields: EacFieldsDto,
+}
+
+#[derive(Deserialize)]
+struct EacFieldsDto {
+    quantity_wh: u64,
+    interval_start: i64,
+    interval_end: i64,
+    /// One of: `solar`, `wind`, `hydro`, `nuclear`, `thermal`, `geothermal`,
+    /// `biomass`, `other`. Free-text falls into `Other(...)`.
+    energy_source: String,
+    /// 2-char ISO 3166-1 alpha-2 (e.g. `"US"`).
+    country: String,
+    /// 64-char lowercase hex (32 bytes).
+    device_id_hex: String,
+    id_range_start: u64,
+    id_range_end: u64,
+    issue_date: i64,
+    storage_tag: u64,
+}
+
+impl EacFieldsDto {
+    fn to_eac_fields(&self) -> Result<bsv::script::templates::stas3::EacFields, AppError> {
+        use bsv::script::templates::stas3::{EacFields, EnergySource};
+        if self.country.len() != 2 {
+            return Err(AppError::BadRequest(format!(
+                "eac_fields.country: expected 2 chars, got {}",
+                self.country.len()
+            )));
+        }
+        let mut country = [0u8; 2];
+        country.copy_from_slice(self.country.as_bytes());
+        let device_id = parse_hash32(&self.device_id_hex, "eac_fields.device_id_hex")?;
+        let energy_source = match self.energy_source.to_lowercase().as_str() {
+            "solar" => EnergySource::Solar,
+            "wind" => EnergySource::Wind,
+            "hydro" => EnergySource::Hydro,
+            "nuclear" => EnergySource::Nuclear,
+            "geothermal" => EnergySource::Geothermal,
+            "biomass" => EnergySource::Biomass,
+            "storage" => EnergySource::Storage,
+            other => EnergySource::Other(other.to_string()),
+        };
+        Ok(EacFields {
+            quantity_wh: self.quantity_wh,
+            interval_start: self.interval_start,
+            interval_end: self.interval_end,
+            energy_source,
+            country,
+            device_id,
+            id_range: (self.id_range_start, self.id_range_end),
+            issue_date: self.issue_date,
+            storage_tag: self.storage_tag,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct MintEacResponse {
+    contract_tx_hex: String,
+    contract_txid: String,
+    issue_tx_hex: String,
+    issue_txid: String,
+}
+
+async fn handle_mint(
+    State(state): State<AppState>,
+    Json(req): Json<MintEacRequestBody>,
+) -> Result<Json<MintEacResponse>, AppError> {
+    use bsv::script::templates::stas3::KeyTriple;
+    use bsv::wallet::types::{Counterparty, CounterpartyType, Protocol};
+
+    info!(n_dest = req.destinations.len(), "POST /tokens/mint");
+
+    // 1. Resolve the funding UTXO from the fuel basket. It will already
+    //    be a P2PKH UTXO with a Type-42 triple in customInstructions —
+    //    but the issuer_signing_key flows from the request, not the
+    //    fuel-basket triple, since they may differ in production.
+    let funding = resolve_token_outpoint_as_funding(&state.stas, &req.funding_outpoint).await?;
+
+    // 2. Construct the issuer triple from request fields.
+    let issuer_triple = KeyTriple {
+        protocol_id: Protocol {
+            security_level: req.issuer_protocol_security_level,
+            protocol: req.issuer_protocol.clone(),
+        },
+        key_id: req.issuer_key_id.clone(),
+        counterparty: Counterparty {
+            counterparty_type: CounterpartyType::Self_,
+            public_key: None,
+        },
+    };
+
+    // 3. Parse optional pkhs.
+    let freeze_auth = match &req.freeze_auth_pkh {
+        Some(s) if !s.is_empty() => Some(parse_pkh(s, "freeze_auth_pkh")?),
+        _ => None,
+    };
+    let confiscate_auth = match &req.confiscate_auth_pkh {
+        Some(s) if !s.is_empty() => Some(parse_pkh(s, "confiscate_auth_pkh")?),
+        _ => None,
+    };
+
+    // 4. Build destinations.
+    let mut destinations = Vec::with_capacity(req.destinations.len());
+    for (i, d) in req.destinations.iter().enumerate() {
+        let owner_pkh = parse_pkh(&d.owner_pkh, &format!("destinations[{i}].owner_pkh"))?;
+        let fields = d.eac_fields.to_eac_fields()?;
+        destinations.push((owner_pkh, d.satoshis, fields));
+    }
+
+    // 5. Scheme metadata.
+    let scheme_metadata = match &req.scheme_metadata_hex {
+        Some(s) if !s.is_empty() => hex::decode(s).map_err(|e| {
+            AppError::BadRequest(format!("scheme_metadata_hex: invalid hex: {e}"))
+        })?,
+        _ => Vec::new(),
+    };
+
+    // 6. Delegate to mint_eac.
+    let result = state
+        .stas
+        .mint_eac(
+            None,
+            SigningKey::P2pkh(issuer_triple),
+            funding,
+            req.flags,
+            freeze_auth,
+            confiscate_auth,
+            destinations,
+            scheme_metadata,
+            req.fee_rate_sat_per_kb.unwrap_or(500),
+        )
+        .await?;
+
+    let contract = TxResponse::from_tx(&result.contract_tx)?;
+    let issue = TxResponse::from_tx(&result.issue_tx)?;
+    Ok(Json(MintEacResponse {
+        contract_tx_hex: contract.tx_hex,
+        contract_txid: contract.txid,
+        issue_tx_hex: issue.tx_hex,
+        issue_txid: issue.txid,
+    }))
+}
+
+/// Resolve a funding outpoint via the fuel basket. Wrapper around the
+/// wrapper's `pick_fuel`-style resolver — but for mint, we want a
+/// specific outpoint, not an auto-pick. We use the wrapper's
+/// `find_token`-style internal API by reusing `pick_fuel` with a
+/// satoshi floor of 1; if the caller wants a specific UTXO, the
+/// stas3-server v2 will expose a `find_funding(outpoint)` helper.
+async fn resolve_token_outpoint_as_funding(
+    stas: &Stas3Wallet<HttpWalletJson>,
+    _funding_outpoint: &str,
+) -> Result<bsv::script::templates::stas3::factory::FundingInput, AppError> {
+    // Today the wrapper exposes only auto-pick from the basket. Pick
+    // any UTXO with at least 1000 sats; future Wave 2A.x will add a
+    // by-outpoint resolver so callers can target an explicit funding
+    // UTXO. The route accepts `funding_outpoint` for forward
+    // compatibility but is currently equivalent to
+    // `stas.pick_fuel(1000)`.
+    stas.pick_fuel(1_000).await.map_err(AppError::Stas3)
 }
 
 // ---------------------------------------------------------------------------
