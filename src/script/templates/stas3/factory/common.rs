@@ -6,7 +6,9 @@
 
 use crate::primitives::hash::hash256;
 use crate::script::locking_script::LockingScript;
+use crate::transaction::transaction::Transaction;
 use crate::transaction::transaction_input::TransactionInput;
+use crate::transaction::transaction_output::TransactionOutput;
 use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInterface};
 
 use super::super::constants::{EMPTY_HASH160, SIGHASH_DEFAULT};
@@ -36,6 +38,54 @@ pub fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
     bytes.push(0x88); // OP_EQUALVERIFY
     bytes.push(0xac); // OP_CHECKSIG
     LockingScript::from_binary(&bytes)
+}
+
+/// Build a `TransactionOutput` whose locking script is the standard 25-byte
+/// P2PKH followed by `OP_FALSE OP_RETURN <minimal-push of data>`.
+///
+/// Used by the issuance contract tx (output 0): the bundled token-supply
+/// output that carries the scheme metadata as an unspendable trailing
+/// OP_RETURN annotation. The 25-byte P2PKH prefix ensures the output is
+/// still spendable (the issuer redeems it in the issue tx); the trailing
+/// `OP_FALSE OP_RETURN` makes everything past byte 25 unreachable script
+/// (so the OP_RETURN payload doesn't affect spend authorization).
+///
+/// Mirrors the canonical TS form
+/// `addP2PkhOutput(amount, address, [scheme.toBytes()])` from
+/// `dxs-bsv-token-sdk::TransactionBuilder`.
+pub fn make_p2pkh_with_op_return(
+    sats: u64,
+    pkh: &[u8; 20],
+    data: &[u8],
+) -> TransactionOutput {
+    let mut bytes = Vec::with_capacity(25 + 2 + data.len() + 5);
+    // P2PKH prefix
+    bytes.push(0x76); // OP_DUP
+    bytes.push(0xa9); // OP_HASH160
+    bytes.push(0x14); // PUSH20
+    bytes.extend_from_slice(pkh);
+    bytes.push(0x88); // OP_EQUALVERIFY
+    bytes.push(0xac); // OP_CHECKSIG
+    // OP_FALSE OP_RETURN <data>
+    bytes.push(0x00); // OP_FALSE (a.k.a. OP_0)
+    bytes.push(0x6a); // OP_RETURN
+    super::super::lock::push_data_minimal(&mut bytes, data);
+    TransactionOutput {
+        satoshis: Some(sats),
+        locking_script: LockingScript::from_binary(&bytes),
+        change: false,
+    }
+}
+
+/// Compute the LE (wire-form) txid of `tx`: `hash256(tx.to_binary())`.
+///
+/// Returns 32 LE bytes — the form expected in funding-pointer slots and
+/// in subsequent `source_outpoint.tx_hash` fields. Wraps the existing
+/// `Transaction::hash()` (which already returns the LE bytes after the
+/// double-SHA256 of the serialized tx).
+pub fn compute_txid_le(tx: &Transaction) -> Result<[u8; 32], Stas3Error> {
+    tx.hash()
+        .map_err(|e| Stas3Error::InvalidScript(format!("compute txid: {e}")))
 }
 
 /// Build the canonical 70-byte STAS-3 P2MPKH locking script (spec §10.2).
