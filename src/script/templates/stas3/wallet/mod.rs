@@ -234,12 +234,44 @@ impl<W: WalletInterface> Stas3Wallet<W> {
         output_to_token_input(chosen)
     }
 
-    /// Register a freshly-built tx's STAS-3 outputs in the token basket so
-    /// subsequent spends can find them. Call AFTER broadcasting the tx.
+    /// Hand a freshly-built tx (as atomic BEEF) to the wallet for atomic
+    /// broadcast + basket persistence.
+    ///
+    /// **The wallet — not the caller — is responsible for broadcasting.**
+    /// The TS UserWallet's `internalizeAction.ts` (the canonical p2p-pull /
+    /// p2ppsr implementation) does this in one atomic step: when the BEEF's
+    /// subject txid is unknown to the wallet AND the BEEF carries no merkle
+    /// proof, the wallet broadcasts it via its own configured ARC client and
+    /// then persists the requested basket insertions. If the caller has
+    /// ALREADY broadcast the tx via their own ARC client, the wallet's
+    /// re-broadcast attempt sees a "duplicate" / "already-in-mempool" status,
+    /// the wallet treats that as a failure, and (per `internalizeAction.ts:425-435`)
+    /// **early-returns BEFORE running the basket insertions** — leaving us with
+    /// `accepted: true` (the field is set in the constructor and never updated)
+    /// but no basket entry. So: don't broadcast yourself for self-issuance
+    /// flows; let the wallet do both.
     ///
     /// `stas_output_indices` lists `(output_index, owning_triple, schema)`
-    /// for each STAS-3 output to register. `schema` is an optional tag like
-    /// `"EAC1"` carried in the `customInstructions` JSON.
+    /// for each STAS-3 output to register. Pass an empty `Vec` to record the
+    /// tx (and let the wallet broadcast it) WITHOUT registering any basket
+    /// entries — useful for the contract_tx half of a 2-tx mint where the
+    /// outputs are intermediate and don't belong in the token basket.
+    /// `schema` is an optional tag like `"EAC1"` carried in the
+    /// `customInstructions` JSON.
+    ///
+    /// # Result handling
+    ///
+    /// The current `InternalizeActionResult` only carries `accepted: bool`,
+    /// which the TS UserWallet sets to `true` in the constructor and never
+    /// updates — so it does NOT actually distinguish "wallet broadcast +
+    /// persisted everything OK" from "wallet's broadcast attempt was rejected,
+    /// basket insertions were skipped". The TS source returns the rejection
+    /// detail in two additional fields (`sendWithResults` and
+    /// `notDelayedResults`), but our SDK's wire type is incomplete and does
+    /// not yet surface them. **Future fix: extend `InternalizeActionResult`
+    /// to carry `send_with_results` / `not_delayed_results` so callers can
+    /// detect a silent broadcast failure.** Until then, callers must rely on
+    /// re-listing the basket to confirm the new UTXOs landed.
     pub async fn internalize_stas_outputs(
         &self,
         tx_bytes: Vec<u8>,
@@ -261,7 +293,8 @@ impl<W: WalletInterface> Stas3Wallet<W> {
             })
             .collect();
 
-        self.wallet
+        let result = self
+            .wallet
             .internalize_action(
                 InternalizeActionArgs {
                     tx: tx_bytes,
@@ -274,6 +307,19 @@ impl<W: WalletInterface> Stas3Wallet<W> {
             )
             .await
             .map_err(|e| Stas3Error::InvalidScript(format!("internalize_action: {e}")))?;
+
+        // `accepted` is what the SDK currently exposes; reject explicitly
+        // when it's false. NB: per the docstring above, the TS UserWallet
+        // sets `accepted = true` in the constructor and never flips it, so
+        // a `true` here does NOT prove the wallet's internal broadcast +
+        // persistence succeeded. Until the wire type carries
+        // `send_with_results` / `not_delayed_results`, callers must verify
+        // success by re-listing the basket.
+        if !result.accepted {
+            return Err(Stas3Error::InvalidScript(
+                "internalize_action returned accepted=false".to_string(),
+            ));
+        }
 
         Ok(())
     }

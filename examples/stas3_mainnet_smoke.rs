@@ -10,8 +10,26 @@
 //! # SAFETY
 //!
 //! Defaults to **dry-run**. Without `SMOKE_BROADCAST=1` the example builds
-//! the request args but does NOT call the wallet. Set `SMOKE_BROADCAST=1`
-//! to actually mutate state on chain.
+//! the request args but does NOT call the wallet's mutating endpoints. Set
+//! `SMOKE_BROADCAST=1` to actually mutate state on chain.
+//!
+//! ## Architecture: wallet-driven broadcast
+//!
+//! Self-issuance flows (every phase here — mint, transfer, redeem, split,
+//! freeze, unfreeze, confiscate, merge, mint-and-merge — produces outputs
+//! we want our own wallet to track) **internalize via the wallet**, which
+//! atomically broadcasts the tx via its own configured ARC client and
+//! persists the requested basket insertions. Direct ARC broadcast from
+//! this example is deliberately avoided to prevent racing the wallet's own
+//! broadcast attempt — racing causes the wallet to silently skip the
+//! basket insertion (the TS UserWallet `internalizeAction.ts:425-435`
+//! early-returns when its broadcast attempt sees the tx as a duplicate /
+//! already-in-mempool, leaving `accepted: true` but no basket entry).
+//!
+//! The `arc_broadcast` helper at the bottom of this file is retained
+//! (currently unused) for future cross-wallet issuance flows that ship a
+//! signed BEEF to a different wallet via message box / overlay; the
+//! recipient internalizes their own BEEF in that flow.
 //!
 //! # Phases
 //!
@@ -209,8 +227,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_FUEL_COUNT);
-    let arc_url = env::var("SMOKE_ARC_URL").unwrap_or_else(|_| DEFAULT_ARC_URL.into());
-    let arc_api_key = env::var("SMOKE_ARC_API_KEY").ok();
+    // SMOKE_ARC_URL / SMOKE_ARC_API_KEY are read but currently unused after
+    // the wallet-driven-broadcast refactor — the wallet owns ARC config.
+    // Retained so cross-wallet issuance flows (which would call
+    // `arc_broadcast` directly) don't break their env-var contract.
+    let _arc_url = env::var("SMOKE_ARC_URL").unwrap_or_else(|_| DEFAULT_ARC_URL.into());
+    let _arc_api_key: Option<String> = env::var("SMOKE_ARC_API_KEY").ok();
     let transfer_dest_keyid = env::var("SMOKE_TRANSFER_DEST_KEYID")
         .unwrap_or_else(|_| DEFAULT_TRANSFER_DEST_KEYID.into());
     let mint_sats = env::var("SMOKE_MINT_SATS")
@@ -716,18 +738,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // --- Dry-run gate ---
         if !broadcast {
             println!(
-                "\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to actually broadcast)"
+                "\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to hand the txs \
+                 to the wallet for atomic broadcast + basket persistence)"
             );
-            println!("  ARC URL would be: {arc_url}");
             println!("\n✓ mint-broadcast dry-run complete (build + sign + verify OK)");
             return Ok(());
         }
 
-        // --- Fetch fuel source tx FIRST (needed for both EF broadcast + BEEF) ---
-        // ARC requires Extended Format (EF) hex — that requires every input to
-        // carry its source-output data. The factory leaves source_transaction
+        // --- Fetch fuel source tx FIRST (needed for the BEEF chain) ---
+        // The wallet needs every input's source-output data to verify the SPV
+        // chain when it internalizes. The factory leaves source_transaction
         // unpopulated, so we hydrate it here from the wallet's BEEF.
-        println!("[10/?] Fetching fuel source tx (needed for EF broadcast + BEEF)...");
+        println!("[10/?] Fetching fuel source tx (needed for atomic BEEF)...");
         let fuel_with_tx = wallet
             .list_outputs(
                 ListOutputsArgs {
@@ -754,9 +776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       fuel basket BEEF: {} bytes", fuel_beef_bytes.len());
 
         // Parse the wallet's BEEF and extract the fuel source tx so we can
-        // attach it to the contract_tx's funding input. Without this the
-        // factory leaves source_transaction = None, and to_hex_ef() (used by
-        // ARC.broadcast under the hood) fails with "missing source transaction".
+        // attach it to the contract_tx's funding input.
         let mut fuel_beef_cursor = std::io::Cursor::new(&fuel_beef_bytes);
         let parsed_fuel_beef = Beef::from_binary(&mut fuel_beef_cursor)
             .map_err(|e| format!("parse wallet fuel BEEF: {e}"))?;
@@ -774,43 +794,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
         println!("       fuel source tx parsed (txid={})", funding.txid_hex);
 
-        // Hydrate contract_tx input 0 with the fuel source tx so EF serialization works.
+        // Hydrate contract_tx input 0 with the fuel source tx so the BEEF
+        // chain is complete when the wallet internalizes.
         let mut contract_tx = result.contract_tx.clone();
         contract_tx.inputs[0].source_transaction = Some(Box::new(fuel_source_tx));
 
-        // --- Live broadcast path ---
-        // NOTE: bypassing the SDK's ARC broadcaster here. It sends EF hex with
-        // Content-Type: application/octet-stream which ARC rejects (octet-stream
-        // expects raw binary, not hex). We POST hex with Content-Type: text/plain
-        // which ARC accepts. SDK fix is a separate PR.
-        println!("[11/?] Broadcasting via ARC ({arc_url})...");
+        // --- Step 1: hand contract_tx to wallet (broadcast + record, no basket) ---
+        // Wallet-driven broadcast: we package the contract_tx into atomic BEEF
+        // (subject = contract_txid, includes the fuel source tx for the SPV
+        // chain) and call internalize with NO basket insertions. This tells
+        // the wallet "broadcast + record this tx, but don't make any basket
+        // entries from it." Per the wrapper's docstring, this avoids racing
+        // the wallet's own ARC broadcast.
+        println!("[11/?] Constructing atomic BEEF for contract_tx (no outputs to internalize)...");
+        let mut contract_beef = Beef::new(BEEF_V1);
+        contract_beef
+            .merge_beef_from_binary(&fuel_beef_bytes)
+            .map_err(|e| format!("merge wallet fuel BEEF: {e}"))?;
+        let contract_tx_bytes = contract_tx
+            .to_bytes()
+            .map_err(|e| format!("serialize contract_tx: {e}"))?;
+        contract_beef
+            .merge_raw_tx(&contract_tx_bytes, None)
+            .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
+        let contract_atomic = contract_beef
+            .to_binary_atomic(&contract_txid)
+            .map_err(|e| format!("to_binary_atomic(contract_txid): {e}"))?;
+        println!(
+            "       contract atomic BEEF: {} bytes ({} txs, {} bumps)",
+            contract_atomic.len(),
+            contract_beef.txs.len(),
+            contract_beef.bumps.len()
+        );
 
-        println!("       Broadcasting contract_tx ({contract_txid})...");
-        let contract_resp_txid =
-            arc_broadcast(&arc_url, arc_api_key.as_deref(), &contract_tx).await?;
-        println!("       contract_tx broadcast OK: txid={contract_resp_txid}");
+        println!("[11b/?] Internalizing contract_tx (wallet broadcasts + records, no basket entries)...");
+        stas.internalize_stas_outputs(contract_atomic, vec![], "stas3 smoke mint contract")
+            .await
+            .map_err(|e| format!("internalize contract_tx: {e}"))?;
+        println!("       contract_tx internalized (broadcast handled by wallet)");
 
-        // Hydrate issue_tx's two inputs with the just-broadcast contract_tx so
-        // EF serialization works. Inputs 0 and 1 both spend contract_tx outputs.
+        // --- Step 2: hand issue_tx to wallet (broadcast + record + basket insert) ---
+        // Hydrate issue_tx's two inputs with the just-internalized contract_tx
+        // so the BEEF chain is complete.
         let mut issue_tx = result.issue_tx.clone();
         issue_tx.inputs[0].source_transaction = Some(Box::new(contract_tx.clone()));
         issue_tx.inputs[1].source_transaction = Some(Box::new(contract_tx.clone()));
 
-        println!("       Broadcasting issue_tx ({issue_txid})...");
-        let issue_resp_txid =
-            arc_broadcast(&arc_url, arc_api_key.as_deref(), &issue_tx).await?;
-        println!("       issue_tx broadcast OK: txid={issue_resp_txid}");
-
-        // --- Build atomic BEEF for internalize_action ---
         println!("[12/?] Constructing atomic BEEF for issue_tx internalization...");
         let mut beef = Beef::new(BEEF_V1);
         beef.merge_beef_from_binary(&fuel_beef_bytes)
             .map_err(|e| format!("merge wallet BEEF: {e}"))?;
 
         // Add contract_tx (no bump — just broadcast, not yet mined).
-        let contract_tx_bytes = contract_tx
-            .to_bytes()
-            .map_err(|e| format!("serialize contract_tx: {e}"))?;
         beef.merge_raw_tx(&contract_tx_bytes, None)
             .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
 
@@ -833,8 +868,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             beef.bumps.len()
         );
 
-        // --- Internalize the STAS-3 output ---
-        println!("[13/?] Internalizing STAS-3 output into token basket...");
+        // --- Internalize the STAS-3 output (wallet broadcasts + persists atomically) ---
+        println!("[13/?] Internalizing issue_tx (wallet broadcasts + inserts STAS-3 output into token basket)...");
         stas.internalize_stas_outputs(
             atomic_beef_bytes,
             vec![(0, dest_triple.clone(), Some("EAC1".to_string()))],
@@ -842,7 +877,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
         .map_err(|e| format!("internalize_stas_outputs failed: {e}"))?;
-        println!("       internalize_action accepted");
+        println!("       issue_tx internalized (broadcast + basket insertion handled by wallet)");
 
         // --- Verify the token now appears in the basket ---
         println!("[14/?] Verifying STAS-3 token now appears in token basket...");
@@ -1036,9 +1071,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Hydrate transfer_tx inputs with their source transactions BEFORE
-        // broadcast — ARC requires Extended Format (EF) hex which embeds each
-        // input's source-output data. Both baskets contribute: token basket
-        // for the STAS input, fuel basket for the funding input.
+        // building the atomic BEEF — the BEEF chain needs each input's
+        // source-output data so the wallet can verify SPV when it
+        // internalizes. Both baskets contribute: token basket for the STAS
+        // input, fuel basket for the funding input.
         println!("[10/?] Fetching source txs from token + fuel baskets...");
         let token_list_with_txs = wallet
             .list_outputs(
@@ -1109,9 +1145,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Sign the fuel input (input 1) — the transfer factory only signs the
-        // STAS input. Without this, ARC rejects with "inputs must have an
-        // unlocking script."
-        println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+        // STAS input. The fuel input must be signed BEFORE we build BEEF for
+        // the wallet, because signing changes the tx bytes (and therefore
+        // the txid).
+        println!("[10b/?] Signing fuel input (P2PKH)...");
         sign_p2pkh_input_in_smoke(
             &*wallet,
             &originator,
@@ -1124,28 +1161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
         println!("       fuel input signed");
 
-        println!("[11/?] Broadcasting transfer_tx via ARC ({arc_url})...");
-        let bcast_txid =
-            arc_broadcast(&arc_url, arc_api_key.as_deref(), &transfer_tx).await?;
-        println!("       transfer_tx broadcast OK: txid={bcast_txid}");
-
-        // Build atomic BEEF for internalize_action.
-        println!("[12/?] Building atomic BEEF for internalize_action...");
-
-        // Recompute the txid AFTER signing the fuel input — signing changes
-        // the unlocking script, which changes the tx bytes, which changes
-        // the txid. The pre-broadcast `transfer_txid` (cached before signing)
-        // is stale; the ARC response txid (`bcast_txid`) is the real one.
+        // Recompute the txid AFTER signing the fuel input — signing the fuel
+        // input replaced its unlocking script, which changed the tx bytes,
+        // which changed the txid. The pre-sign `transfer_txid` is stale.
         let final_txid = transfer_tx
             .id()
             .map_err(|e| format!("recompute transfer txid post-sign: {e}"))?;
-        debug_assert_eq!(
-            final_txid, bcast_txid,
-            "computed txid != ARC-returned txid"
-        );
 
-        // Reuse lookup_beef (already has both baskets' source txs) and add
-        // the transfer tx itself, then produce atomic BEEF.
+        // Build atomic BEEF for the wallet (subject = transfer tx; includes
+        // every input's source for the SPV chain).
+        println!("[11/?] Building atomic BEEF for transfer_tx...");
         let mut beef = lookup_beef;
         let beef_tx = BeefTx::from_tx(transfer_tx.clone(), None)
             .map_err(|e| format!("BeefTx::from_tx: {e}"))?;
@@ -1160,8 +1185,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             atomic_beef_bytes.len()
         );
 
-        // Internalize the new STAS-3 output (index 0 of the transfer tx).
-        println!("[12/?] Internalizing new STAS-3 output (index 0) into {token_basket:?}...");
+        // Hand the atomic BEEF to the wallet — it broadcasts the transfer
+        // tx via its own ARC client AND inserts the new STAS-3 output (index
+        // 0) into the token basket atomically. We do NOT broadcast ourselves
+        // (see the file header for why).
+        println!("[12/?] Internalizing transfer_tx (wallet broadcasts + inserts STAS-3 output into {token_basket:?})...");
         stas.internalize_stas_outputs(
             atomic_beef_bytes,
             vec![(0u32, dest_triple.clone(), None)],
@@ -1169,7 +1197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
         .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
-        println!("       internalize_action OK");
+        println!("       transfer_tx internalized (broadcast + basket insertion handled by wallet)");
 
         // Verification: re-list and confirm the new outpoint appears with the
         // correct owner_pkh.
@@ -1221,7 +1249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "\n✓ transfer phase complete — STAS-3 token transferred to new owner on-chain"
         );
-        println!("  txid: {transfer_txid}");
+        println!("  txid: {final_txid}");
         return Ok(());
     }
     // -------------------------------------------------------------------
@@ -1233,8 +1261,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1250,8 +1276,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1267,8 +1291,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
             FreezeOp::Freeze,
         )
@@ -1285,8 +1307,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
             FreezeOp::Unfreeze,
         )
@@ -1303,8 +1323,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1320,8 +1338,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1329,7 +1345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // -------------------------------------------------------------------
-    // Phase: mint-and-merge  (one-shot — bypasses wallet basket)
+    // Phase: mint-and-merge  (one-shot — wallet-driven broadcast for all 3 txs)
     // -------------------------------------------------------------------
     if phase == "mint-and-merge" {
         run_mint_and_merge_phase(
@@ -1337,8 +1353,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
-            &arc_url,
-            arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1516,25 +1530,23 @@ fn push_data_minimal_smoke(out: &mut Vec<u8>, data: &[u8]) {
 
 /// One-shot phase: mint a STAS-3 issuance with TWO destinations (same
 /// collection by construction), then immediately merge them in the same
-/// run. Bypasses the wallet's stas3tokens basket entirely — uses the
-/// just-built `IssueResult` in memory to construct the merge inputs.
+/// run. Uses the in-memory `IssueResult` to construct the merge inputs
+/// directly — we don't need to wait for the basket-insertion round-trip
+/// because the issuance and merge happen in the same process.
 ///
-/// Use case: testing the merge factory end-to-end on a wallet whose
-/// basket persistence is unreliable (or simply isn't populated yet).
-/// In production a merge would normally use tokens already in the
-/// basket, but the SAME factory + signing path is exercised here.
+/// All three transactions (contract, issue, merge) are handed to the
+/// wallet via `internalize_stas_outputs` for atomic broadcast +
+/// persistence — no direct ARC broadcast (see file header for why).
 async fn run_mint_and_merge_phase<W: WalletInterface>(
     wallet: &dyn WalletInterface,
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use bsv::script::templates::stas3::eac::{EacFields, EnergySource};
     use bsv::script::templates::stas3::factory::{
-        FundingInput as FI, IssueDestination, IssueRequest, SigningKey, TokenInput,
+        IssueDestination, IssueRequest, SigningKey, TokenInput,
     };
     use bsv::script::templates::stas3::factory::issue::build_issue;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1615,8 +1627,8 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
         return Ok(());
     }
 
-    // --- Hydrate + broadcast contract+issue (mirrors mint-broadcast) ---
-    println!("[8/?] Fetching fuel source tx for EF broadcast...");
+    // --- Hydrate fuel source tx (need it for both contract_tx + merge_tx BEEFs) ---
+    println!("[8/?] Fetching fuel source tx for atomic BEEFs...");
     let fuel_with_tx = wallet
         .list_outputs(
             ListOutputsArgs {
@@ -1646,22 +1658,65 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
 
     let mut contract_tx = result.contract_tx.clone();
     contract_tx.inputs[0].source_transaction = Some(Box::new(fuel_src));
+    let contract_tx_bytes = contract_tx
+        .to_bytes()
+        .map_err(|e| format!("serialize contract_tx: {e}"))?;
 
-    println!("[9/?] Broadcasting contract_tx via ARC...");
-    arc_broadcast(arc_url, arc_api_key, &contract_tx).await?;
-    println!("       contract_tx broadcast OK");
+    // --- Step 1: hand contract_tx to wallet (broadcast + record, no basket) ---
+    println!("[9/?] Internalizing contract_tx (wallet broadcasts + records, no basket entries)...");
+    {
+        let mut contract_beef = Beef::new(BEEF_V1);
+        contract_beef
+            .merge_beef_from_binary(&fuel_beef_bytes)
+            .map_err(|e| format!("merge fuel BEEF (contract): {e}"))?;
+        contract_beef
+            .merge_raw_tx(&contract_tx_bytes, None)
+            .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
+        let contract_atomic = contract_beef
+            .to_binary_atomic(&contract_txid)
+            .map_err(|e| format!("to_binary_atomic(contract_txid): {e}"))?;
+        stas.internalize_stas_outputs(contract_atomic, vec![], "stas3 smoke mam-contract")
+            .await
+            .map_err(|e| format!("internalize contract_tx: {e}"))?;
+    }
+    println!("       contract_tx internalized");
 
     let mut issue_tx = result.issue_tx.clone();
     issue_tx.inputs[0].source_transaction = Some(Box::new(contract_tx.clone()));
     issue_tx.inputs[1].source_transaction = Some(Box::new(contract_tx.clone()));
-
-    println!("[10/?] Broadcasting issue_tx via ARC...");
-    arc_broadcast(arc_url, arc_api_key, &issue_tx).await?;
-    println!("       issue_tx broadcast OK");
-
-    // --- Construct merge inputs from in-memory issue_tx (no basket lookup) ---
-    println!("[11/?] Constructing merge TokenInputs from in-memory issue_tx...");
     let issue_tx_bytes = issue_tx.to_bytes().map_err(|e| format!("issue bytes: {e}"))?;
+
+    // --- Step 2: hand issue_tx to wallet (broadcast + insert BOTH STAS-3 outputs) ---
+    println!("[10/?] Internalizing issue_tx (wallet broadcasts + inserts both STAS-3 dests into token basket)...");
+    {
+        let mut issue_beef = Beef::new(BEEF_V1);
+        issue_beef
+            .merge_beef_from_binary(&fuel_beef_bytes)
+            .map_err(|e| format!("merge fuel BEEF (issue): {e}"))?;
+        issue_beef
+            .merge_raw_tx(&contract_tx_bytes, None)
+            .map_err(|e| format!("merge contract_tx into BEEF (issue): {e}"))?;
+        issue_beef
+            .merge_raw_tx(&issue_tx_bytes, None)
+            .map_err(|e| format!("merge issue_tx into BEEF: {e}"))?;
+        let issue_atomic = issue_beef
+            .to_binary_atomic(&issue_txid)
+            .map_err(|e| format!("to_binary_atomic(issue_txid): {e}"))?;
+        stas.internalize_stas_outputs(
+            issue_atomic,
+            vec![
+                (0u32, dest_a_triple.clone(), Some("EAC1".to_string())),
+                (1u32, dest_b_triple.clone(), Some("EAC1".to_string())),
+            ],
+            "stas3 smoke mam-issue",
+        )
+        .await
+        .map_err(|e| format!("internalize issue_tx: {e}"))?;
+    }
+    println!("       issue_tx internalized");
+
+    // --- Construct merge inputs from in-memory issue_tx (no basket round-trip) ---
+    println!("[11/?] Constructing merge TokenInputs from in-memory issue_tx...");
     let lock_a = issue_tx.outputs[0].locking_script.clone();
     let lock_b = issue_tx.outputs[1].locking_script.clone();
     let token_a = TokenInput {
@@ -1711,7 +1766,7 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
         .map_err(|e| format!("merge build: {e:?}"))?;
     let merge_txid_pre = merge_tx.id().map_err(|e| format!("merge tx id: {e}"))?;
     println!(
-        "       merge_tx txid: {merge_txid_pre}  size: {} bytes",
+        "       merge_tx txid (pre-sign): {merge_txid_pre}  size: {} bytes",
         merge_tx.to_bytes().map(|b| b.len()).unwrap_or(0)
     );
 
@@ -1728,7 +1783,9 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
     }
     println!("       ✓ both STAS inputs engine-verified");
 
-    // Hydrate sources for EF: issue_tx for inputs 0+1, fuel src for input 2.
+    // Hydrate every input on merge_tx so the BEEF chain is complete:
+    // - inputs 0 + 1 spend issue_tx outputs
+    // - input 2 spends merge_fuel from the fuel basket
     println!("[15/?] Hydrating source_transaction on merge_tx inputs...");
     merge_tx.inputs[0].source_transaction = Some(Box::new(issue_tx.clone()));
     merge_tx.inputs[1].source_transaction = Some(Box::new(issue_tx.clone()));
@@ -1739,6 +1796,9 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
         .find_txid(&merge_fuel.txid_hex)
         .and_then(|btx| btx.tx.clone())
         .ok_or("merge fuel source tx not in wallet BEEF")?;
+    let merge_fuel_src_bytes = merge_fuel_src
+        .to_bytes()
+        .map_err(|e| format!("serialize merge_fuel source tx: {e}"))?;
     merge_tx.inputs[2].source_transaction = Some(Box::new(merge_fuel_src));
 
     println!("[16/?] Signing fuel input (index 2) on merge_tx...");
@@ -1753,14 +1813,43 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[17/?] Broadcasting merge_tx via ARC...");
-    let merge_bcast_txid = arc_broadcast(arc_url, arc_api_key, &merge_tx).await?;
-    println!("       merge_tx broadcast OK: txid={merge_bcast_txid}");
+    let merge_final_txid = merge_tx
+        .id()
+        .map_err(|e| format!("recompute merge_tx txid post-sign: {e}"))?;
+    let merge_tx_bytes = merge_tx
+        .to_bytes()
+        .map_err(|e| format!("serialize merge_tx: {e}"))?;
+
+    // --- Step 3: hand merge_tx to wallet (broadcast + insert merged STAS-3 output) ---
+    println!("[17/?] Building atomic BEEF for merge_tx...");
+    let mut merge_beef = Beef::new(BEEF_V1);
+    merge_beef
+        .merge_raw_tx(&merge_fuel_src_bytes, None)
+        .map_err(|e| format!("merge merge_fuel source into BEEF: {e}"))?;
+    merge_beef
+        .merge_raw_tx(&issue_tx_bytes, None)
+        .map_err(|e| format!("merge issue_tx into merge BEEF: {e}"))?;
+    merge_beef
+        .merge_raw_tx(&merge_tx_bytes, None)
+        .map_err(|e| format!("merge merge_tx into BEEF: {e}"))?;
+    let merge_atomic = merge_beef
+        .to_binary_atomic(&merge_final_txid)
+        .map_err(|e| format!("to_binary_atomic(merge_final_txid): {e}"))?;
+
+    println!("[18/?] Internalizing merge_tx (wallet broadcasts + inserts merged STAS-3 output)...");
+    stas.internalize_stas_outputs(
+        merge_atomic,
+        vec![(0u32, merge_dest_triple, None)],
+        "stas3 smoke mam-merge",
+    )
+    .await
+    .map_err(|e| format!("internalize merge_tx: {e}"))?;
+    println!("       merge_tx internalized (broadcast + basket insertion handled by wallet)");
 
     println!("\n✓ mint-and-merge phase complete — 2-input merge of same-issuance tokens on chain");
     println!("  contract_tx: {contract_txid}");
     println!("  issue_tx:    {issue_txid}");
-    println!("  merge_tx:    {merge_bcast_txid}");
+    println!("  merge_tx:    {merge_final_txid}");
     Ok(())
 }
 
@@ -1768,6 +1857,15 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
 /// `Content-Type: text/plain` (which ARC accepts; `application/octet-stream`
 /// is reserved for raw binary and rejects hex input). Returns the broadcast
 /// txid on success.
+///
+/// **Currently unused after the wallet-driven-broadcast refactor**: every
+/// self-issuance phase in this smoke now hands the tx (as atomic BEEF) to
+/// the wallet via `Stas3Wallet::internalize_stas_outputs`, which broadcasts
+/// + persists atomically (see the `# SAFETY` section in the file header).
+/// This helper is retained for cross-wallet issuance flows that ship a
+/// signed BEEF without our own internalize step (e.g. distribution via
+/// message box / overlay — the recipient internalizes their own copy).
+#[allow(dead_code)]
 async fn arc_broadcast(
     arc_url: &str,
     arc_api_key: Option<&str>,
@@ -2008,8 +2106,6 @@ async fn run_redeem_phase<W: WalletInterface>(
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token_basket = stas.config().token_basket.clone();
@@ -2101,7 +2197,7 @@ async fn run_redeem_phase<W: WalletInterface>(
     .await?;
     hydrate_inputs_from_lookup(&mut redeem_tx, &lookup)?;
 
-    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    println!("[10b/?] Signing fuel input (P2PKH)...");
     sign_p2pkh_input_in_smoke(
         wallet,
         originator,
@@ -2113,20 +2209,23 @@ async fn run_redeem_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[11/?] Broadcasting redeem_tx via ARC ({arc_url})...");
-    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &redeem_tx).await?;
-    println!("       redeem_tx broadcast OK: txid={bcast_txid}");
-
     let final_txid = redeem_tx
         .id()
         .map_err(|e| format!("recompute redeem txid post-sign: {e}"))?;
-    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
 
-    // Build atomic BEEF (records the burn for our own audit trail) but we
-    // don't `internalize_stas_outputs` — the redeem output is a 70-byte
-    // P2MPKH, not a STAS-3 lock.
-    let _atomic_beef = build_atomic_beef_for(lookup, &redeem_tx, &final_txid)?;
-    println!("       atomic BEEF constructed (no STAS-3 outputs to internalize)");
+    // Build atomic BEEF and hand it to the wallet. The redeem output is a
+    // 70-byte P2MPKH (NOT a STAS-3 lock) so there are no basket entries to
+    // make — but the wallet still needs to broadcast + record the burn for
+    // our audit trail. Pass an empty Vec for `stas_output_indices`.
+    println!("[11/?] Building atomic BEEF for redeem_tx...");
+    let atomic_beef = build_atomic_beef_for(lookup, &redeem_tx, &final_txid)?;
+    println!("       atomic BEEF size: {} bytes", atomic_beef.len());
+
+    println!("[12/?] Internalizing redeem_tx (wallet broadcasts + records the burn, no basket entries)...");
+    stas.internalize_stas_outputs(atomic_beef, vec![], "stas3 smoke redeem")
+        .await
+        .map_err(|e| format!("internalize redeem_tx: {e:?}"))?;
+    println!("       redeem_tx internalized (broadcast handled by wallet)");
 
     println!("\n✓ redeem phase complete — STAS-3 token burned to P2MPKH on-chain");
     println!("  txid: {final_txid}");
@@ -2142,8 +2241,6 @@ async fn run_split_phase<W: WalletInterface>(
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token_basket = stas.config().token_basket.clone();
@@ -2260,7 +2357,7 @@ async fn run_split_phase<W: WalletInterface>(
     .await?;
     hydrate_inputs_from_lookup(&mut split_tx, &lookup)?;
 
-    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    println!("[10b/?] Signing fuel input (P2PKH)...");
     sign_p2pkh_input_in_smoke(
         wallet,
         originator,
@@ -2272,21 +2369,16 @@ async fn run_split_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[11/?] Broadcasting split_tx via ARC ({arc_url})...");
-    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &split_tx).await?;
-    println!("       split_tx broadcast OK: txid={bcast_txid}");
-
     let final_txid = split_tx
         .id()
         .map_err(|e| format!("recompute split txid post-sign: {e}"))?;
-    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
 
-    println!("[12/?] Building atomic BEEF for split_tx...");
+    println!("[11/?] Building atomic BEEF for split_tx...");
     let atomic_beef = build_atomic_beef_for(lookup, &split_tx, &final_txid)?;
     println!("       atomic BEEF size: {} bytes", atomic_beef.len());
 
     println!(
-        "[13/?] Internalizing both new STAS-3 outputs (indices 0 and 1) into {token_basket:?}..."
+        "[12/?] Internalizing split_tx (wallet broadcasts + inserts both STAS-3 outputs into {token_basket:?})..."
     );
     stas.internalize_stas_outputs(
         atomic_beef,
@@ -2298,6 +2390,7 @@ async fn run_split_phase<W: WalletInterface>(
     )
     .await
     .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+    println!("       split_tx internalized (broadcast + basket insertions handled by wallet)");
 
     println!("[14/?] Re-listing token basket to verify new UTXOs...");
     let after = list_basket(wallet, &token_basket, originator).await?;
@@ -2331,14 +2424,11 @@ impl FreezeOp {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
     wallet: &dyn WalletInterface,
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
     op: FreezeOp,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2497,7 +2587,7 @@ async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
     .await?;
     hydrate_inputs_from_lookup(&mut op_tx, &lookup)?;
 
-    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    println!("[10b/?] Signing fuel input (P2PKH)...");
     sign_p2pkh_input_in_smoke(
         wallet,
         originator,
@@ -2509,21 +2599,16 @@ async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[11/?] Broadcasting {op_name}_tx via ARC ({arc_url})...");
-    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &op_tx).await?;
-    println!("       {op_name}_tx broadcast OK: txid={bcast_txid}");
-
     let final_txid = op_tx
         .id()
         .map_err(|e| format!("recompute {op_name} txid post-sign: {e}"))?;
-    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
 
-    println!("[12/?] Building atomic BEEF for {op_name}_tx...");
+    println!("[11/?] Building atomic BEEF for {op_name}_tx...");
     let atomic_beef = build_atomic_beef_for(lookup, &op_tx, &final_txid)?;
     println!("       atomic BEEF size: {} bytes", atomic_beef.len());
 
     println!(
-        "[13/?] Internalizing new STAS-3 output (index 0) into {token_basket:?}..."
+        "[12/?] Internalizing {op_name}_tx (wallet broadcasts + inserts new STAS-3 output into {token_basket:?})..."
     );
     stas.internalize_stas_outputs(
         atomic_beef,
@@ -2535,6 +2620,7 @@ async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
     )
     .await
     .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+    println!("       {op_name}_tx internalized (broadcast + basket insertion handled by wallet)");
 
     println!("[14/?] Re-listing token basket to verify state transition...");
     let after = list_basket(wallet, &token_basket, originator).await?;
@@ -2565,14 +2651,11 @@ async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
 // builds + signs + broadcasts the confiscate tx, and internalizes the new
 // STAS output (now owned by `stas3owner/confisc-dest`).
 
-#[allow(clippy::too_many_arguments)]
 async fn run_confiscate_phase<W: WalletInterface>(
     wallet: &dyn WalletInterface,
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token_basket = stas.config().token_basket.clone();
@@ -2718,7 +2801,7 @@ async fn run_confiscate_phase<W: WalletInterface>(
     .await?;
     hydrate_inputs_from_lookup(&mut confisc_tx, &lookup)?;
 
-    println!("[11b/?] Signing fuel input (P2PKH) before broadcast...");
+    println!("[11b/?] Signing fuel input (P2PKH)...");
     sign_p2pkh_input_in_smoke(
         wallet,
         originator,
@@ -2730,20 +2813,15 @@ async fn run_confiscate_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[12/?] Broadcasting confiscate_tx via ARC ({arc_url})...");
-    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &confisc_tx).await?;
-    println!("       confiscate_tx broadcast OK: txid={bcast_txid}");
-
     let final_txid = confisc_tx
         .id()
         .map_err(|e| format!("recompute confiscate txid post-sign: {e}"))?;
-    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
 
-    println!("[13/?] Building atomic BEEF for confiscate_tx...");
+    println!("[12/?] Building atomic BEEF for confiscate_tx...");
     let atomic_beef = build_atomic_beef_for(lookup, &confisc_tx, &final_txid)?;
     println!("       atomic BEEF size: {} bytes", atomic_beef.len());
 
-    println!("[14/?] Internalizing confiscated STAS-3 output (index 0) into {token_basket:?}...");
+    println!("[13/?] Internalizing confiscate_tx (wallet broadcasts + inserts confiscated STAS-3 output into {token_basket:?})...");
     stas.internalize_stas_outputs(
         atomic_beef,
         vec![(0u32, dest_triple, None)],
@@ -2751,6 +2829,7 @@ async fn run_confiscate_phase<W: WalletInterface>(
     )
     .await
     .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+    println!("       confiscate_tx internalized (broadcast + basket insertion handled by wallet)");
 
     println!("[15/?] Re-listing token basket to verify new owner...");
     let after = list_basket(wallet, &token_basket, originator).await?;
@@ -2788,14 +2867,11 @@ fn is_same_token_type(
         && a.optional_data == b.optional_data
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_merge_phase<W: WalletInterface>(
     wallet: &dyn WalletInterface,
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
-    arc_url: &str,
-    arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token_basket = stas.config().token_basket.clone();
@@ -2951,11 +3027,11 @@ async fn run_merge_phase<W: WalletInterface>(
     }
 
     // Hydrate source_transaction on every input (3 inputs: 2 STAS + 1 fuel)
-    // so EF serialization works.
+    // so the BEEF chain is complete for the wallet's SPV check.
     hydrate_inputs_from_lookup(&mut merge_tx, &lookup)?;
 
     // Sign the fuel input (input 2 — STAS inputs are at 0 and 1).
-    println!("[10b/?] Signing fuel input (P2PKH, index 2) before broadcast...");
+    println!("[10b/?] Signing fuel input (P2PKH, index 2)...");
     sign_p2pkh_input_in_smoke(
         wallet,
         originator,
@@ -2967,20 +3043,15 @@ async fn run_merge_phase<W: WalletInterface>(
     )
     .await?;
 
-    println!("[11/?] Broadcasting merge_tx via ARC ({arc_url})...");
-    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &merge_tx).await?;
-    println!("       merge_tx broadcast OK: txid={bcast_txid}");
-
     let final_txid = merge_tx
         .id()
         .map_err(|e| format!("recompute merge txid post-sign: {e}"))?;
-    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
 
-    println!("[12/?] Building atomic BEEF for merge_tx...");
+    println!("[11/?] Building atomic BEEF for merge_tx...");
     let atomic_beef = build_atomic_beef_for(lookup, &merge_tx, &final_txid)?;
     println!("       atomic BEEF size: {} bytes", atomic_beef.len());
 
-    println!("[13/?] Internalizing merged STAS-3 output (index 0) into {token_basket:?}...");
+    println!("[12/?] Internalizing merge_tx (wallet broadcasts + inserts merged STAS-3 output into {token_basket:?})...");
     stas.internalize_stas_outputs(
         atomic_beef,
         vec![(0u32, dest_triple, None)],
@@ -2988,6 +3059,7 @@ async fn run_merge_phase<W: WalletInterface>(
     )
     .await
     .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+    println!("       merge_tx internalized (broadcast + basket insertion handled by wallet)");
 
     println!("[14/?] Re-listing token basket to verify merged UTXO...");
     let after = list_basket(wallet, &token_basket, originator).await?;
