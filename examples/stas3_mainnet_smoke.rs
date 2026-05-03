@@ -1329,12 +1329,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // -------------------------------------------------------------------
+    // Phase: mint-and-merge  (one-shot — bypasses wallet basket)
+    // -------------------------------------------------------------------
+    if phase == "mint-and-merge" {
+        run_mint_and_merge_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
         return Err(format!(
             "unknown SMOKE_PHASE={phase} \
-             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer | redeem | split | freeze | unfreeze | confiscate | merge)"
+             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer | redeem | split | freeze | unfreeze | confiscate | merge | mint-and-merge)"
         )
         .into());
     }
@@ -1495,6 +1512,256 @@ fn push_data_minimal_smoke(out: &mut Vec<u8>, data: &[u8]) {
     } else {
         panic!("push too large for smoke helper: {n} bytes");
     }
+}
+
+/// One-shot phase: mint a STAS-3 issuance with TWO destinations (same
+/// collection by construction), then immediately merge them in the same
+/// run. Bypasses the wallet's stas3tokens basket entirely — uses the
+/// just-built `IssueResult` in memory to construct the merge inputs.
+///
+/// Use case: testing the merge factory end-to-end on a wallet whose
+/// basket persistence is unreliable (or simply isn't populated yet).
+/// In production a merge would normally use tokens already in the
+/// basket, but the SAME factory + signing path is exercised here.
+async fn run_mint_and_merge_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bsv::script::templates::stas3::eac::{EacFields, EnergySource};
+    use bsv::script::templates::stas3::factory::{
+        FundingInput as FI, IssueDestination, IssueRequest, SigningKey, TokenInput,
+    };
+    use bsv::script::templates::stas3::factory::issue::build_issue;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    println!("\n[4/?] Picking fuel UTXO for mint (need >=8k sats — 2-dest mint is bigger)...");
+    let funding = stas.pick_fuel(8_000).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[5/?] Deriving issuer + two destination keys...");
+    let issuer_keyid = std::env::var("SMOKE_MINT_ISSUER_KEYID")
+        .unwrap_or_else(|_| format!("mam-{now_ms}"));
+    let issuer_triple = Brc43KeyArgs::self_under("stas3issuer", issuer_keyid.as_str());
+    let issuer_pkh = derive_pkh_for_triple(wallet, originator, &issuer_triple).await?;
+    let dest_a_triple = Brc43KeyArgs::self_under("stas3owner", "mam-dest-a");
+    let dest_a_pkh = derive_pkh_for_triple(wallet, originator, &dest_a_triple).await?;
+    let dest_b_triple = Brc43KeyArgs::self_under("stas3owner", "mam-dest-b");
+    let dest_b_pkh = derive_pkh_for_triple(wallet, originator, &dest_b_triple).await?;
+    println!("       issuer pkh:   {}", hex::encode(issuer_pkh));
+    println!("       dest A pkh:   {}", hex::encode(dest_a_pkh));
+    println!("       dest B pkh:   {}", hex::encode(dest_b_pkh));
+
+    println!("[6/?] Building EacFields (fixed timestamps)...");
+    let eac = EacFields {
+        quantity_wh: 1,
+        interval_start: 1_700_000_000_i64,
+        interval_end: 1_700_003_600_i64,
+        energy_source: EnergySource::Solar,
+        country: *b"US",
+        device_id: [0xab; 32],
+        id_range: (1, 1),
+        issue_date: 1_700_003_600_i64,
+        storage_tag: 0,
+    };
+
+    println!("[7/?] Calling build_issue with TWO destinations (same collection)...");
+    let result = build_issue(IssueRequest {
+        wallet,
+        originator: Some(originator),
+        issuer_signing_key: SigningKey::P2pkh(issuer_triple.clone()),
+        redemption_pkh: issuer_pkh,
+        flags: 0,
+        service_fields: vec![],
+        scheme_bytes: b"stas3-smoke-mam".to_vec(),
+        funding_input: funding.clone(),
+        destinations: vec![
+            IssueDestination {
+                owner_pkh: dest_a_pkh,
+                action_data: bsv::script::templates::stas3::ActionData::Passive(vec![]),
+                satoshis: 1,
+                optional_data: eac.to_optional_data(),
+            },
+            IssueDestination {
+                owner_pkh: dest_b_pkh,
+                action_data: bsv::script::templates::stas3::ActionData::Passive(vec![]),
+                satoshis: 1,
+                optional_data: eac.to_optional_data(),
+            },
+        ],
+        fee_rate_sat_per_kb: 500,
+    })
+    .await
+    .map_err(|e| format!("build_issue: {e:?}"))?;
+    let contract_txid = result.contract_tx.id().map_err(|e| format!("ctxid: {e}"))?;
+    let issue_txid = result.issue_tx.id().map_err(|e| format!("itxid: {e}"))?;
+    println!("       contract_tx txid: {contract_txid}");
+    println!("       issue_tx txid:    {issue_txid}");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        return Ok(());
+    }
+
+    // --- Hydrate + broadcast contract+issue (mirrors mint-broadcast) ---
+    println!("[8/?] Fetching fuel source tx for EF broadcast...");
+    let fuel_with_tx = wallet
+        .list_outputs(
+            ListOutputsArgs {
+                basket: stas.config().fuel_basket.clone(),
+                tags: vec![],
+                tag_query_mode: None,
+                include: Some(OutputInclude::EntireTransactions),
+                include_custom_instructions: BooleanDefaultFalse(Some(false)),
+                include_tags: BooleanDefaultFalse(Some(false)),
+                include_labels: BooleanDefaultFalse(Some(false)),
+                limit: Some(100),
+                offset: None,
+                seek_permission: BooleanDefaultTrue(Some(true)),
+            },
+            Some(originator),
+        )
+        .await?;
+    let fuel_beef_bytes = fuel_with_tx
+        .beef
+        .ok_or("list_outputs(EntireTransactions) returned no BEEF field")?;
+    let mut cur = std::io::Cursor::new(&fuel_beef_bytes);
+    let parsed = Beef::from_binary(&mut cur).map_err(|e| format!("parse fuel BEEF: {e}"))?;
+    let fuel_src = parsed
+        .find_txid(&funding.txid_hex)
+        .and_then(|btx| btx.tx.clone())
+        .ok_or("fuel source tx not in wallet BEEF")?;
+
+    let mut contract_tx = result.contract_tx.clone();
+    contract_tx.inputs[0].source_transaction = Some(Box::new(fuel_src));
+
+    println!("[9/?] Broadcasting contract_tx via ARC...");
+    arc_broadcast(arc_url, arc_api_key, &contract_tx).await?;
+    println!("       contract_tx broadcast OK");
+
+    let mut issue_tx = result.issue_tx.clone();
+    issue_tx.inputs[0].source_transaction = Some(Box::new(contract_tx.clone()));
+    issue_tx.inputs[1].source_transaction = Some(Box::new(contract_tx.clone()));
+
+    println!("[10/?] Broadcasting issue_tx via ARC...");
+    arc_broadcast(arc_url, arc_api_key, &issue_tx).await?;
+    println!("       issue_tx broadcast OK");
+
+    // --- Construct merge inputs from in-memory issue_tx (no basket lookup) ---
+    println!("[11/?] Constructing merge TokenInputs from in-memory issue_tx...");
+    let issue_tx_bytes = issue_tx.to_bytes().map_err(|e| format!("issue bytes: {e}"))?;
+    let lock_a = issue_tx.outputs[0].locking_script.clone();
+    let lock_b = issue_tx.outputs[1].locking_script.clone();
+    let token_a = TokenInput {
+        txid_hex: issue_txid.clone(),
+        vout: 0,
+        satoshis: 1,
+        locking_script: lock_a.clone(),
+        signing_key: SigningKey::P2pkh(dest_a_triple),
+        current_action_data: bsv::script::templates::stas3::ActionData::Passive(vec![]),
+        source_tx_bytes: Some(issue_tx_bytes.clone()),
+    };
+    let token_b = TokenInput {
+        txid_hex: issue_txid.clone(),
+        vout: 1,
+        satoshis: 1,
+        locking_script: lock_b.clone(),
+        signing_key: SigningKey::P2pkh(dest_b_triple),
+        current_action_data: bsv::script::templates::stas3::ActionData::Passive(vec![]),
+        source_tx_bytes: Some(issue_tx_bytes.clone()),
+    };
+    println!("       token A: {issue_txid}.0  token B: {issue_txid}.1");
+
+    println!("[12/?] Picking fuel UTXO for merge (need >=8k — merge tx also big)...");
+    let merge_fuel = stas.pick_fuel(8_000).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        merge_fuel.txid_hex, merge_fuel.vout, merge_fuel.satoshis
+    );
+
+    let merge_dest_triple = Brc43KeyArgs::self_under("stas3owner", "mam-merge-dest");
+    let merge_dest_pkh =
+        derive_pkh_for_triple(wallet, originator, &merge_dest_triple).await?;
+    let change_pkh = hash160(identity_pubkey_der);
+    let change_satoshis: u64 = 800;
+
+    println!("[13/?] Calling Stas3Wallet::merge (2 STAS inputs from same issuance + 1 fuel)...");
+    let mut merge_tx = stas
+        .merge(
+            vec![token_a.clone(), token_b.clone()],
+            merge_fuel.clone(),
+            merge_dest_pkh,
+            change_pkh,
+            change_satoshis,
+            Some(b"stas3 smoke mam-merge".to_vec()),
+        )
+        .await
+        .map_err(|e| format!("merge build: {e:?}"))?;
+    let merge_txid_pre = merge_tx.id().map_err(|e| format!("merge tx id: {e}"))?;
+    println!(
+        "       merge_tx txid: {merge_txid_pre}  size: {} bytes",
+        merge_tx.to_bytes().map(|b| b.len()).unwrap_or(0)
+    );
+
+    println!("[14/?] Engine-verifying both STAS inputs of merge_tx...");
+    let valid_0 = verify_input(&merge_tx, 0, &lock_a, 1)
+        .map_err(|e| format!("merge tx STAS input 0 verify: {e:?}"))?;
+    let valid_1 = verify_input(&merge_tx, 1, &lock_b, 1)
+        .map_err(|e| format!("merge tx STAS input 1 verify: {e:?}"))?;
+    if !valid_0 || !valid_1 {
+        return Err(format!(
+            "merge engine verify failed: input0={valid_0} input1={valid_1}"
+        )
+        .into());
+    }
+    println!("       ✓ both STAS inputs engine-verified");
+
+    // Hydrate sources for EF: issue_tx for inputs 0+1, fuel src for input 2.
+    println!("[15/?] Hydrating source_transaction on merge_tx inputs...");
+    merge_tx.inputs[0].source_transaction = Some(Box::new(issue_tx.clone()));
+    merge_tx.inputs[1].source_transaction = Some(Box::new(issue_tx.clone()));
+    let mut cur2 = std::io::Cursor::new(&fuel_beef_bytes);
+    let parsed2 =
+        Beef::from_binary(&mut cur2).map_err(|e| format!("re-parse fuel BEEF: {e}"))?;
+    let merge_fuel_src = parsed2
+        .find_txid(&merge_fuel.txid_hex)
+        .and_then(|btx| btx.tx.clone())
+        .ok_or("merge fuel source tx not in wallet BEEF")?;
+    merge_tx.inputs[2].source_transaction = Some(Box::new(merge_fuel_src));
+
+    println!("[16/?] Signing fuel input (index 2) on merge_tx...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut merge_tx,
+        2,
+        merge_fuel.satoshis,
+        &merge_fuel.locking_script,
+        &merge_fuel.triple,
+    )
+    .await?;
+
+    println!("[17/?] Broadcasting merge_tx via ARC...");
+    let merge_bcast_txid = arc_broadcast(arc_url, arc_api_key, &merge_tx).await?;
+    println!("       merge_tx broadcast OK: txid={merge_bcast_txid}");
+
+    println!("\n✓ mint-and-merge phase complete — 2-input merge of same-issuance tokens on chain");
+    println!("  contract_tx: {contract_txid}");
+    println!("  issue_tx:    {issue_txid}");
+    println!("  merge_tx:    {merge_bcast_txid}");
+    Ok(())
 }
 
 /// POST a transaction to ARC `/v1/tx` as Extended Format hex with
