@@ -371,7 +371,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Use the issuer triple itself for ownership; pkh already computed.
             (issuer_triple.clone(), issuer_pkh)
         } else {
-            let dt = Brc43KeyArgs::self_under("stas3owner", "dest1");
+            let dest_keyid = env::var("SMOKE_MINT_DEST_KEYID")
+                .unwrap_or_else(|_| "dest1".to_string());
+            let dt = Brc43KeyArgs::self_under("stas3owner", &dest_keyid);
             let dpk = wallet
                 .get_public_key(
                     GetPublicKeyArgs {
@@ -393,16 +395,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       dest pkh:       {}", hex::encode(dest_pkh));
 
         println!("[7/?] Building minimal EacFields...");
-        let now_secs = (now_ms / 1000) as i64;
+        // SMOKE_EAC_FIXED=1 uses constants instead of `now` so two mints
+        // produce byte-identical optional_data (required for `merge` —
+        // tokens must share optional_data to be "same type").
+        let eac_fixed = env::var("SMOKE_EAC_FIXED")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let (interval_start, interval_end, issue_date) = if eac_fixed {
+            (1_700_000_000_i64, 1_700_003_600_i64, 1_700_003_600_i64)
+        } else {
+            let now_secs = (now_ms / 1000) as i64;
+            (now_secs - 3600, now_secs, now_secs)
+        };
         let eac = EacFields {
             quantity_wh: 1,
-            interval_start: now_secs - 3600,
-            interval_end: now_secs,
+            interval_start,
+            interval_end,
             energy_source: EnergySource::Solar,
             country: *b"US",
             device_id: [0xab; 32],
             id_range: (1, 1),
-            issue_date: now_secs,
+            issue_date,
             storage_tag: 0,
         };
         println!(
@@ -569,7 +582,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (dest_triple, dest_pkh) = if mint_to_issuer {
             (issuer_triple.clone(), issuer_pkh)
         } else {
-            let dt = Brc43KeyArgs::self_under("stas3owner", "dest1");
+            let dest_keyid = env::var("SMOKE_MINT_DEST_KEYID")
+                .unwrap_or_else(|_| "dest1".to_string());
+            let dt = Brc43KeyArgs::self_under("stas3owner", &dest_keyid);
             let dpk = wallet
                 .get_public_key(
                     GetPublicKeyArgs {
@@ -591,16 +606,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       dest pkh:       {}", hex::encode(dest_pkh));
 
         println!("[7/?] Building minimal EacFields...");
-        let now_secs = (now_ms / 1000) as i64;
+        // SMOKE_EAC_FIXED=1 uses constants instead of `now` so two mints
+        // produce byte-identical optional_data (required for `merge` —
+        // tokens must share optional_data to be "same type").
+        let eac_fixed = env::var("SMOKE_EAC_FIXED")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let (interval_start, interval_end, issue_date) = if eac_fixed {
+            (1_700_000_000_i64, 1_700_003_600_i64, 1_700_003_600_i64)
+        } else {
+            let now_secs = (now_ms / 1000) as i64;
+            (now_secs - 3600, now_secs, now_secs)
+        };
         let eac = EacFields {
             quantity_wh: 1,
-            interval_start: now_secs - 3600,
-            interval_end: now_secs,
+            interval_start,
+            interval_end,
             energy_source: EnergySource::Solar,
             country: *b"US",
             device_id: [0xab; 32],
             id_range: (1, 1),
-            issue_date: now_secs,
+            issue_date,
             storage_tag: 0,
         };
         println!(
