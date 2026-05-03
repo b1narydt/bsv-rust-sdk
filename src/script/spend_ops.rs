@@ -119,9 +119,26 @@ impl Spend {
             }
 
             Op::OpReturn => {
-                return Err(ScriptError::InvalidScript(
-                    "OP_RETURN encountered".to_string(),
-                ));
+                // Post-Genesis BSV semantics: OP_RETURN at top level is a
+                // successful early termination. Used by covenant scripts
+                // (e.g. STAS-3) that end with OP_RETURN as a success marker.
+                // The parser truncates everything after this point into the
+                // OP_RETURN chunk's data, so we jump to end-of-script and let
+                // the caller inspect the stack — if the script left a falsy
+                // top, validate() will still return false. This is the
+                // unconditional behavior matching the dxs production engine
+                // and the canonical 2,899-byte STAS-3 body which terminates
+                // with OP_RETURN regardless of tx version.
+                let chunks_len = match self.context {
+                    crate::script::spend::ScriptContext::Unlocking => {
+                        self.unlocking_script.chunks().len()
+                    }
+                    crate::script::spend::ScriptContext::Locking => {
+                        self.locking_script.chunks().len()
+                    }
+                };
+                self.program_counter = chunks_len;
+                return Ok(());
             }
 
             Op::OpVer => {
@@ -1059,29 +1076,42 @@ impl Spend {
         preimage.extend_from_slice(&self.transaction_version.to_le_bytes());
 
         // 2. hashPrevouts
+        //
+        // BIP-143 hashPrevouts is the double-SHA256 of the serialized outpoints
+        // of ALL inputs, in their original transaction order. `other_inputs`
+        // holds the OTHER N-1 inputs (excluding the current one) in tx order;
+        // splice the current input back in at position `input_index`.
         if !anyone_can_pay {
             let mut prevouts = Vec::new();
-            // Current input's outpoint
-            prevouts.extend_from_slice(&txid_to_bytes(&self.source_txid));
-            prevouts.extend_from_slice(&(self.source_output_index as u32).to_le_bytes());
-            // Other inputs' outpoints
-            for input in &self.other_inputs {
-                let default_txid = "00".repeat(32);
-                let txid = input.source_txid.as_deref().unwrap_or(&default_txid);
-                prevouts.extend_from_slice(&txid_to_bytes(txid));
-                prevouts.extend_from_slice(&input.source_output_index.to_le_bytes());
+            let total_inputs = self.other_inputs.len() + 1;
+            let mut others = self.other_inputs.iter();
+            for i in 0..total_inputs {
+                if i == self.input_index {
+                    prevouts.extend_from_slice(&txid_to_bytes(&self.source_txid));
+                    prevouts.extend_from_slice(&(self.source_output_index as u32).to_le_bytes());
+                } else if let Some(input) = others.next() {
+                    let default_txid = "00".repeat(32);
+                    let txid = input.source_txid.as_deref().unwrap_or(&default_txid);
+                    prevouts.extend_from_slice(&txid_to_bytes(txid));
+                    prevouts.extend_from_slice(&input.source_output_index.to_le_bytes());
+                }
             }
             preimage.extend_from_slice(&hash256(&prevouts));
         } else {
             preimage.extend_from_slice(&[0u8; 32]);
         }
 
-        // 3. hashSequence
+        // 3. hashSequence — same ordering rule as hashPrevouts.
         if !anyone_can_pay && base_type != sighash_none && base_type != sighash_single {
             let mut sequences = Vec::new();
-            sequences.extend_from_slice(&self.transaction_sequence.to_le_bytes());
-            for input in &self.other_inputs {
-                sequences.extend_from_slice(&input.sequence.to_le_bytes());
+            let total_inputs = self.other_inputs.len() + 1;
+            let mut others = self.other_inputs.iter();
+            for i in 0..total_inputs {
+                if i == self.input_index {
+                    sequences.extend_from_slice(&self.transaction_sequence.to_le_bytes());
+                } else if let Some(input) = others.next() {
+                    sequences.extend_from_slice(&input.sequence.to_le_bytes());
+                }
             }
             preimage.extend_from_slice(&hash256(&sequences));
         } else {

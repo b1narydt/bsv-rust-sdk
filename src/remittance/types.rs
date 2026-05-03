@@ -20,25 +20,25 @@ pub type UnixMillis = u64;
 ///
 /// Each variant maps to the exact wire string used by the TypeScript SDK.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RemittanceThreadState {
-    #[cfg_attr(feature = "network", serde(rename = "new"))]
+    #[cfg_attr(feature = "serde", serde(rename = "new"))]
     New,
-    #[cfg_attr(feature = "network", serde(rename = "identityRequested"))]
+    #[cfg_attr(feature = "serde", serde(rename = "identityRequested"))]
     IdentityRequested,
-    #[cfg_attr(feature = "network", serde(rename = "identityResponded"))]
+    #[cfg_attr(feature = "serde", serde(rename = "identityResponded"))]
     IdentityResponded,
-    #[cfg_attr(feature = "network", serde(rename = "identityAcknowledged"))]
+    #[cfg_attr(feature = "serde", serde(rename = "identityAcknowledged"))]
     IdentityAcknowledged,
-    #[cfg_attr(feature = "network", serde(rename = "invoiced"))]
+    #[cfg_attr(feature = "serde", serde(rename = "invoiced"))]
     Invoiced,
-    #[cfg_attr(feature = "network", serde(rename = "settled"))]
+    #[cfg_attr(feature = "serde", serde(rename = "settled"))]
     Settled,
-    #[cfg_attr(feature = "network", serde(rename = "receipted"))]
+    #[cfg_attr(feature = "serde", serde(rename = "receipted"))]
     Receipted,
-    #[cfg_attr(feature = "network", serde(rename = "terminated"))]
+    #[cfg_attr(feature = "serde", serde(rename = "terminated"))]
     Terminated,
-    #[cfg_attr(feature = "network", serde(rename = "errored"))]
+    #[cfg_attr(feature = "serde", serde(rename = "errored"))]
     Errored,
 }
 
@@ -63,24 +63,24 @@ impl std::fmt::Display for RemittanceThreadState {
 ///
 /// Each variant maps to the exact wire string used by the TypeScript SDK.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RemittanceKind {
-    #[cfg_attr(feature = "network", serde(rename = "invoice"))]
+    #[cfg_attr(feature = "serde", serde(rename = "invoice"))]
     Invoice,
-    #[cfg_attr(feature = "network", serde(rename = "identityVerificationRequest"))]
+    #[cfg_attr(feature = "serde", serde(rename = "identityVerificationRequest"))]
     IdentityVerificationRequest,
-    #[cfg_attr(feature = "network", serde(rename = "identityVerificationResponse"))]
+    #[cfg_attr(feature = "serde", serde(rename = "identityVerificationResponse"))]
     IdentityVerificationResponse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(rename = "identityVerificationAcknowledgment")
     )]
     IdentityVerificationAcknowledgment,
-    #[cfg_attr(feature = "network", serde(rename = "settlement"))]
+    #[cfg_attr(feature = "serde", serde(rename = "settlement"))]
     Settlement,
-    #[cfg_attr(feature = "network", serde(rename = "receipt"))]
+    #[cfg_attr(feature = "serde", serde(rename = "receipt"))]
     Receipt,
-    #[cfg_attr(feature = "network", serde(rename = "termination"))]
+    #[cfg_attr(feature = "serde", serde(rename = "termination"))]
     Termination,
 }
 
@@ -155,12 +155,12 @@ pub trait LoggerLike: Send + Sync {
 
 /// A currency unit with namespace, code, and optional decimal places.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Unit {
     pub namespace: String,
     pub code: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub decimals: Option<u32>,
 }
 
@@ -175,8 +175,8 @@ pub fn sat_unit() -> Unit {
 
 /// A monetary amount as a decimal string with an associated unit.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Amount {
     pub value: String,
     pub unit: Unit,
@@ -184,19 +184,19 @@ pub struct Amount {
 
 /// A single line item in an invoice.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct LineItem {
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub id: Option<String>,
     pub description: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub quantity: Option<String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub unit_price: Option<Amount>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub amount: Option<Amount>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
@@ -205,19 +205,19 @@ pub struct LineItem {
 /// Flattened into the parent struct via `#[serde(flatten)]` so that these
 /// fields appear at the top level in JSON, matching the TypeScript SDK wire format.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct InstrumentBase {
     pub thread_id: String,
     pub payee: String,
     pub payer: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub note: Option<String>,
     pub line_items: Vec<LineItem>,
     pub total: Amount,
     pub invoice_number: String,
     pub created_at: u64,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub arbitrary: Option<HashMap<String, serde_json::Value>>,
 }
 
@@ -226,21 +226,21 @@ pub struct InstrumentBase {
 /// The `base` field is flattened so InstrumentBase fields appear at the
 /// top level in JSON, alongside `kind`, `expiresAt`, and `options`.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Invoice {
     pub kind: RemittanceKind,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub expires_at: Option<u64>,
     pub options: HashMap<String, serde_json::Value>,
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub base: InstrumentBase,
 }
 
 /// Sub-struct describing the identity verification request parameters.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityRequest {
     pub types: HashMap<String, Vec<String>>,
     pub certifiers: Vec<String>,
@@ -248,8 +248,8 @@ pub struct IdentityRequest {
 
 /// A request for identity verification from a peer.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityVerificationRequest {
     pub kind: RemittanceKind,
     pub thread_id: String,
@@ -267,10 +267,10 @@ pub struct IdentityVerificationRequest {
 /// The `cert_type` field is renamed to `"type"` in JSON to avoid the
 /// Rust reserved keyword while maintaining wire-format compatibility.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RemittanceCertificate {
-    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub cert_type: String,
     pub certifier: String,
     pub subject: String,
@@ -283,8 +283,8 @@ pub struct RemittanceCertificate {
 
 /// A response containing identity certificates.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityVerificationResponse {
     pub kind: RemittanceKind,
     pub thread_id: String,
@@ -293,8 +293,8 @@ pub struct IdentityVerificationResponse {
 
 /// Acknowledgment that identity verification was received.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityVerificationAcknowledgment {
     pub kind: RemittanceKind,
     pub thread_id: String,
@@ -302,8 +302,8 @@ pub struct IdentityVerificationAcknowledgment {
 
 /// A settlement message indicating payment has been made.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Settlement {
     pub kind: RemittanceKind,
     pub thread_id: String,
@@ -312,14 +312,14 @@ pub struct Settlement {
     pub sender: String,
     pub created_at: u64,
     pub artifact: serde_json::Value,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub note: Option<String>,
 }
 
 /// A receipt confirming payment was received and verified.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Receipt {
     pub kind: RemittanceKind,
     pub thread_id: String,
@@ -333,19 +333,19 @@ pub struct Receipt {
 
 /// A termination message ending the remittance thread.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Termination {
     pub code: String,
     pub message: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub details: Option<serde_json::Value>,
 }
 
 /// A peer-to-peer message envelope used for transport.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PeerMessage {
     pub message_id: String,
     pub sender: String,
@@ -359,8 +359,8 @@ pub struct PeerMessage {
 /// The `v` field is a u8 (integer 1 in JSON, not a string).
 /// The `payload` field accepts arbitrary JSON for flexibility.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RemittanceEnvelope {
     pub v: u8,
     pub id: String,

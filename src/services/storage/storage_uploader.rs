@@ -42,7 +42,8 @@ pub struct UploadFileResult {
 }
 
 /// Response from the upload info endpoint.
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct UploadInfoResponse {
     status: Option<String>,

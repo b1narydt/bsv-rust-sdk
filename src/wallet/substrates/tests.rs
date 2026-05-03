@@ -679,7 +679,7 @@ fn test_call_code_round_trip_all() {
 // JSON round-trip tests for serde serialization (network feature)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 mod json_round_trip {
     use crate::wallet::interfaces::*;
     use crate::wallet::types::*;

@@ -17,7 +17,7 @@ pub enum RemittanceError {
     },
 
     /// JSON serialization or deserialization failure.
-    #[cfg(feature = "network")]
+    #[cfg(feature = "serde")]
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

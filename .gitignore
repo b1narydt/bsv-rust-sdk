@@ -20,3 +20,7 @@ Thumbs.db
 # Internal docs
 PUBLISHING.md
 .planning/
+
+# Reference clones (siblings) — vendored under src/ when build-required
+.ref
+.ref/
