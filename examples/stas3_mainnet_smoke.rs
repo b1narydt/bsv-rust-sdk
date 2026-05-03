@@ -309,27 +309,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let supply_sats = result.contract_tx.outputs[0]
             .satoshis
             .ok_or("contract output 0 missing sats")?;
-        match verify_input(&result.issue_tx, 0, &supply_lock, supply_sats) {
-            Ok(true) => println!("       ✓ input 0 (supply spend) engine-verified"),
-            Ok(false) => println!(
-                "       ⚠ input 0 (supply spend) engine returned Ok(false) — the supply\n\
-                 \x20         lock is P2PKH+OP_FALSE+OP_RETURN; our interpreter treats the\n\
-                 \x20         post-OP_RETURN stack-top as the result, which is FALSE here.\n\
-                 \x20         dxs/TS interpreter has the same shape; mainnet miner semantics\n\
-                 \x20         may be looser. Real broadcast empirically determines acceptance."
-            ),
-            Err(e) => println!("       ⚠ input 0 (supply spend) engine errored: {e:?}"),
+        let valid_in0 = verify_input(&result.issue_tx, 0, &supply_lock, supply_sats)
+            .map_err(|e| format!("issue_tx input 0 verify: {e:?}"))?;
+        if !valid_in0 {
+            return Err(
+                "issue_tx input 0 (P2PKH+OP_RETURN supply spend) failed engine verification".into(),
+            );
         }
+        println!("       ✓ input 0 (P2PKH+OP_RETURN supply spend) engine-verified");
 
         let change_lock = result.contract_tx.outputs[1].locking_script.clone();
         let change_sats = result.contract_tx.outputs[1]
             .satoshis
             .ok_or("contract output 1 missing sats")?;
-        match verify_input(&result.issue_tx, 1, &change_lock, change_sats) {
-            Ok(true) => println!("       ✓ input 1 (change spend, plain P2PKH) engine-verified"),
-            Ok(false) => println!("       ⚠ input 1 engine returned Ok(false)"),
-            Err(e) => println!("       ⚠ input 1 engine errored: {e:?}"),
+        let valid_in1 = verify_input(&result.issue_tx, 1, &change_lock, change_sats)
+            .map_err(|e| format!("issue_tx input 1 verify: {e:?}"))?;
+        if !valid_in1 {
+            return Err("issue_tx input 1 (plain P2PKH change spend) failed engine verification".into());
         }
+        println!("       ✓ input 1 (plain P2PKH change spend) engine-verified");
 
         println!("[10/?] Decoding issue_tx STAS-3 destination output...");
         let stas_lock = result.issue_tx.outputs[0].locking_script.clone();

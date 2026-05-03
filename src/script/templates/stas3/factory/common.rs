@@ -41,24 +41,35 @@ pub fn make_p2pkh_lock(pkh: &[u8; 20]) -> LockingScript {
 }
 
 /// Build a `TransactionOutput` whose locking script is the standard 25-byte
-/// P2PKH followed by `OP_FALSE OP_RETURN <minimal-push of data>`.
+/// P2PKH followed by `OP_RETURN <minimal-push of data>`.
 ///
 /// Used by the issuance contract tx (output 0): the bundled token-supply
-/// output that carries the scheme metadata as an unspendable trailing
-/// OP_RETURN annotation. The 25-byte P2PKH prefix ensures the output is
-/// still spendable (the issuer redeems it in the issue tx); the trailing
-/// `OP_FALSE OP_RETURN` makes everything past byte 25 unreachable script
-/// (so the OP_RETURN payload doesn't affect spend authorization).
+/// output that carries scheme metadata as a trailing OP_RETURN annotation.
+/// The 25-byte P2PKH prefix is spendable (the issuer redeems it in the
+/// issue tx); the trailing `OP_RETURN` halts script execution post-Genesis,
+/// so the data payload is never executed and doesn't affect spend
+/// authorization.
 ///
-/// Mirrors the canonical TS form
-/// `addP2PkhOutput(amount, address, [scheme.toBytes()])` from
-/// `dxs-bsv-token-sdk::TransactionBuilder`.
+/// Byte-equivalent to the canonical TS form `addP2PkhOutput(amount,
+/// address, [scheme.toBytes()])` from `dxs-bsv-token-sdk` —
+/// `addReturnData(data)` in `src/script/build/p2pkh-builder.ts:27-34`
+/// emits `OP_RETURN <data>` only (no leading OP_FALSE).
+///
+/// NOTE: an earlier version of this helper pushed `OP_FALSE` before
+/// `OP_RETURN`, mistakenly thinking it would mark the trailing data as
+/// unreachable. It instead left FALSE on the stack at the moment OP_RETURN
+/// fires, causing every script interpreter that checks stack-top after
+/// OP_RETURN (TS, Go, and our Rust SDK) to reject the spend. Mainnet
+/// miners (per BSV node `interpreter.cpp:856-869`) would have accepted it
+/// regardless because BSV consensus returns SCRIPT_ERR_OK unconditionally
+/// on top-level OP_RETURN — but matching dxs exactly avoids relying on
+/// that consensus-vs-interpreter divergence.
 pub fn make_p2pkh_with_op_return(
     sats: u64,
     pkh: &[u8; 20],
     data: &[u8],
 ) -> TransactionOutput {
-    let mut bytes = Vec::with_capacity(25 + 2 + data.len() + 5);
+    let mut bytes = Vec::with_capacity(25 + 1 + data.len() + 5);
     // P2PKH prefix
     bytes.push(0x76); // OP_DUP
     bytes.push(0xa9); // OP_HASH160
@@ -66,8 +77,7 @@ pub fn make_p2pkh_with_op_return(
     bytes.extend_from_slice(pkh);
     bytes.push(0x88); // OP_EQUALVERIFY
     bytes.push(0xac); // OP_CHECKSIG
-    // OP_FALSE OP_RETURN <data>
-    bytes.push(0x00); // OP_FALSE (a.k.a. OP_0)
+    // OP_RETURN <data>
     bytes.push(0x6a); // OP_RETURN
     super::super::lock::push_data_minimal(&mut bytes, data);
     TransactionOutput {
