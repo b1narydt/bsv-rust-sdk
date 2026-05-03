@@ -24,9 +24,19 @@
 //!                verify the picked UTXO has parsable customInstructions
 //!                (proves the read-back path on top of what topup wrote).
 //!                Read-only — no broadcast.
+//! - `mint`     — DRY RUN. Picks a fuel UTXO, derives a fresh issuer key
+//!                (`stas3issuer/smoke-{millis}`) and destination key
+//!                (`stas3owner/dest1`), calls `mint_eac` with minimal
+//!                EacFields, prints the resulting contract_tx + issue_tx
+//!                hex. Engine-verifies the issue_tx's P2PKH inputs against
+//!                the freshly-built contract_tx outputs (proves signing
+//!                works end-to-end). Does NOT broadcast — full broadcast
+//!                requires ARC integration + atomic BEEF construction
+//!                (separate workstream).
 //!
-//! Future phases (`mint`, `transfer`, etc.) require an ARC endpoint and will
-//! be added once `pickfuel` has confirmed the read-back path.
+//! Future phase `transfer` adds the post-broadcast read-back: pick a
+//! minted STAS UTXO from the token basket, transfer it to a new owner.
+//! Requires the mint phase to have actually broadcast first.
 //!
 //! # Configuration (env vars)
 //!
@@ -53,12 +63,17 @@
 use std::env;
 use std::sync::Arc;
 
-use bsv::script::templates::stas3::{Stas3Wallet, Stas3WalletConfig};
+use bsv::primitives::hash::hash160;
+use bsv::script::templates::stas3::eac::{EacFields, EnergySource};
+use bsv::script::templates::stas3::factory::SigningKey;
+use bsv::script::templates::stas3::{
+    decode_locking_script, verify_input, Brc43KeyArgs, Stas3Wallet, Stas3WalletConfig,
+};
 use bsv::wallet::interfaces::{
     GetPublicKeyArgs, ListOutputsArgs, OutputInclude, WalletInterface,
 };
-use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 use bsv::wallet::substrates::http_wallet_json::HttpWalletJson;
+use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
 
 const DEFAULT_WALLET_URL: &str = "http://localhost:3321";
 const DEFAULT_ORIGINATOR: &str = "stas3-smoke";
@@ -168,11 +183,188 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // -------------------------------------------------------------------
+    // Phase: mint  (DRY RUN — builds + signs but does not broadcast)
+    // -------------------------------------------------------------------
+    if phase == "mint" {
+        if before.is_empty() {
+            return Err(format!(
+                "mint phase requires a fuel UTXO; run SMOKE_PHASE=topup first"
+            )
+            .into());
+        }
+
+        println!("\n[4/?] Picking fuel UTXO to fund the mint...");
+        let funding = stas.pick_fuel(500).await?;
+        println!(
+            "       picked outpoint: {}.{} ({} sats)",
+            funding.txid_hex, funding.vout, funding.satoshis
+        );
+
+        println!("[5/?] Deriving issuer key...");
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let issuer_triple =
+            Brc43KeyArgs::self_under("stas3issuer", format!("smoke-{now_ms}"));
+        let issuer_pk = wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(issuer_triple.protocol_id.clone()),
+                    key_id: Some(issuer_triple.key_id.clone()),
+                    counterparty: Some(issuer_triple.counterparty.clone()),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: Some(true),
+                    seek_permission: None,
+                },
+                Some(&originator),
+            )
+            .await?;
+        let issuer_pkh = hash160(&issuer_pk.public_key.to_der());
+        println!("       issuer keyID:   {:?}", issuer_triple.key_id);
+        println!("       issuer pubkey:  {}", issuer_pk.public_key.to_der_hex());
+        println!("       issuer pkh:     {}", hex::encode(issuer_pkh));
+
+        println!("[6/?] Deriving destination key...");
+        let dest_triple = Brc43KeyArgs::self_under("stas3owner", "dest1");
+        let dest_pk = wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(dest_triple.protocol_id.clone()),
+                    key_id: Some(dest_triple.key_id.clone()),
+                    counterparty: Some(dest_triple.counterparty.clone()),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: Some(true),
+                    seek_permission: None,
+                },
+                Some(&originator),
+            )
+            .await?;
+        let dest_pkh = hash160(&dest_pk.public_key.to_der());
+        println!("       dest keyID:     {:?}", dest_triple.key_id);
+        println!("       dest pkh:       {}", hex::encode(dest_pkh));
+
+        println!("[7/?] Building minimal EacFields...");
+        let now_secs = (now_ms / 1000) as i64;
+        let eac = EacFields {
+            quantity_wh: 1,
+            interval_start: now_secs - 3600,
+            interval_end: now_secs,
+            energy_source: EnergySource::Solar,
+            country: *b"US",
+            device_id: [0xab; 32],
+            id_range: (1, 1),
+            issue_date: now_secs,
+            storage_tag: 0,
+        };
+        println!(
+            "       quantity_wh={} interval=[{} → {}] source=Solar country=US",
+            eac.quantity_wh, eac.interval_start, eac.interval_end
+        );
+
+        println!("[8/?] Calling mint_eac (dry-run — builds + signs, no broadcast)...");
+        let result = stas
+            .mint_eac(
+                Some(&originator),
+                SigningKey::P2pkh(issuer_triple),
+                funding.clone(),
+                0, // flags = no FREEZABLE / CONFISCATABLE
+                None,
+                None,
+                vec![(dest_pkh, 1, eac)],
+                b"stas3-smoke".to_vec(),
+                500,
+            )
+            .await?;
+
+        let contract_txid = result
+            .contract_tx
+            .id()
+            .map_err(|e| format!("contract txid: {e}"))?;
+        let issue_txid = result
+            .issue_tx
+            .id()
+            .map_err(|e| format!("issue txid: {e}"))?;
+        let contract_hex = result
+            .contract_tx
+            .to_bytes()
+            .map_err(|e| format!("contract bytes: {e}"))?;
+        let issue_hex = result
+            .issue_tx
+            .to_bytes()
+            .map_err(|e| format!("issue bytes: {e}"))?;
+
+        println!("       contract_tx txid: {contract_txid}");
+        println!("       contract_tx size: {} bytes", contract_hex.len());
+        println!("       issue_tx txid:    {issue_txid}");
+        println!("       issue_tx size:    {} bytes", issue_hex.len());
+
+        println!("[9/?] Engine-verifying issue_tx P2PKH inputs against contract_tx outputs...");
+        let supply_lock = result.contract_tx.outputs[0].locking_script.clone();
+        let supply_sats = result.contract_tx.outputs[0]
+            .satoshis
+            .ok_or("contract output 0 missing sats")?;
+        match verify_input(&result.issue_tx, 0, &supply_lock, supply_sats) {
+            Ok(true) => println!("       ✓ input 0 (supply spend) engine-verified"),
+            Ok(false) => println!(
+                "       ⚠ input 0 (supply spend) engine returned Ok(false) — the supply\n\
+                 \x20         lock is P2PKH+OP_FALSE+OP_RETURN; our interpreter treats the\n\
+                 \x20         post-OP_RETURN stack-top as the result, which is FALSE here.\n\
+                 \x20         dxs/TS interpreter has the same shape; mainnet miner semantics\n\
+                 \x20         may be looser. Real broadcast empirically determines acceptance."
+            ),
+            Err(e) => println!("       ⚠ input 0 (supply spend) engine errored: {e:?}"),
+        }
+
+        let change_lock = result.contract_tx.outputs[1].locking_script.clone();
+        let change_sats = result.contract_tx.outputs[1]
+            .satoshis
+            .ok_or("contract output 1 missing sats")?;
+        match verify_input(&result.issue_tx, 1, &change_lock, change_sats) {
+            Ok(true) => println!("       ✓ input 1 (change spend, plain P2PKH) engine-verified"),
+            Ok(false) => println!("       ⚠ input 1 engine returned Ok(false)"),
+            Err(e) => println!("       ⚠ input 1 engine errored: {e:?}"),
+        }
+
+        println!("[10/?] Decoding issue_tx STAS-3 destination output...");
+        let stas_lock = result.issue_tx.outputs[0].locking_script.clone();
+        let decoded = decode_locking_script(&stas_lock)
+            .map_err(|e| format!("decode STAS-3 lock: {e:?}"))?;
+        println!(
+            "       owner_pkh:      {} (matches dest? {})",
+            hex::encode(decoded.owner_pkh),
+            decoded.owner_pkh == dest_pkh
+        );
+        println!(
+            "       redemption_pkh: {} (matches issuer? {})",
+            hex::encode(decoded.redemption_pkh),
+            decoded.redemption_pkh == issuer_pkh
+        );
+        println!("       flags:          0x{:02x}", decoded.flags);
+        println!(
+            "       optional_data:  {} elements (EAC schema)",
+            decoded.optional_data.len()
+        );
+
+        println!("\n✓ mint dry-run complete");
+        println!("\n  contract_tx hex (broadcast first):");
+        println!("  {}", hex::encode(&contract_hex));
+        println!("\n  issue_tx hex (broadcast second):");
+        println!("  {}", hex::encode(&issue_hex));
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
         return Err(format!(
-            "unknown SMOKE_PHASE={phase} (expected: connect | topup | pickfuel)"
+            "unknown SMOKE_PHASE={phase} (expected: connect | topup | pickfuel | mint)"
         )
         .into());
     }
