@@ -43,8 +43,8 @@ use super::super::unlock::{
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock, sign_with_signing_key,
-    stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_op_return_note_output, make_p2pkh_lock,
+    sign_with_signing_key, stas_input_descriptor,
 };
 use super::pieces::{counterparty_script_from_lock, split_by_counterparty_script};
 use super::types::{FundingInput, TokenInput};
@@ -131,6 +131,13 @@ pub async fn build_merge<W: WalletInterface>(
         locking_script: change_lock,
         change: false,
     });
+    // If a note was supplied, emit the canonical NullData OP_RETURN output
+    // (`OP_FALSE OP_RETURN <note_bytes>`, satoshis=0). The engine's
+    // hashOutputs reconstruction includes this output, so the actual tx
+    // must contain it for the preimage equality check to pass.
+    if let Some(note_bytes) = req.note.as_ref() {
+        tx.outputs.push(make_op_return_note_output(note_bytes));
+    }
 
     let txid_le_arr = funding_txid_le(&req.funding_input.txid_hex)?;
 

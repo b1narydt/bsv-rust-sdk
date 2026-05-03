@@ -3092,4 +3092,130 @@ mod integration_tests {
         assert_eq!(decoded.owner_pkh, owner_pkh);
         assert_eq!(decoded.redemption_pkh, issuer_pkh);
     }
+
+    /// Wave 2A.1 regression: a STAS-3 token whose `optional_data` carries
+    /// the 11-element EAC payload must engine-verify when transferred.
+    /// This reproduces the mainnet failure surfaced by
+    /// `examples/stas3_mainnet_smoke.rs` `SMOKE_PHASE=transfer`.
+    ///
+    /// Mirrors `test_factory_transfer_engine_verifies` exactly except
+    /// `optional_data` is populated via `EacFields::to_optional_data()`
+    /// (the same shape as the smoke test, lines 478-490).
+    #[tokio::test]
+    async fn test_factory_transfer_with_eac_optional_data_engine_verifies() {
+        use super::eac::{EacFields, EnergySource};
+        use super::factory::{build_transfer, FundingInput, TokenInput, TransferRequest};
+
+        let owner_root = PrivateKey::from_hex("01").unwrap();
+        let funding_root = PrivateKey::from_hex("02").unwrap();
+        let owner_wallet = ProtoWallet::new(owner_root);
+        let funding_wallet = ProtoWallet::new(funding_root);
+
+        let owner_pkh = derive_pkh(&owner_wallet, "stas3owner", "1").await;
+        let new_owner_pkh = derive_pkh(&owner_wallet, "stas3owner", "2").await;
+        let funding_pkh = derive_pkh(&funding_wallet, "stas3fuel", "1").await;
+        let redemption_pkh = [0xab; 20];
+
+        // Same EacFields shape as the mainnet smoke test (lines 478-490).
+        let eac = EacFields {
+            quantity_wh: 1,
+            interval_start: 1_700_000_000,
+            interval_end: 1_700_003_600,
+            energy_source: EnergySource::Solar,
+            country: *b"US",
+            device_id: [0x42; 32],
+            id_range: (1, 1),
+            issue_date: 1_700_004_000,
+            storage_tag: 0,
+        };
+        let optional_data = eac.to_optional_data();
+        assert_eq!(optional_data.len(), 11, "EAC schema = 11 optional pushes");
+
+        let stas_amount: u64 = 1; // mainnet token is 1 sat
+        // Match smoke-test mainnet shape: 60k-sat fuel, 1800-sat change.
+        let funding_amount: u64 = 60_000;
+        let stas_lock = build_locking_script(&LockParams {
+            owner_pkh,
+            action_data: ActionData::Passive(vec![]),
+            redemption_pkh,
+            flags: 0,
+            service_fields: vec![],
+            optional_data: optional_data.clone(),
+        })
+        .unwrap();
+
+        let mut source_tx = Transaction::new();
+        source_tx.outputs.push(TransactionOutput {
+            satoshis: Some(stas_amount),
+            locking_script: stas_lock.clone(),
+            change: false,
+        });
+        source_tx.outputs.push(TransactionOutput {
+            satoshis: Some(funding_amount),
+            locking_script: make_p2pkh_lock(&funding_pkh),
+            change: false,
+        });
+        let source_txid_hex = source_tx.id().expect("source tx id");
+
+        let req = TransferRequest {
+            wallet: &owner_wallet,
+            originator: None,
+            stas_input: TokenInput {
+                txid_hex: source_txid_hex.clone(),
+                vout: 0,
+                satoshis: stas_amount,
+                locking_script: stas_lock.clone(),
+                signing_key: super::factory::types::SigningKey::P2pkh(
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1"),
+                ),
+                current_action_data: ActionData::Passive(vec![]),
+                source_tx_bytes: None,
+            },
+            funding_input: FundingInput {
+                txid_hex: source_txid_hex.clone(),
+                vout: 1,
+                satoshis: funding_amount,
+                locking_script: make_p2pkh_lock(&funding_pkh),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
+            },
+            destination_owner_pkh: new_owner_pkh,
+            redemption_pkh,
+            flags: 0,
+            service_fields: vec![],
+            optional_data: optional_data.clone(),
+            note: Some(b"stas3 smoke transfer".to_vec()),
+            change_pkh: funding_pkh,
+            change_satoshis: 1_800,
+        };
+        let tx = build_transfer(req).await.unwrap();
+
+        // Sanity: the new STAS output must carry the same EAC payload.
+        let new_decoded = super::decode::decode_locking_script(
+            &tx.outputs[0].locking_script,
+        )
+        .expect("decode new lock");
+        assert_eq!(new_decoded.optional_data, optional_data);
+
+        let result = verify_input(&tx, 0, &stas_lock, stas_amount);
+        match &result {
+            Ok(true) => {}
+            Ok(false) => panic!(
+                "engine rejected transfer of EAC-bearing STAS-3 token (Ok(false)).\n\
+                 expected new lock len = {}\n\
+                 actual  new lock len = {}\n\
+                 unlocking_script bytes:\n{}",
+                stas_lock.to_binary().len(),
+                tx.outputs[0].locking_script.to_binary().len(),
+                hex_dump(
+                    &tx.inputs[0]
+                        .unlocking_script
+                        .as_ref()
+                        .map(|s| s.to_binary())
+                        .unwrap_or_default(),
+                ),
+            ),
+            Err(e) => panic!("engine errored on EAC transfer: {e:?}"),
+        }
+        assert!(result.unwrap(), "engine rejected the EAC-transfer spend");
+    }
 }

@@ -176,6 +176,14 @@ pub fn build_unlocking_script(p: &UnlockParams) -> Result<Vec<u8>, Stas3Error> {
     }
 
     // Slot 15: note (or OP_FALSE).
+    //
+    // The engine reconstructs a NullData OP_RETURN output as
+    // `[0x00, 0x6a] ++ note_bytes` (with satoshis=0) and folds it into
+    // hashOutputs. Callers that pass `note = Some(...)` MUST ALSO add a
+    // matching OP_RETURN output to the spending tx — see
+    // [`super::factory::common::make_op_return_note_output`]. Omitting
+    // that output causes the engine's preimage equality check to fail
+    // (engine-verify returns `Ok(false)`).
     match &p.note {
         Some(payload) => push_data_minimal(&mut out, payload),
         None => out.push(0x00),

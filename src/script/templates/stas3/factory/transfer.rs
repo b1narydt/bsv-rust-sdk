@@ -26,8 +26,9 @@ use super::super::unlock::{
     TrailingParams, UnlockParams,
 };
 use super::common::{
-    funding_input_descriptor, funding_txid_le, make_p2pkh_lock as make_p2pkh_lock_internal,
-    sign_with_signing_key, stas_input_descriptor,
+    funding_input_descriptor, funding_txid_le, make_op_return_note_output,
+    make_p2pkh_lock as make_p2pkh_lock_internal, sign_with_signing_key,
+    stas_input_descriptor,
 };
 use super::types::{FundingInput, TokenInput};
 
@@ -95,6 +96,15 @@ pub async fn build_transfer<W: WalletInterface>(
         locking_script: change_lock,
         change: false,
     });
+    // If a note was supplied, emit the canonical NullData OP_RETURN output
+    // (`OP_FALSE OP_RETURN <note_bytes>`, satoshis=0). The engine's
+    // hashOutputs reconstruction includes this output, so the actual tx
+    // must contain it for the preimage equality check to pass; omitting it
+    // caused engine-verify to return `Ok(false)` for any spend with a
+    // non-empty note slot.
+    if let Some(note_bytes) = req.note.as_ref() {
+        tx.outputs.push(make_op_return_note_output(note_bytes));
+    }
 
     // 4. Build the BIP-143 preimage for the STAS input.
     let preimage = build_preimage(

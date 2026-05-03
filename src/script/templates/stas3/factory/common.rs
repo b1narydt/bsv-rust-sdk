@@ -87,6 +87,41 @@ pub fn make_p2pkh_with_op_return(
     }
 }
 
+/// Build the canonical NullData (OP_FALSE OP_RETURN) output that carries a
+/// STAS-3 spend's inline `note` payload.
+///
+/// Wire shape (matches the engine's reconstruction in `stas3_body.bin`,
+/// and the TS reference's `isNullData` detector in
+/// `stas3-sdk/src/Stas3.ts:208-211`):
+///
+/// ```text
+/// satoshis  = 0
+/// script    = [0x00, 0x6a] ++ note_bytes
+/// ```
+///
+/// The note bytes are appended verbatim with **no length prefix** — the
+/// engine concatenates `006a OP_SWAP OP_CAT` against the witness slot 15
+/// payload directly. The TS reference inversely strips the first 2 bytes
+/// (`OP_FALSE OP_RETURN`) and pushes the remainder into slot 15.
+///
+/// Used by transfer / split / merge / merge_chain whenever `note =
+/// Some(...)` — the engine's hashOutputs reconstruction includes this
+/// output, so the actual tx MUST contain it for the BIP-143 preimage
+/// equality check to pass. Omitting it (the pre-fix behavior) caused
+/// engine-verify to return `Ok(false)` for any spend with a non-empty
+/// note slot.
+pub fn make_op_return_note_output(note: &[u8]) -> TransactionOutput {
+    let mut bytes = Vec::with_capacity(2 + note.len());
+    bytes.push(0x00); // OP_FALSE
+    bytes.push(0x6a); // OP_RETURN
+    bytes.extend_from_slice(note);
+    TransactionOutput {
+        satoshis: Some(0),
+        locking_script: LockingScript::from_binary(&bytes),
+        change: false,
+    }
+}
+
 /// Compute the LE (wire-form) txid of `tx`: `hash256(tx.to_binary())`.
 ///
 /// Returns 32 LE bytes — the form expected in funding-pointer slots and

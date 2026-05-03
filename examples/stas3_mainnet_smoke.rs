@@ -752,7 +752,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Resolve the full TokenInput (derives signing_key from customInstructions).
         println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
         let token_input = stas.find_token(token_outpoint).await?;
-        println!("       TokenInput resolved OK");
+        println!(
+            "       TokenInput: txid={}.{} sats={} lock_len={}",
+            token_input.txid_hex,
+            token_input.vout,
+            token_input.satoshis,
+            token_input.locking_script.to_binary().len()
+        );
+        println!(
+            "       Output:     {} sats={} lock_len={}",
+            token_outpoint,
+            token_output.satoshis,
+            locking_script.to_binary().len()
+        );
+        if let bsv::script::templates::stas3::factory::SigningKey::P2pkh(ref tr) =
+            token_input.signing_key
+        {
+            println!(
+                "       resolved signing key: protocol={:?} keyID={:?} counterparty={:?}",
+                tr.protocol_id.protocol, tr.key_id, tr.counterparty.counterparty_type
+            );
+        }
 
         // Derive the destination owner key for the transfer.
         println!("[6/?] Deriving transfer destination key (keyID={transfer_dest_keyid:?})...");
