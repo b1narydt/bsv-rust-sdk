@@ -50,12 +50,34 @@
 //!                     engine-verifies the STAS input, then — when
 //!                     `SMOKE_BROADCAST=1` — broadcasts via ARC, builds
 //!                     atomic BEEF, and internalizes the new token UTXO.
+//! - `redeem`        — Full on-chain redeem flow. Requires a STAS-3 token
+//!                     in `stas3tokens` whose `owner_pkh == redemption_pkh`
+//!                     (i.e. the token has been transferred back to the
+//!                     issuer). Builds + signs a redeem tx via
+//!                     `Stas3Wallet::redeem`, engine-verifies the STAS
+//!                     input, then — when `SMOKE_BROADCAST=1` — broadcasts
+//!                     via ARC. The output is a 70-byte P2MPKH (NOT a
+//!                     STAS-3 lock) so no `internalize_stas_outputs` step
+//!                     is needed.
+//! - `split`         — Full on-chain split flow. Requires a STAS-3 token
+//!                     with `satoshis >= 2`. Splits into two halves
+//!                     (`stas3owner/split-a` and `stas3owner/split-b`),
+//!                     broadcasts, and internalizes BOTH new STAS outputs.
+//! - `freeze`        — Full on-chain freeze flow. Requires a STAS-3 token
+//!                     whose flags has FREEZABLE set. Derives the freeze
+//!                     authority triple (`stas3freezeauth/main`) used at
+//!                     mint, signs the freeze tx, broadcasts, and
+//!                     internalizes the new (Frozen) STAS output.
+//! - `unfreeze`      — Full on-chain unfreeze flow. Requires a STAS-3
+//!                     token whose `current_action_data` is
+//!                     `ActionData::Frozen(...)`. Same flow as freeze but
+//!                     the resulting output is back in the Passive state.
 //!
 //! # Configuration (env vars)
 //!
 //! - `WALLET_URL`         — BRC-100 wallet JSON endpoint (default `http://localhost:3321`)
 //! - `ORIGINATOR`         — originator string passed to the wallet (default `stas3-smoke`)
-//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast` | `transfer`
+//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast` | `transfer` | `redeem` | `split` | `freeze` | `unfreeze`
 //! - `SMOKE_BROADCAST`    — `1` to actually broadcast; anything else (default) is dry-run
 //! - `SMOKE_FUEL_SATS`    — satoshis per fuel UTXO (default `2000`)
 //! - `SMOKE_FUEL_COUNT`   — how many fuel UTXOs to provision (default `2`)
@@ -64,6 +86,15 @@
 //!                          (default `https://api.gorillapool.io/v1/tx`)
 //! - `SMOKE_ARC_API_KEY`  — optional API key for the ARC endpoint (default: none)
 //! - `SMOKE_TRANSFER_DEST_KEYID` — keyID of the transfer destination owner (default `dest2`)
+//! - `SMOKE_MINT_SATS`    — satoshis per minted STAS token output (default `1`).
+//!                          Set higher (e.g. `5`) when you intend to follow
+//!                          mint-broadcast with the `split` phase.
+//! - `SMOKE_MINT_FLAGS`   — STAS-3 flags byte for the mint (default `0`).
+//!                          `1` = FREEZABLE, `2` = CONFISCATABLE, `3` = both.
+//!                          When FREEZABLE is set the freeze authority pkh
+//!                          is derived from `stas3freezeauth/main`; when
+//!                          CONFISCATABLE is set the confiscation authority
+//!                          pkh is derived from `stas3confiscauth/main`.
 //!
 //! # Running
 //!
@@ -91,10 +122,12 @@ use std::env;
 use std::sync::Arc;
 
 use bsv::primitives::hash::hash160;
+use bsv::script::templates::stas3::action_data::ActionData;
 use bsv::script::templates::stas3::eac::{EacFields, EnergySource};
-use bsv::script::templates::stas3::factory::SigningKey;
+use bsv::script::templates::stas3::factory::{SigningKey, SplitDestination};
 use bsv::script::templates::stas3::{
-    decode_locking_script, verify_input, Brc43KeyArgs, Stas3Wallet, Stas3WalletConfig,
+    decode_locking_script, flags as stas3_flags, verify_input, Brc43KeyArgs, Stas3Wallet,
+    Stas3WalletConfig,
 };
 use bsv::transaction::beef::{Beef, BEEF_V1, BEEF_V2};
 use bsv::transaction::beef_tx::BeefTx;
@@ -113,6 +146,15 @@ const DEFAULT_FUEL_COUNT: usize = 2;
 // base host only.
 const DEFAULT_ARC_URL: &str = "https://arc.gorillapool.io";
 const DEFAULT_TRANSFER_DEST_KEYID: &str = "dest2";
+const DEFAULT_MINT_SATS: u64 = 1;
+const DEFAULT_MINT_FLAGS: u8 = 0;
+/// Type-42 keyID used by every freeze-authority derivation in this smoke
+/// — both at mint time (when FREEZABLE is set) and at freeze/unfreeze
+/// time (when looking up the authority that signs the freeze).
+const FREEZE_AUTH_KEY_ID: &str = "main";
+/// Same idea as [`FREEZE_AUTH_KEY_ID`] but for the confiscation authority
+/// (only used when CONFISCATABLE is set on the mint).
+const CONFISC_AUTH_KEY_ID: &str = "main";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -134,6 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arc_api_key = env::var("SMOKE_ARC_API_KEY").ok();
     let transfer_dest_keyid = env::var("SMOKE_TRANSFER_DEST_KEYID")
         .unwrap_or_else(|_| DEFAULT_TRANSFER_DEST_KEYID.into());
+    let mint_sats = env::var("SMOKE_MINT_SATS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MINT_SATS);
+    let mint_flags = env::var("SMOKE_MINT_FLAGS")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(DEFAULT_MINT_FLAGS);
 
     println!("== STAS-3 mainnet smoke test ==");
     println!("  WALLET_URL         = {wallet_url}");
@@ -305,16 +355,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eac.quantity_wh, eac.interval_start, eac.interval_end
         );
 
+        println!(
+            "[7b/?] Resolving mint authorities (flags=0x{:02x}, sats={mint_sats})...",
+            mint_flags
+        );
+        let (freeze_auth_pkh, confisc_auth_pkh) =
+            resolve_mint_authorities(&*wallet, &originator, mint_flags).await?;
+        if let Some(pkh) = freeze_auth_pkh {
+            println!("       freeze_auth pkh:     {}", hex::encode(pkh));
+        }
+        if let Some(pkh) = confisc_auth_pkh {
+            println!("       confiscate_auth pkh: {}", hex::encode(pkh));
+        }
+
         println!("[8/?] Calling mint_eac (dry-run — builds + signs, no broadcast)...");
         let result = stas
             .mint_eac(
                 Some(&originator),
                 SigningKey::P2pkh(issuer_triple),
                 funding.clone(),
-                0, // flags = no FREEZABLE / CONFISCATABLE
-                None,
-                None,
-                vec![(dest_pkh, 1, eac)],
+                mint_flags,
+                freeze_auth_pkh,
+                confisc_auth_pkh,
+                vec![(dest_pkh, mint_sats, eac)],
                 b"stas3-smoke".to_vec(),
                 500,
             )
@@ -481,16 +544,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eac.quantity_wh, eac.interval_start, eac.interval_end
         );
 
+        println!(
+            "[7b/?] Resolving mint authorities (flags=0x{:02x}, sats={mint_sats})...",
+            mint_flags
+        );
+        let (freeze_auth_pkh, confisc_auth_pkh) =
+            resolve_mint_authorities(&*wallet, &originator, mint_flags).await?;
+        if let Some(pkh) = freeze_auth_pkh {
+            println!("       freeze_auth pkh:     {}", hex::encode(pkh));
+        }
+        if let Some(pkh) = confisc_auth_pkh {
+            println!("       confiscate_auth pkh: {}", hex::encode(pkh));
+        }
+
         println!("[8/?] Calling mint_eac (builds + signs txs)...");
         let result = stas
             .mint_eac(
                 Some(&originator),
                 SigningKey::P2pkh(issuer_triple),
                 funding.clone(),
-                0, // flags = no FREEZABLE / CONFISCATABLE
-                None,
-                None,
-                vec![(dest_pkh, 1, eac)],
+                mint_flags,
+                freeze_auth_pkh,
+                confisc_auth_pkh,
+                vec![(dest_pkh, mint_sats, eac)],
                 b"stas3-smoke".to_vec(),
                 500,
             )
@@ -1059,12 +1135,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // -------------------------------------------------------------------
+    // Phase: redeem
+    // -------------------------------------------------------------------
+    if phase == "redeem" {
+        run_redeem_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
+    // Phase: split
+    // -------------------------------------------------------------------
+    if phase == "split" {
+        run_split_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
+    // Phase: freeze
+    // -------------------------------------------------------------------
+    if phase == "freeze" {
+        run_freeze_or_unfreeze_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+            FreezeOp::Freeze,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
+    // Phase: unfreeze
+    // -------------------------------------------------------------------
+    if phase == "unfreeze" {
+        run_freeze_or_unfreeze_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+            FreezeOp::Unfreeze,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
         return Err(format!(
             "unknown SMOKE_PHASE={phase} \
-             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer)"
+             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer | redeem | split | freeze | unfreeze)"
         )
         .into());
     }
@@ -1274,4 +1420,739 @@ async fn arc_broadcast(
         return Err(format!("ARC accepted but no txid in response: body={body}").into());
     }
     Ok(txid)
+}
+
+// ---------------------------------------------------------------------------
+// Mint authority resolution + new STAS-input phases (redeem / split /
+// freeze / unfreeze) — all share a common pattern: pick a token from the
+// token basket, pick a fuel UTXO, build the operation tx via the wallet
+// wrapper, engine-verify the STAS input, hydrate every input's
+// source_transaction from the merged token+fuel BEEF, sign the fuel
+// input, ARC-broadcast, build atomic BEEF, internalize any new STAS
+// outputs.
+// ---------------------------------------------------------------------------
+
+/// Derive the (HASH160 of) public key for a given Type-42 triple via the
+/// wallet's `get_public_key`.
+async fn derive_pkh_for_triple(
+    wallet: &dyn WalletInterface,
+    originator: &str,
+    triple: &Brc43KeyArgs,
+) -> Result<[u8; 20], Box<dyn std::error::Error>> {
+    let pk = wallet
+        .get_public_key(
+            GetPublicKeyArgs {
+                identity_key: false,
+                protocol_id: Some(triple.protocol_id.clone()),
+                key_id: Some(triple.key_id.clone()),
+                counterparty: Some(triple.counterparty.clone()),
+                privileged: false,
+                privileged_reason: None,
+                for_self: Some(true),
+                seek_permission: None,
+            },
+            Some(originator),
+        )
+        .await
+        .map_err(|e| format!("get_public_key({:?}): {e}", triple.key_id))?;
+    Ok(hash160(&pk.public_key.to_der()))
+}
+
+/// Given the configured `mint_flags`, resolve the freeze-authority and
+/// confiscation-authority pubkey hashes to feed into `mint_eac`. Returns
+/// `(None, None)` when both bits are clear. The freeze authority triple
+/// is `stas3freezeauth/main`; the confiscation authority triple is
+/// `stas3confiscauth/main`. Both are stable across smoke runs so the
+/// later `freeze` / `unfreeze` phases can re-derive the same authority.
+async fn resolve_mint_authorities(
+    wallet: &dyn WalletInterface,
+    originator: &str,
+    flags: u8,
+) -> Result<(Option<[u8; 20]>, Option<[u8; 20]>), Box<dyn std::error::Error>> {
+    let freeze_pkh = if stas3_flags::is_freezable(flags) {
+        let triple = Brc43KeyArgs::self_under("stas3freezeauth", FREEZE_AUTH_KEY_ID);
+        Some(derive_pkh_for_triple(wallet, originator, &triple).await?)
+    } else {
+        None
+    };
+    let confisc_pkh = if stas3_flags::is_confiscatable(flags) {
+        let triple = Brc43KeyArgs::self_under("stas3confiscauth", CONFISC_AUTH_KEY_ID);
+        Some(derive_pkh_for_triple(wallet, originator, &triple).await?)
+    } else {
+        None
+    };
+    Ok((freeze_pkh, confisc_pkh))
+}
+
+/// Decode the STAS-3 lock on a basket `Output`. Wraps the boilerplate of
+/// "pull `locking_script` bytes, build a `LockingScript`, decode it."
+fn decode_token_output(
+    output: &Output,
+) -> Result<
+    (
+        bsv::script::locking_script::LockingScript,
+        bsv::script::templates::stas3::DecodedLock,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let locking_bytes = output
+        .locking_script
+        .as_ref()
+        .ok_or("token UTXO missing locking_script")?;
+    let locking_script = bsv::script::locking_script::LockingScript::from_binary(locking_bytes);
+    let decoded = decode_locking_script(&locking_script)
+        .map_err(|e| format!("decode token locking_script: {e:?}"))?;
+    Ok((locking_script, decoded))
+}
+
+/// Fetch the token basket + fuel basket with `EntireTransactions` and
+/// merge their BEEFs into one lookup `Beef` we can resolve every input's
+/// `source_transaction` from. Mirrors what the `transfer` phase does
+/// inline.
+async fn build_token_and_fuel_lookup_beef(
+    wallet: &dyn WalletInterface,
+    originator: &str,
+    token_basket: &str,
+    fuel_basket: &str,
+) -> Result<Beef, Box<dyn std::error::Error>> {
+    let token_list = wallet
+        .list_outputs(
+            ListOutputsArgs {
+                basket: token_basket.to_string(),
+                tags: vec![],
+                tag_query_mode: None,
+                include: Some(OutputInclude::EntireTransactions),
+                include_custom_instructions: BooleanDefaultFalse(Some(false)),
+                include_tags: BooleanDefaultFalse(Some(false)),
+                include_labels: BooleanDefaultFalse(Some(false)),
+                limit: Some(100),
+                offset: None,
+                seek_permission: BooleanDefaultTrue(Some(true)),
+            },
+            Some(originator),
+        )
+        .await?;
+    let fuel_list = wallet
+        .list_outputs(
+            ListOutputsArgs {
+                basket: fuel_basket.to_string(),
+                tags: vec![],
+                tag_query_mode: None,
+                include: Some(OutputInclude::EntireTransactions),
+                include_custom_instructions: BooleanDefaultFalse(Some(false)),
+                include_tags: BooleanDefaultFalse(Some(false)),
+                include_labels: BooleanDefaultFalse(Some(false)),
+                limit: Some(100),
+                offset: None,
+                seek_permission: BooleanDefaultTrue(Some(true)),
+            },
+            Some(originator),
+        )
+        .await?;
+
+    let mut lookup = Beef::new(BEEF_V2);
+    if let Some(ref b) = token_list.beef {
+        lookup
+            .merge_beef_from_binary(b)
+            .map_err(|e| format!("merge token BEEF: {e}"))?;
+    }
+    if let Some(ref b) = fuel_list.beef {
+        lookup
+            .merge_beef_from_binary(b)
+            .map_err(|e| format!("merge fuel BEEF: {e}"))?;
+    }
+    Ok(lookup)
+}
+
+/// Walk every input on `tx` and hydrate `source_transaction` from the
+/// merged lookup BEEF. Errors if any input's source txid is absent from
+/// the lookup.
+fn hydrate_inputs_from_lookup(
+    tx: &mut Transaction,
+    lookup: &Beef,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (i, input) in tx.inputs.iter_mut().enumerate() {
+        let src_txid = input
+            .source_txid
+            .as_ref()
+            .ok_or_else(|| format!("tx input {i} missing source_txid"))?
+            .clone();
+        let src_tx = lookup
+            .find_txid(&src_txid)
+            .and_then(|btx| btx.tx.clone())
+            .ok_or_else(|| {
+                format!(
+                    "source tx {src_txid} for tx input {i} not found in merged \
+                     wallet BEEFs (token+fuel)"
+                )
+            })?;
+        input.source_transaction = Some(Box::new(src_tx));
+    }
+    Ok(())
+}
+
+/// Build atomic BEEF for `tx`: re-uses the `lookup` BEEF (which already
+/// has every input's source-tx) plus the spending tx itself, sorted, then
+/// serialized atomically against `final_txid`.
+fn build_atomic_beef_for(
+    mut lookup: Beef,
+    tx: &Transaction,
+    final_txid: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let beef_tx = BeefTx::from_tx(tx.clone(), None).map_err(|e| format!("BeefTx::from_tx: {e}"))?;
+    lookup.txs.push(beef_tx);
+    lookup.sort_txs();
+    let bytes = lookup
+        .to_binary_atomic(final_txid)
+        .map_err(|e| format!("to_binary_atomic({final_txid}): {e}"))?;
+    Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Phase: redeem
+// ---------------------------------------------------------------------------
+
+async fn run_redeem_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_basket = stas.config().token_basket.clone();
+    let fuel_basket = stas.config().fuel_basket.clone();
+
+    println!("\n[4/?] Listing token basket {token_basket:?}...");
+    let tokens = list_basket(wallet, &token_basket, originator).await?;
+    if tokens.is_empty() {
+        return Err(format!(
+            "redeem phase requires a STAS-3 token in basket {token_basket:?}; \
+             run SMOKE_PHASE=mint-broadcast first (and likely a transfer back to \
+             the issuer to make owner_pkh == redemption_pkh)"
+        )
+        .into());
+    }
+
+    // Find a token whose owner_pkh == redemption_pkh and sats > 0.
+    let mut chosen: Option<(&Output, bsv::script::locking_script::LockingScript)> = None;
+    for o in &tokens {
+        if o.satoshis == 0 {
+            continue;
+        }
+        let (lock, decoded) = decode_token_output(o)?;
+        if decoded.owner_pkh == decoded.redemption_pkh {
+            chosen = Some((o, lock));
+            break;
+        }
+    }
+    let (token_output, locking_script) = chosen.ok_or_else(|| {
+        "redeem phase requires a STAS-3 token with owner_pkh == redemption_pkh \
+         (i.e. transferred back to the issuer's protoID address); none found"
+    })?;
+    let token_outpoint = &token_output.outpoint;
+    println!("       using outpoint: {token_outpoint} ({} sats)", token_output.satoshis);
+
+    println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
+    let token_input = stas.find_token(token_outpoint).await?;
+
+    // Derive a redemption-destination key (where the burned satoshis land).
+    println!("[6/?] Deriving redemption destination PKH (stas3owner/redeem)...");
+    let dest_triple = Brc43KeyArgs::self_under("stas3owner", "redeem");
+    let dest_pkh = derive_pkh_for_triple(wallet, originator, &dest_triple).await?;
+    println!("       redemption dest pkh: {}", hex::encode(dest_pkh));
+
+    let change_pkh = hash160(identity_pubkey_der);
+    let change_satoshis: u64 = 1_200;
+
+    println!("[7/?] Picking fuel UTXO for redeem...");
+    let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[8/?] Calling Stas3Wallet::redeem...");
+    let mut redeem_tx = stas
+        .redeem(token_input, funding.clone(), dest_pkh, change_pkh, change_satoshis)
+        .await?;
+    let redeem_txid = redeem_tx.id().map_err(|e| format!("redeem tx id: {e}"))?;
+    let redeem_hex = redeem_tx
+        .to_bytes()
+        .map_err(|e| format!("redeem tx bytes: {e}"))?;
+    println!("       redeem_tx txid: {redeem_txid}");
+    println!("       redeem_tx size: {} bytes", redeem_hex.len());
+
+    println!("[9/?] Engine-verifying redeem_tx STAS input (index 0)...");
+    let valid = verify_input(&redeem_tx, 0, &locking_script, token_output.satoshis)
+        .map_err(|e| format!("redeem tx STAS input verify: {e:?}"))?;
+    if !valid {
+        return Err("redeem tx STAS input (index 0) failed engine verify".into());
+    }
+    println!("       ✓ STAS input engine-verified OK");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        println!("  txid: {redeem_txid}");
+        println!("  hex:  {}", hex::encode(&redeem_hex));
+        println!("\n✓ redeem dry-run complete");
+        return Ok(());
+    }
+
+    println!("[10/?] Fetching source txs from token + fuel baskets...");
+    let lookup = build_token_and_fuel_lookup_beef(
+        wallet,
+        originator,
+        &token_basket,
+        &fuel_basket,
+    )
+    .await?;
+    hydrate_inputs_from_lookup(&mut redeem_tx, &lookup)?;
+
+    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut redeem_tx,
+        1,
+        funding.satoshis,
+        &funding.locking_script,
+        &funding.triple,
+    )
+    .await?;
+
+    println!("[11/?] Broadcasting redeem_tx via ARC ({arc_url})...");
+    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &redeem_tx).await?;
+    println!("       redeem_tx broadcast OK: txid={bcast_txid}");
+
+    let final_txid = redeem_tx
+        .id()
+        .map_err(|e| format!("recompute redeem txid post-sign: {e}"))?;
+    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
+
+    // Build atomic BEEF (records the burn for our own audit trail) but we
+    // don't `internalize_stas_outputs` — the redeem output is a 70-byte
+    // P2MPKH, not a STAS-3 lock.
+    let _atomic_beef = build_atomic_beef_for(lookup, &redeem_tx, &final_txid)?;
+    println!("       atomic BEEF constructed (no STAS-3 outputs to internalize)");
+
+    println!("\n✓ redeem phase complete — STAS-3 token burned to P2MPKH on-chain");
+    println!("  txid: {final_txid}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase: split
+// ---------------------------------------------------------------------------
+
+async fn run_split_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_basket = stas.config().token_basket.clone();
+    let fuel_basket = stas.config().fuel_basket.clone();
+
+    println!("\n[4/?] Listing token basket {token_basket:?}...");
+    let tokens = list_basket(wallet, &token_basket, originator).await?;
+    if tokens.is_empty() {
+        return Err(format!(
+            "split phase requires a STAS-3 token in basket {token_basket:?}; \
+             run SMOKE_PHASE=mint-broadcast first"
+        )
+        .into());
+    }
+
+    // Pick the first token with sats >= 2 (we need at least two units to split).
+    let token_output = tokens
+        .iter()
+        .find(|o| o.satoshis >= 2)
+        .ok_or_else(|| {
+            "split phase requires a STAS-3 token with sats >= 2; mint one with \
+             SMOKE_MINT_SATS=5 SMOKE_PHASE=mint-broadcast first"
+                .to_string()
+        })?;
+    let (locking_script, _decoded) = decode_token_output(token_output)?;
+    let token_outpoint = &token_output.outpoint;
+    let token_sats = token_output.satoshis;
+    println!("       using outpoint: {token_outpoint} ({token_sats} sats)");
+
+    println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
+    let token_input = stas.find_token(token_outpoint).await?;
+
+    // Derive two destination keys.
+    println!("[6/?] Deriving split destinations (stas3owner/split-a, stas3owner/split-b)...");
+    let dest_a_triple = Brc43KeyArgs::self_under("stas3owner", "split-a");
+    let dest_b_triple = Brc43KeyArgs::self_under("stas3owner", "split-b");
+    let dest_a_pkh = derive_pkh_for_triple(wallet, originator, &dest_a_triple).await?;
+    let dest_b_pkh = derive_pkh_for_triple(wallet, originator, &dest_b_triple).await?;
+    let half_a = token_sats / 2;
+    let half_b = token_sats - half_a;
+    println!(
+        "       dest A pkh: {} ({} sats)",
+        hex::encode(dest_a_pkh),
+        half_a
+    );
+    println!(
+        "       dest B pkh: {} ({} sats)",
+        hex::encode(dest_b_pkh),
+        half_b
+    );
+
+    let change_pkh = hash160(identity_pubkey_der);
+    let change_satoshis: u64 = 1_200;
+
+    println!("[7/?] Picking fuel UTXO for split...");
+    let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[8/?] Calling Stas3Wallet::split...");
+    let destinations = vec![
+        SplitDestination {
+            owner_pkh: dest_a_pkh,
+            satoshis: half_a,
+        },
+        SplitDestination {
+            owner_pkh: dest_b_pkh,
+            satoshis: half_b,
+        },
+    ];
+    let mut split_tx = stas
+        .split(
+            token_input,
+            funding.clone(),
+            destinations,
+            change_pkh,
+            change_satoshis,
+            Some(b"stas3 smoke split".to_vec()),
+        )
+        .await?;
+    let split_txid = split_tx.id().map_err(|e| format!("split tx id: {e}"))?;
+    let split_hex = split_tx
+        .to_bytes()
+        .map_err(|e| format!("split tx bytes: {e}"))?;
+    println!("       split_tx txid: {split_txid}");
+    println!("       split_tx size: {} bytes", split_hex.len());
+
+    println!("[9/?] Engine-verifying split_tx STAS input (index 0)...");
+    let valid = verify_input(&split_tx, 0, &locking_script, token_sats)
+        .map_err(|e| format!("split tx STAS input verify: {e:?}"))?;
+    if !valid {
+        return Err("split tx STAS input (index 0) failed engine verify".into());
+    }
+    println!("       ✓ STAS input engine-verified OK");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        println!("  txid: {split_txid}");
+        println!("  hex:  {}", hex::encode(&split_hex));
+        println!("\n✓ split dry-run complete");
+        return Ok(());
+    }
+
+    println!("[10/?] Fetching source txs from token + fuel baskets...");
+    let lookup = build_token_and_fuel_lookup_beef(
+        wallet,
+        originator,
+        &token_basket,
+        &fuel_basket,
+    )
+    .await?;
+    hydrate_inputs_from_lookup(&mut split_tx, &lookup)?;
+
+    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut split_tx,
+        1,
+        funding.satoshis,
+        &funding.locking_script,
+        &funding.triple,
+    )
+    .await?;
+
+    println!("[11/?] Broadcasting split_tx via ARC ({arc_url})...");
+    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &split_tx).await?;
+    println!("       split_tx broadcast OK: txid={bcast_txid}");
+
+    let final_txid = split_tx
+        .id()
+        .map_err(|e| format!("recompute split txid post-sign: {e}"))?;
+    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
+
+    println!("[12/?] Building atomic BEEF for split_tx...");
+    let atomic_beef = build_atomic_beef_for(lookup, &split_tx, &final_txid)?;
+    println!("       atomic BEEF size: {} bytes", atomic_beef.len());
+
+    println!(
+        "[13/?] Internalizing both new STAS-3 outputs (indices 0 and 1) into {token_basket:?}..."
+    );
+    stas.internalize_stas_outputs(
+        atomic_beef,
+        vec![
+            (0u32, dest_a_triple, None),
+            (1u32, dest_b_triple, None),
+        ],
+        "stas3 smoke split",
+    )
+    .await
+    .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+
+    println!("[14/?] Re-listing token basket to verify new UTXOs...");
+    let after = list_basket(wallet, &token_basket, originator).await?;
+    println!(
+        "       before: {} UTXO(s)  after: {} UTXO(s)",
+        tokens.len(),
+        after.len()
+    );
+
+    println!("\n✓ split phase complete — STAS-3 token split into two halves on-chain");
+    println!("  txid: {final_txid}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase: freeze / unfreeze (shared implementation — same shape)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreezeOp {
+    Freeze,
+    Unfreeze,
+}
+
+impl FreezeOp {
+    fn name(self) -> &'static str {
+        match self {
+            FreezeOp::Freeze => "freeze",
+            FreezeOp::Unfreeze => "unfreeze",
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+    op: FreezeOp,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_basket = stas.config().token_basket.clone();
+    let fuel_basket = stas.config().fuel_basket.clone();
+    let op_name = op.name();
+
+    println!("\n[4/?] Listing token basket {token_basket:?}...");
+    let tokens = list_basket(wallet, &token_basket, originator).await?;
+    if tokens.is_empty() {
+        return Err(format!(
+            "{op_name} phase requires a STAS-3 token in basket {token_basket:?}; \
+             run SMOKE_PHASE=mint-broadcast first"
+        )
+        .into());
+    }
+
+    // Find an eligible token. For freeze: FREEZABLE flag set AND not already
+    // frozen. For unfreeze: action_data == Frozen.
+    let mut chosen: Option<(
+        &Output,
+        bsv::script::locking_script::LockingScript,
+        bsv::script::templates::stas3::DecodedLock,
+    )> = None;
+    for o in &tokens {
+        let (lock, decoded) = decode_token_output(o)?;
+        let is_frozen = matches!(decoded.action_data, ActionData::Frozen(_));
+        let is_eligible = match op {
+            FreezeOp::Freeze => stas3_flags::is_freezable(decoded.flags) && !is_frozen,
+            FreezeOp::Unfreeze => is_frozen,
+        };
+        if is_eligible {
+            chosen = Some((o, lock, decoded));
+            break;
+        }
+    }
+    let (token_output, locking_script, decoded) = chosen.ok_or_else(|| {
+        match op {
+            FreezeOp::Freeze => {
+                "freeze phase requires a FREEZABLE token; mint one with \
+                 SMOKE_MINT_FLAGS=1 SMOKE_PHASE=mint-broadcast first"
+                    .to_string()
+            }
+            FreezeOp::Unfreeze => {
+                "unfreeze phase requires a Frozen token; run SMOKE_PHASE=freeze first"
+                    .to_string()
+            }
+        }
+    })?;
+    let token_outpoint = &token_output.outpoint;
+    println!(
+        "       using outpoint: {token_outpoint} ({} sats, flags=0x{:02x}, frozen={})",
+        token_output.satoshis,
+        decoded.flags,
+        matches!(decoded.action_data, ActionData::Frozen(_)),
+    );
+
+    println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
+    let token_input = stas.find_token(token_outpoint).await?;
+    // Cache the owning triple from the resolved TokenInput so we can
+    // re-internalize the new STAS-3 output under the same wallet identity
+    // (freeze and unfreeze keep `owner_pkh` byte-identical to the input).
+    let owner_triple = match &token_input.signing_key {
+        SigningKey::P2pkh(t) => t.clone(),
+        SigningKey::Multi { .. } => {
+            return Err(format!(
+                "{op_name} phase: multisig-owned tokens not supported in this smoke"
+            )
+            .into());
+        }
+    };
+
+    // Derive the freeze authority triple — same one used at mint time when
+    // FREEZABLE was set. Both freeze and unfreeze use this authority.
+    println!("[6/?] Deriving freeze authority triple (stas3freezeauth/{FREEZE_AUTH_KEY_ID})...");
+    let auth_triple = Brc43KeyArgs::self_under("stas3freezeauth", FREEZE_AUTH_KEY_ID);
+    let auth_pkh = derive_pkh_for_triple(wallet, originator, &auth_triple).await?;
+    println!("       freeze auth pkh: {}", hex::encode(auth_pkh));
+    // Sanity check: this MUST match service_fields[0] on the input lock,
+    // otherwise the factory will accept the build but the engine will
+    // reject the spend.
+    if let Some(expected) = decoded.service_fields.first() {
+        if expected.as_slice() != auth_pkh {
+            println!(
+                "       WARNING: derived freeze auth pkh ({}) != \
+                 service_fields[0] on token ({}); the {op_name} tx will fail engine verify",
+                hex::encode(auth_pkh),
+                hex::encode(expected),
+            );
+        } else {
+            println!("       ✓ matches token's service_fields[0]");
+        }
+    }
+
+    let change_pkh = hash160(identity_pubkey_der);
+    let change_satoshis: u64 = 1_200;
+
+    println!("[7/?] Picking fuel UTXO for {op_name}...");
+    let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[8/?] Calling Stas3Wallet::{op_name}...");
+    let mut op_tx = match op {
+        FreezeOp::Freeze => stas
+            .freeze(
+                token_input,
+                funding.clone(),
+                SigningKey::P2pkh(auth_triple.clone()),
+                change_pkh,
+                change_satoshis,
+            )
+            .await?,
+        FreezeOp::Unfreeze => stas
+            .unfreeze(
+                token_input,
+                funding.clone(),
+                SigningKey::P2pkh(auth_triple.clone()),
+                change_pkh,
+                change_satoshis,
+            )
+            .await?,
+    };
+    let op_txid = op_tx.id().map_err(|e| format!("{op_name} tx id: {e}"))?;
+    let op_hex = op_tx
+        .to_bytes()
+        .map_err(|e| format!("{op_name} tx bytes: {e}"))?;
+    println!("       {op_name}_tx txid: {op_txid}");
+    println!("       {op_name}_tx size: {} bytes", op_hex.len());
+
+    println!("[9/?] Engine-verifying {op_name}_tx STAS input (index 0)...");
+    let valid = verify_input(&op_tx, 0, &locking_script, token_output.satoshis)
+        .map_err(|e| format!("{op_name} tx STAS input verify: {e:?}"))?;
+    if !valid {
+        return Err(format!("{op_name} tx STAS input (index 0) failed engine verify").into());
+    }
+    println!("       ✓ STAS input engine-verified OK");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        println!("  txid: {op_txid}");
+        println!("  hex:  {}", hex::encode(&op_hex));
+        println!("\n✓ {op_name} dry-run complete");
+        return Ok(());
+    }
+
+    println!("[10/?] Fetching source txs from token + fuel baskets...");
+    let lookup = build_token_and_fuel_lookup_beef(
+        wallet,
+        originator,
+        &token_basket,
+        &fuel_basket,
+    )
+    .await?;
+    hydrate_inputs_from_lookup(&mut op_tx, &lookup)?;
+
+    println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut op_tx,
+        1,
+        funding.satoshis,
+        &funding.locking_script,
+        &funding.triple,
+    )
+    .await?;
+
+    println!("[11/?] Broadcasting {op_name}_tx via ARC ({arc_url})...");
+    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &op_tx).await?;
+    println!("       {op_name}_tx broadcast OK: txid={bcast_txid}");
+
+    let final_txid = op_tx
+        .id()
+        .map_err(|e| format!("recompute {op_name} txid post-sign: {e}"))?;
+    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
+
+    println!("[12/?] Building atomic BEEF for {op_name}_tx...");
+    let atomic_beef = build_atomic_beef_for(lookup, &op_tx, &final_txid)?;
+    println!("       atomic BEEF size: {} bytes", atomic_beef.len());
+
+    println!(
+        "[13/?] Internalizing new STAS-3 output (index 0) into {token_basket:?}..."
+    );
+    stas.internalize_stas_outputs(
+        atomic_beef,
+        vec![(0u32, owner_triple, None)],
+        match op {
+            FreezeOp::Freeze => "stas3 smoke freeze",
+            FreezeOp::Unfreeze => "stas3 smoke unfreeze",
+        },
+    )
+    .await
+    .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+
+    println!("[14/?] Re-listing token basket to verify state transition...");
+    let after = list_basket(wallet, &token_basket, originator).await?;
+    println!(
+        "       before: {} UTXO(s)  after: {} UTXO(s)",
+        tokens.len(),
+        after.len()
+    );
+
+    println!("\n✓ {op_name} phase complete — STAS-3 state transition broadcast on-chain");
+    println!("  txid: {final_txid}");
+    Ok(())
 }
