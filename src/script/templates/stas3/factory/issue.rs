@@ -429,7 +429,7 @@ async fn sign_p2pkh_input<W: WalletInterface + ?Sized>(
     input_index: usize,
     source_satoshis: u64,
     prev_locking_script: &crate::script::locking_script::LockingScript,
-    triple: &super::super::key_triple::KeyTriple,
+    triple: &super::super::brc43_key_args::Brc43KeyArgs,
     pubkey_der: &[u8],
 ) -> Result<(), Stas3Error> {
     let preimage = build_preimage(tx, input_index, source_satoshis, prev_locking_script)?;
@@ -450,7 +450,7 @@ async fn sign_p2pkh_input<W: WalletInterface + ?Sized>(
 /// Internal: sign a hash and append a specific sighash byte.
 async fn sign_via_wallet_with_byte<W: WalletInterface + ?Sized>(
     wallet: &W,
-    triple: &super::super::key_triple::KeyTriple,
+    triple: &super::super::brc43_key_args::Brc43KeyArgs,
     hash_to_sign: Vec<u8>,
     originator: Option<&str>,
     sighash_byte: u8,

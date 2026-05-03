@@ -13,7 +13,7 @@ use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInt
 
 use super::super::constants::{EMPTY_HASH160, SIGHASH_DEFAULT};
 use super::super::error::Stas3Error;
-use super::super::key_triple::KeyTriple;
+use super::super::brc43_key_args::Brc43KeyArgs;
 use super::super::unlock::AuthzWitness;
 use super::types::{FundingInput, SigningKey, TokenInput};
 
@@ -145,7 +145,7 @@ pub fn funding_input_descriptor(f: &FundingInput) -> TransactionInput {
 /// signature with the SIGHASH_ALL|SIGHASH_FORKID byte appended (P2PKH form).
 pub async fn sign_via_wallet<W: WalletInterface>(
     wallet: &W,
-    triple: &KeyTriple,
+    triple: &Brc43KeyArgs,
     hash_to_sign: Vec<u8>,
     originator: Option<&str>,
 ) -> Result<Vec<u8>, Stas3Error> {
@@ -173,7 +173,7 @@ pub async fn sign_via_wallet<W: WalletInterface>(
 /// Get the compressed pubkey bytes for a given Type-42 triple.
 pub async fn pubkey_via_wallet<W: WalletInterface>(
     wallet: &W,
-    triple: &KeyTriple,
+    triple: &Brc43KeyArgs,
     originator: Option<&str>,
 ) -> Result<Vec<u8>, Stas3Error> {
     let pk_result = wallet
@@ -303,7 +303,7 @@ pub async fn sign_with_signing_key<W: WalletInterface>(
 /// `SIGHASH_DEFAULT` as in [`sign_via_wallet`]).
 async fn sign_hash_with_byte<W: WalletInterface>(
     wallet: &W,
-    triple: &KeyTriple,
+    triple: &Brc43KeyArgs,
     hash_to_sign: Vec<u8>,
     originator: Option<&str>,
     sighash_byte: u8,

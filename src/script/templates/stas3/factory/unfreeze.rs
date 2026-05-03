@@ -45,7 +45,7 @@ pub struct UnfreezeRequest<'a, W: WalletInterface> {
     pub stas_input: TokenInput,
     pub funding_input: FundingInput,
     /// Signing key for the freeze authority — single-sig P2PKH (a
-    /// `KeyTriple`, via `triple.into()`) or multisig P2MPKH
+    /// `Brc43KeyArgs`, via `triple.into()`) or multisig P2MPKH
     /// (`SigningKey::Multi { triples, multisig }`).
     pub freeze_authority: SigningKey,
     pub change_pkh: [u8; 20],

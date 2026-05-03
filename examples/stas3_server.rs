@@ -800,7 +800,7 @@ async fn handle_mint(
     State(state): State<AppState>,
     Json(req): Json<MintEacRequestBody>,
 ) -> Result<Json<MintEacResponse>, AppError> {
-    use bsv::script::templates::stas3::KeyTriple;
+    use bsv::script::templates::stas3::Brc43KeyArgs;
     use bsv::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
     info!(n_dest = req.destinations.len(), "POST /tokens/mint");
@@ -812,7 +812,7 @@ async fn handle_mint(
     let funding = resolve_token_outpoint_as_funding(&state.stas, &req.funding_outpoint).await?;
 
     // 2. Construct the issuer triple from request fields.
-    let issuer_triple = KeyTriple {
+    let issuer_triple = Brc43KeyArgs {
         protocol_id: Protocol {
             security_level: req.issuer_protocol_security_level,
             protocol: req.issuer_protocol.clone(),

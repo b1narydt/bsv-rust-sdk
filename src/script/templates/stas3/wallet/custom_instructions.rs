@@ -8,7 +8,7 @@
 //! on the no-feature path.
 
 use super::super::error::Stas3Error;
-use super::super::key_triple::KeyTriple;
+use super::super::brc43_key_args::Brc43KeyArgs;
 use crate::primitives::public_key::PublicKey;
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
@@ -44,11 +44,11 @@ pub struct CustomInstructions {
 }
 
 impl CustomInstructions {
-    /// Resolve the embedded triple back into a `KeyTriple` suitable for
+    /// Resolve the embedded triple back into a `Brc43KeyArgs` suitable for
     /// passing to a factory call. Accepts `"self"`, `"anyone"`, or a
     /// 66-char lowercase hex SEC1-compressed pubkey for `Other`. Returns
     /// `InvalidScript` for any other shape.
-    pub fn to_triple(&self) -> Result<KeyTriple, Stas3Error> {
+    pub fn to_triple(&self) -> Result<Brc43KeyArgs, Stas3Error> {
         let cp = match self.counterparty.as_str() {
             "self" => Counterparty {
                 counterparty_type: CounterpartyType::Self_,
@@ -76,7 +76,7 @@ impl CustomInstructions {
                 )));
             }
         };
-        Ok(KeyTriple {
+        Ok(Brc43KeyArgs {
             protocol_id: Protocol {
                 security_level: self.protocol_id.0,
                 protocol: self.protocol_id.1.clone(),
@@ -88,7 +88,7 @@ impl CustomInstructions {
 
     /// Build a `CustomInstructions` from a triple. Used when registering a
     /// freshly-created STAS-3 output via `internalize_action`.
-    pub fn from_triple(triple: &KeyTriple, template: &str, schema: Option<String>) -> Self {
+    pub fn from_triple(triple: &Brc43KeyArgs, template: &str, schema: Option<String>) -> Self {
         let cp_str = match triple.counterparty.counterparty_type {
             CounterpartyType::Self_ => "self".to_string(),
             CounterpartyType::Anyone => "anyone".to_string(),
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_custom_instructions_to_json_self() {
-        let triple = KeyTriple::self_under("stas3owner", "1");
+        let triple = Brc43KeyArgs::self_under("stas3owner", "1");
         let ci = CustomInstructions::from_triple(&triple, "stas3-token", None);
         let json = ci.to_json();
         assert_eq!(
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_custom_instructions_to_json_with_schema() {
-        let triple = KeyTriple::self_under("stas3owner", "abc");
+        let triple = Brc43KeyArgs::self_under("stas3owner", "abc");
         let ci = CustomInstructions::from_triple(&triple, "stas3-token", Some("EAC1".into()));
         let json = ci.to_json();
         assert_eq!(
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_custom_instructions_round_trip_self() {
-        let triple = KeyTriple::self_under("stas3owner", "key-42");
+        let triple = Brc43KeyArgs::self_under("stas3owner", "key-42");
         let ci = CustomInstructions::from_triple(&triple, "stas3-token", Some("EAC1".into()));
         let json = ci.to_json();
         let parsed = CustomInstructions::from_json(&json).unwrap();

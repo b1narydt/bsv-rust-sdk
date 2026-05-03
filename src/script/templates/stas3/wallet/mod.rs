@@ -4,12 +4,12 @@
 //! basket registration via `internalize_action`. Production callers (the
 //! MetaWatt agent etc.) interact with this wrapper rather than the raw
 //! factory functions in `super::factory` — the wrapper guarantees that every
-//! key reference flows through a `KeyTriple` resolved by the wallet, never a
+//! key reference flows through a `Brc43KeyArgs` resolved by the wallet, never a
 //! raw private key (spec §1A).
 //!
 //! ## Design
 //!
-//! - **Type-42 enforcement (spec §1A)**: every key reference is a `KeyTriple`,
+//! - **Type-42 enforcement (spec §1A)**: every key reference is a `Brc43KeyArgs`,
 //!   resolved at sign/derive time via `WalletInterface::create_signature` and
 //!   `WalletInterface::get_public_key`. The wrapper never sees raw key bytes.
 //! - **Fuel basket pattern (spec §8.2-8.3)**: callers fund STAS-3 spends with
@@ -65,7 +65,7 @@ use super::constants::{BASKET_FUEL, BASKET_TOKENS};
 use super::decode::decode_locking_script;
 use super::error::Stas3Error;
 use super::factory::types::{FundingInput, SigningKey, TokenInput};
-use super::key_triple::KeyTriple;
+use super::brc43_key_args::Brc43KeyArgs;
 
 mod custom_instructions;
 mod ops_freeze;
@@ -241,7 +241,7 @@ impl<W: WalletInterface> Stas3Wallet<W> {
     pub async fn internalize_stas_outputs(
         &self,
         tx_bytes: Vec<u8>,
-        stas_output_indices: Vec<(u32, KeyTriple, Option<String>)>,
+        stas_output_indices: Vec<(u32, Brc43KeyArgs, Option<String>)>,
         description: &str,
     ) -> Result<(), Stas3Error> {
         let outputs: Vec<InternalizeOutput> = stas_output_indices
@@ -335,11 +335,11 @@ fn output_to_token_input(o: &Output) -> Result<TokenInput, Stas3Error> {
     })
 }
 
-fn parse_triple_from_output(o: &Output) -> Result<KeyTriple, Stas3Error> {
+fn parse_triple_from_output(o: &Output) -> Result<Brc43KeyArgs, Stas3Error> {
     let custom = o
         .custom_instructions
         .as_ref()
-        .ok_or_else(|| Stas3Error::MissingKeyTriple(o.outpoint.clone()))?;
+        .ok_or_else(|| Stas3Error::MissingBrc43KeyArgs(o.outpoint.clone()))?;
     let ci = CustomInstructions::from_json(custom)?;
     ci.to_triple()
 }

@@ -54,7 +54,7 @@ pub struct ConfiscateRequest<'a, W: WalletInterface> {
     pub stas_input: TokenInput,
     pub funding_input: FundingInput,
     /// Signing key for the confiscation authority — single-sig P2PKH
-    /// (a `KeyTriple`, via `triple.into()`) or multisig P2MPKH
+    /// (a `Brc43KeyArgs`, via `triple.into()`) or multisig P2MPKH
     /// (`SigningKey::Multi { triples, multisig }`).
     pub confiscation_authority: SigningKey,
     /// The new owner of the confiscated UTXO (typically a regulator).

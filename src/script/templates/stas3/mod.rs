@@ -25,7 +25,7 @@
 //!
 //! ## Type-42 key policy (spec §1A)
 //!
-//! Every key reference in this module flows through a [`KeyTriple`] —
+//! Every key reference in this module flows through a [`Brc43KeyArgs`] —
 //! `(protocolID, keyID, counterparty)` — resolved at sign / derive time
 //! by a [`crate::wallet::interfaces::WalletInterface`] implementation.
 //! The factories never see raw private keys. Pubkey hashes used in lock
@@ -36,7 +36,7 @@
 //!
 //! ```ignore
 //! use bsv_sdk::script::templates::stas3::{
-//!     Stas3Wallet, KeyTriple,
+//!     Stas3Wallet, Brc43KeyArgs,
 //!     factory::{TokenInput, FundingInput},
 //! };
 //! use bsv_sdk::wallet::proto_wallet::ProtoWallet;
@@ -73,7 +73,7 @@ pub mod eac;
 pub mod error;
 pub mod factory;
 pub mod flags;
-pub mod key_triple;
+pub mod brc43_key_args;
 pub mod lock;
 pub mod multisig;
 pub mod owner_address;
@@ -96,7 +96,7 @@ pub use decode::{decode_locking_script, DecodedLock};
 pub use eac::{build_eac_lock, EacFields, EnergySource, EAC_SCHEMA_TAG_V1};
 pub use error::Stas3Error;
 pub use flags::{CONFISCATABLE, FREEZABLE};
-pub use key_triple::KeyTriple;
+pub use brc43_key_args::Brc43KeyArgs;
 pub use lock::{build_locking_script, LockParams};
 pub use multisig::{
     p2mpkh_locking_script_bytes, MultisigScript, MAX_MULTISIG_KEYS, MIN_MULTISIG_KEYS,
@@ -531,7 +531,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -540,7 +540,7 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destination_owner_pkh: new_owner_pkh,
             redemption_pkh,
@@ -585,7 +585,7 @@ mod integration_tests {
         async fn run_mpkh_transfer_case(
             owner_root: PrivateKey,
             funding_root: PrivateKey,
-            triples: Vec<super::key_triple::KeyTriple>,
+            triples: Vec<super::brc43_key_args::Brc43KeyArgs>,
             multisig: MultisigScript,
             label: &'static str,
         ) {
@@ -647,7 +647,7 @@ mod integration_tests {
                     vout: 1,
                     satoshis: funding_amount,
                     locking_script: make_p2pkh_lock(&funding_pkh),
-                    triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                    triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
                 },
                 destination_owner_pkh: new_owner_pkh,
                 redemption_pkh,
@@ -700,8 +700,8 @@ mod integration_tests {
                 MultisigScript::new(2, vec![pk_1, pk_2, pk_3]).expect("2-of-3 valid");
             // Threshold 2 → caller supplies 2 triples (positions 1, 2).
             let triples = vec![
-                super::key_triple::KeyTriple::self_under("stas3owner", "ms-1"),
-                super::key_triple::KeyTriple::self_under("stas3owner", "ms-2"),
+                super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "ms-1"),
+                super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "ms-2"),
             ];
             run_mpkh_transfer_case(
                 owner_root,
@@ -727,7 +727,7 @@ mod integration_tests {
             // Threshold 3 → caller supplies 3 triples (positions 1, 2, 3).
             let triples = (1..=3)
                 .map(|i| {
-                    super::key_triple::KeyTriple::self_under(
+                    super::brc43_key_args::Brc43KeyArgs::self_under(
                         "stas3owner",
                         format!("ms-3of5-{i}"),
                     )
@@ -754,7 +754,7 @@ mod integration_tests {
             let owner_wallet = ProtoWallet::new(owner_root.clone());
             let pk_1 = derive_pubkey(&owner_wallet, "stas3owner", "ms-1of1").await;
             let multisig = MultisigScript::new(1, vec![pk_1]).expect("1-of-1 valid");
-            let triples = vec![super::key_triple::KeyTriple::self_under(
+            let triples = vec![super::brc43_key_args::Brc43KeyArgs::self_under(
                 "stas3owner",
                 "ms-1of1",
             )];
@@ -819,7 +819,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -828,7 +828,7 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destinations: vec![
                 SplitDestination {
@@ -905,7 +905,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -914,7 +914,7 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destinations: vec![
                 SplitDestination {
@@ -998,7 +998,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3mint", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -1007,7 +1007,7 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             redemption_destination_pkh: dest_pkh,
             change_pkh: funding_pkh,
@@ -1186,7 +1186,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_a,
                     locking_script: lock_a.clone(),
-                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "a")),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "a")),
                     current_action_data: ActionData::Passive(vec![]),
                     source_tx_bytes: Some(src_a_bytes),
                 },
@@ -1195,7 +1195,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_b,
                     locking_script: lock_b.clone(),
-                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "b")),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "b")),
                     current_action_data: ActionData::Passive(vec![]),
                     source_tx_bytes: Some(src_b_bytes),
                 },
@@ -1205,7 +1205,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destination_owner_pkh: pkh_c,
             redemption_pkh,
@@ -1329,7 +1329,7 @@ mod integration_tests {
                 satoshis: amt,
                 locking_script: lock.clone(),
                 signing_key: super::factory::types::SigningKey::P2pkh(
-                    super::key_triple::KeyTriple::self_under("stas3owner", *kid),
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", *kid),
                 ),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: Some(src_bytes),
@@ -1355,7 +1355,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destination_owner_pkh: dest_pkh,
             redemption_pkh,
@@ -1415,7 +1415,7 @@ mod integration_tests {
                 satoshis: 100,
                 locking_script: lock,
                 signing_key: super::factory::types::SigningKey::P2pkh(
-                    super::key_triple::KeyTriple::self_under("stas3owner", "a"),
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "a"),
                 ),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: Some(src_bytes),
@@ -1425,7 +1425,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: 5_000,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             destination_owner_pkh: pkh,
             redemption_pkh,
@@ -1488,7 +1488,7 @@ mod integration_tests {
         let funding_pkh = derive_pkh(&funding_wallet, "stas3fuel", "1").await;
         let dest_pkh = derive_pkh(&owner_wallet, "stas3owner", "dest").await;
         let dest_signing_key = SigningKey::P2pkh(
-            super::key_triple::KeyTriple::self_under("stas3owner", "dest"),
+            super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "dest"),
         );
         let redemption_pkh = [0xab; 20];
 
@@ -1535,7 +1535,7 @@ mod integration_tests {
                 satoshis: amt,
                 locking_script: lock.clone(),
                 signing_key: SigningKey::P2pkh(
-                    super::key_triple::KeyTriple::self_under("stas3owner", *kid),
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", *kid),
                 ),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: Some(src_bytes),
@@ -1573,7 +1573,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             });
             change_pkhs.push(funding_pkh);
             change_satoshis.push(funding_amount - 200);
@@ -1741,7 +1741,7 @@ mod integration_tests {
             fundings: vec![],
             destination_owner_pkh: dest_pkh,
             destination_signing_key: SigningKey::P2pkh(
-                super::key_triple::KeyTriple::self_under("stas3owner", "dest"),
+                super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "dest"),
             ),
             redemption_pkh: [0xab; 20],
             flags: 0,
@@ -1818,7 +1818,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -1827,9 +1827,9 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
-            freeze_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
+            freeze_authority: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under(
                 "stas3freeze",
                 "1",
             )),
@@ -1920,7 +1920,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Frozen(vec![]),
                 source_tx_bytes: None,
             },
@@ -1929,9 +1929,9 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
-            freeze_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
+            freeze_authority: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under(
                 "stas3freeze",
                 "1",
             )),
@@ -2025,7 +2025,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -2034,9 +2034,9 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
-            confiscation_authority: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
+            confiscation_authority: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under(
                 "stas3confiscate",
                 "1",
             )),
@@ -2135,7 +2135,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: stas_amount,
                 locking_script: stas_lock.clone(),
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
             },
@@ -2144,7 +2144,7 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             descriptor,
             change_pkh: funding_pkh,
@@ -2244,7 +2244,7 @@ mod integration_tests {
                 locking_script: stas_lock.clone(),
                 // The input's owner triple — not used for signing here, but
                 // the type still requires it.
-                signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+                signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
                 current_action_data: ActionData::Swap(descriptor.clone()),
                 source_tx_bytes: None,
             },
@@ -2253,9 +2253,9 @@ mod integration_tests {
                 vout: 1,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
-            receive_addr_signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under(
+            receive_addr_signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under(
                 "stas3swap",
                 "receive-1",
             )),
@@ -2475,7 +2475,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_a,
                     locking_script: lock_a.clone(),
-                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "a")),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "a")),
                     current_action_data: ActionData::Swap(descriptor_a),
                     source_tx_bytes: Some(src_a_bytes),
                 },
@@ -2484,7 +2484,7 @@ mod integration_tests {
                     vout: 0,
                     satoshis: amt_b,
                     locking_script: lock_b.clone(),
-                    signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "b")),
+                    signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "b")),
                     current_action_data: ActionData::Swap(descriptor_b),
                     source_tx_bytes: Some(src_b_bytes),
                 },
@@ -2494,7 +2494,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: funding_amount,
                 locking_script: make_p2pkh_lock(&funding_pkh),
-                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
             },
             change_pkh: funding_pkh,
             change_satoshis: funding_amount - 200,
@@ -2581,7 +2581,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };
@@ -2590,7 +2590,7 @@ mod integration_tests {
             vout: 1,
             satoshis: funding_amount,
             locking_script: make_p2pkh_lock(&funding_pkh),
-            triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+            triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
         };
 
         // 4. Drive the wrapper.
@@ -2666,7 +2666,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };
@@ -2675,7 +2675,7 @@ mod integration_tests {
             vout: 1,
             satoshis: funding_amount,
             locking_script: make_p2pkh_lock(&funding_pkh),
-            triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+            triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
         };
 
         let wrapper = Stas3Wallet::new(Arc::clone(&authority_wallet));
@@ -2683,7 +2683,7 @@ mod integration_tests {
             .freeze(
                 token,
                 funding,
-                super::key_triple::KeyTriple::self_under("stas3freeze", "1"),
+                super::brc43_key_args::Brc43KeyArgs::self_under("stas3freeze", "1"),
                 funding_pkh,
                 funding_amount - 200,
             )
@@ -2753,7 +2753,7 @@ mod integration_tests {
             vout: 0,
             satoshis: stas_amount,
             locking_script: stas_lock.clone(),
-            signing_key: super::factory::types::SigningKey::P2pkh(super::key_triple::KeyTriple::self_under("stas3owner", "1")),
+            signing_key: super::factory::types::SigningKey::P2pkh(super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "1")),
             current_action_data: ActionData::Passive(vec![]),
             source_tx_bytes: None,
         };
@@ -2762,7 +2762,7 @@ mod integration_tests {
             vout: 1,
             satoshis: funding_amount,
             locking_script: make_p2pkh_lock(&funding_pkh),
-            triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+            triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3fuel", "1"),
         };
 
         let wrapper = Stas3Wallet::new(Arc::clone(&owner_wallet));
@@ -2845,14 +2845,14 @@ mod integration_tests {
         let prev_txid_hex = prev_tx.id().expect("prev tx id");
 
         let issuer_signing_key = SigningKey::P2pkh(
-            super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+            super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
         );
         let funding_input = FundingInput {
             txid_hex: prev_txid_hex,
             vout: 0,
             satoshis: funding_amount,
             locking_script: funding_lock,
-            triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+            triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
         };
 
         // 3. Build the 2-tx issuance with two destinations.
@@ -2916,7 +2916,7 @@ mod integration_tests {
                 satoshis: stas_satoshis,
                 locking_script: stas_lock.clone(),
                 signing_key: super::factory::types::SigningKey::P2pkh(
-                    super::key_triple::KeyTriple::self_under("stas3owner", "a"),
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3owner", "a"),
                 ),
                 current_action_data: ActionData::Passive(vec![]),
                 source_tx_bytes: None,
@@ -2926,7 +2926,7 @@ mod integration_tests {
                 vout: 2,
                 satoshis: funding_for_transfer_amount,
                 locking_script: funding_for_transfer_lock,
-                triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
             },
             destination_owner_pkh: new_owner_pkh,
             redemption_pkh: issuer_pkh,
@@ -2978,7 +2978,7 @@ mod integration_tests {
             wallet: &issuer_wallet,
             originator: None,
             issuer_signing_key: SigningKey::P2pkh(
-                super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
             ),
             redemption_pkh: issuer_pkh,
             flags: FREEZABLE,
@@ -2989,7 +2989,7 @@ mod integration_tests {
                 vout: 0,
                 satoshis: funding_amount,
                 locking_script: funding_lock,
-                triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
             },
             destinations: vec![IssueDestination {
                 owner_pkh,
@@ -3062,14 +3062,14 @@ mod integration_tests {
             .mint_eac(
                 None,
                 SigningKey::P2pkh(
-                    super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                    super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
                 ),
                 FundingInput {
                     txid_hex: prev_txid_hex,
                     vout: 0,
                     satoshis: funding_amount,
                     locking_script: funding_lock,
-                    triple: super::key_triple::KeyTriple::self_under("stas3mint", "1"),
+                    triple: super::brc43_key_args::Brc43KeyArgs::self_under("stas3mint", "1"),
                 },
                 0,
                 None,

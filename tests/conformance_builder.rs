@@ -63,7 +63,7 @@ use bsv::script::templates::stas3::factory::{
     SigningKey, SplitDestination, SplitRequest, TokenInput, TransferRequest,
     UnfreezeRequest,
 };
-use bsv::script::templates::stas3::key_triple::KeyTriple;
+use bsv::script::templates::stas3::brc43_key_args::Brc43KeyArgs;
 use bsv::transaction::transaction::Transaction;
 use bsv::wallet::interfaces::{
     AbortActionArgs, AbortActionResult, AcquireCertificateArgs,
@@ -92,7 +92,7 @@ use bsv::wallet::types::CounterpartyType;
 // ---------------------------------------------------------------------------
 
 /// A wallet that ignores BRC-42 derivation entirely and looks up the
-/// signing scalar by the `key_id` slot of `KeyTriple` (which the test
+/// signing scalar by the `key_id` slot of `Brc43KeyArgs` (which the test
 /// harness encodes as `"seed:N"` for N in 1..=255).
 ///
 /// Signs with RFC-6979 deterministic ECDSA, low-S. Matches the TS
@@ -234,9 +234,9 @@ fn priv_key_from_seed(seed: u8) -> PrivateKey {
 
 /// Triple that DeterministicWallet routes via `key_id = "seed:N"`. Protocol
 /// and counterparty are unused by DeterministicWallet but must still be
-/// supplied so the factory's KeyTriple is well-formed.
-fn triple_for_seed(seed: u8) -> KeyTriple {
-    KeyTriple {
+/// supplied so the factory's Brc43KeyArgs is well-formed.
+fn triple_for_seed(seed: u8) -> Brc43KeyArgs {
+    Brc43KeyArgs {
         protocol_id: bsv::wallet::types::Protocol {
             security_level: 2,
             protocol: "stas3-conformance".to_string(),

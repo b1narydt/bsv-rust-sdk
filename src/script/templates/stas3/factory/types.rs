@@ -6,7 +6,7 @@
 //!
 //! `SigningKey` is the union over the two STAS-3 ownership shapes
 //! (P2PKH and P2MPKH/multisig). Every input that needs to produce an
-//! `AuthzWitness` carries a `SigningKey` rather than a bare `KeyTriple`,
+//! `AuthzWitness` carries a `SigningKey` rather than a bare `Brc43KeyArgs`,
 //! so the same factories cover both single-sig and m-of-n token owners
 //! transparently per spec §10.2.
 
@@ -14,12 +14,12 @@ use crate::script::locking_script::LockingScript;
 
 use super::super::action_data::ActionData;
 use super::super::error::Stas3Error;
-use super::super::key_triple::KeyTriple;
+use super::super::brc43_key_args::Brc43KeyArgs;
 use super::super::multisig::MultisigScript;
 
 /// Either a P2PKH owner (single Type-42 triple) or a P2MPKH multisig
 /// owner (M triples + the full M-of-N multisig descriptor). Used by
-/// every STAS-3 factory in place of a bare `KeyTriple` so multisig
+/// every STAS-3 factory in place of a bare `Brc43KeyArgs` so multisig
 /// (spec §10.2 P2MPKH) and single-sig owners share the same code path.
 ///
 /// For `Multi`, `triples.len()` MUST equal `multisig.threshold()` —
@@ -32,13 +32,13 @@ use super::super::multisig::MultisigScript;
 #[derive(Clone, Debug)]
 pub enum SigningKey {
     /// Standard single-sig P2PKH owner — one Type-42 triple.
-    P2pkh(KeyTriple),
+    P2pkh(Brc43KeyArgs),
     /// M-of-N multisig (P2MPKH) owner — M triples + the full N-key
     /// redeem-script descriptor.
     Multi {
         /// M triples, one per signature required. `triples.len()` MUST
         /// equal `multisig.threshold()`.
-        triples: Vec<KeyTriple>,
+        triples: Vec<Brc43KeyArgs>,
         /// The full M-of-N descriptor.
         multisig: MultisigScript,
     },
@@ -84,8 +84,8 @@ impl SigningKey {
     }
 }
 
-impl From<KeyTriple> for SigningKey {
-    fn from(t: KeyTriple) -> Self {
+impl From<Brc43KeyArgs> for SigningKey {
+    fn from(t: Brc43KeyArgs) -> Self {
         Self::P2pkh(t)
     }
 }
@@ -136,5 +136,5 @@ pub struct FundingInput {
     pub satoshis: u64,
     /// Standard 25-byte P2PKH locking script.
     pub locking_script: LockingScript,
-    pub triple: KeyTriple,
+    pub triple: Brc43KeyArgs,
 }

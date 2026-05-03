@@ -11,7 +11,7 @@ pub enum Stas3Error {
     InvalidState(String),
 
     #[error("missing key triple in customInstructions for outpoint {0}")]
-    MissingKeyTriple(String),
+    MissingBrc43KeyArgs(String),
 
     #[error("freezable flag not set on input")]
     FreezableNotSet,
@@ -44,7 +44,7 @@ mod tests {
         let cases: Vec<Stas3Error> = vec![
             Stas3Error::InvalidScript("bad header".into()),
             Stas3Error::InvalidState("frozen during transfer".into()),
-            Stas3Error::MissingKeyTriple("abc:0".into()),
+            Stas3Error::MissingBrc43KeyArgs("abc:0".into()),
             Stas3Error::FreezableNotSet,
             Stas3Error::ConfiscatableNotSet,
             Stas3Error::FrozenToken,
