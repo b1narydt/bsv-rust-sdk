@@ -1282,4 +1282,86 @@ mod tests {
             total_run
         );
     }
+
+    /// Regression: when validating an input whose `input_index > 0`, the
+    /// BIP-143 hashPrevouts and hashSequence fields must place the current
+    /// input's outpoint/sequence at its actual index, not at position 0.
+    /// `other_inputs` holds the OTHER N-1 inputs in their original tx order;
+    /// the current input must be spliced back in at `input_index`.
+    ///
+    /// Pre-fix this produced `[input_index, ...others]` which is only correct
+    /// for `input_index == 0`. Multi-input spends signing input >0 (e.g.
+    /// STAS-3 covenant + funding input pattern) produced invalid signatures.
+    #[test]
+    fn sighash_preimage_orders_by_input_index() {
+        let prev_locking_hex = "76a914ffb76f52c809b14255e822c83653e4b16df7c91a88ac";
+        let locking = LockingScript::from_hex(prev_locking_hex).unwrap();
+
+        // Two-input tx: input 0 = STAS-3 covenant input, input 1 = the P2PKH
+        // funding input we are signing. Outpoints + sequences from the
+        // `transfer_regular_valid` conformance vector.
+        let txid_be = "5b91184e6a2ff5d124c4d2fcd10b685497151f55cb70a2cd17b0e912dbbb129e";
+        let other_input_0 = TransactionInput {
+            source_txid: Some(txid_be.to_string()),
+            source_output_index: 0,
+            unlocking_script: None,
+            sequence: 0xffffffff,
+            source_transaction: None,
+        };
+
+        let mut spend = Spend::new(SpendParams {
+            locking_script: locking.clone(),
+            unlocking_script: crate::script::unlocking_script::UnlockingScript::from_asm(""),
+            source_txid: txid_be.to_string(),
+            source_output_index: 1,
+            source_satoshis: 1438,
+            transaction_version: 1,
+            transaction_lock_time: 0,
+            transaction_sequence: 0xffffffff,
+            other_inputs: vec![other_input_0],
+            other_outputs: vec![
+                crate::transaction::transaction_output::TransactionOutput {
+                    satoshis: Some(100),
+                    locking_script: LockingScript::from_hex(
+                        "76a914ffb76f52c809b14255e822c83653e4b16df7c91a88ac",
+                    )
+                    .unwrap(),
+                    change: false,
+                },
+                crate::transaction::transaction_output::TransactionOutput {
+                    satoshis: Some(780),
+                    locking_script: LockingScript::from_hex(
+                        "76a914ffb76f52c809b14255e822c83653e4b16df7c91a88ac",
+                    )
+                    .unwrap(),
+                    change: false,
+                },
+            ],
+            input_index: 1,
+        });
+
+        let preimage = spend.sighash_preimage(&locking.0, 0x41);
+
+        // Verify the structural invariant: hashPrevouts (bytes 4..36) must
+        // hash [input0_outpoint, input1_outpoint] in original tx order, not
+        // [input1_outpoint, input0_outpoint].
+        use crate::primitives::hash::hash256;
+        let mut expected_prevouts = Vec::new();
+        let txid_le = {
+            let mut b = hex::decode(txid_be).unwrap();
+            b.reverse();
+            b
+        };
+        expected_prevouts.extend_from_slice(&txid_le);
+        expected_prevouts.extend_from_slice(&0u32.to_le_bytes());
+        expected_prevouts.extend_from_slice(&txid_le);
+        expected_prevouts.extend_from_slice(&1u32.to_le_bytes());
+        let expected_hash_prevouts = hash256(&expected_prevouts);
+
+        assert_eq!(
+            &preimage[4..36],
+            &expected_hash_prevouts[..],
+            "hashPrevouts must serialize inputs in original tx order, regardless of input_index"
+        );
+    }
 }
