@@ -74,9 +74,11 @@ mod ops_mint;
 mod ops_redeem;
 mod ops_split;
 mod ops_swap;
+mod ops_top_up_fuel;
 mod ops_transfer;
 
 pub use custom_instructions::CustomInstructions;
+pub use ops_top_up_fuel::TopUpFuelResult;
 
 // ---------------------------------------------------------------------------
 // Stas3Wallet
