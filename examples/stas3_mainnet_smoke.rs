@@ -72,12 +72,35 @@
 //!                     token whose `current_action_data` is
 //!                     `ActionData::Frozen(...)`. Same flow as freeze but
 //!                     the resulting output is back in the Passive state.
+//! - `confiscate`    — Full on-chain confiscate flow. Requires a STAS-3
+//!                     token whose flags has CONFISCATABLE set AND whose
+//!                     `current_action_data == Frozen` (per spec §5.3
+//!                     confiscation seizes a frozen UTXO). Derives the
+//!                     confiscation authority triple
+//!                     (`stas3confiscauth/main`) used at mint, signs the
+//!                     confiscate tx, broadcasts, and internalizes the
+//!                     new STAS output owned by `stas3owner/confisc-dest`.
+//!                     Set up via:
+//!                     `SMOKE_MINT_FLAGS=3 SMOKE_PHASE=mint-broadcast`
+//!                     then `SMOKE_PHASE=freeze` first.
+//! - `merge`         — Full on-chain 2-input merge flow. Requires 2+
+//!                     STAS-3 tokens of the SAME TYPE (same
+//!                     redemption_pkh + flags + service_fields +
+//!                     optional_data) in the token basket. Picks the
+//!                     first two of matching type, hydrates each input's
+//!                     `source_tx_bytes` from the token-basket BEEF
+//!                     (required by the merge factory per spec §9.5),
+//!                     calls `Stas3Wallet::merge` with destination
+//!                     `stas3owner/merge-dest`, broadcasts, and
+//!                     internalizes the merged STAS output. To set up:
+//!                     mint twice with the same `SMOKE_MINT_ISSUER_KEYID`
+//!                     so both tokens share a redemption_pkh.
 //!
 //! # Configuration (env vars)
 //!
 //! - `WALLET_URL`         — BRC-100 wallet JSON endpoint (default `http://localhost:3321`)
 //! - `ORIGINATOR`         — originator string passed to the wallet (default `stas3-smoke`)
-//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast` | `transfer` | `redeem` | `split` | `freeze` | `unfreeze`
+//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast` | `transfer` | `redeem` | `split` | `freeze` | `unfreeze` | `confiscate` | `merge`
 //! - `SMOKE_BROADCAST`    — `1` to actually broadcast; anything else (default) is dry-run
 //! - `SMOKE_FUEL_SATS`    — satoshis per fuel UTXO (default `2000`)
 //! - `SMOKE_FUEL_COUNT`   — how many fuel UTXOs to provision (default `2`)
@@ -95,6 +118,20 @@
 //!                          is derived from `stas3freezeauth/main`; when
 //!                          CONFISCATABLE is set the confiscation authority
 //!                          pkh is derived from `stas3confiscauth/main`.
+//! - `SMOKE_MINT_TO_ISSUER` — `1` to set the mint destination
+//!                          `owner_pkh = issuer_pkh` (instead of the
+//!                          default `stas3owner/dest1` derivation). The
+//!                          resulting token has
+//!                          `owner_pkh == redemption_pkh`, which is the
+//!                          precondition for the `redeem` phase. Default
+//!                          `0`.
+//! - `SMOKE_MINT_ISSUER_KEYID` — overrides the issuer Type-42 keyID used
+//!                          at mint (default: a fresh `smoke-{millis}`
+//!                          per run). Set this to a stable string and run
+//!                          `mint-broadcast` twice to produce two tokens
+//!                          that share a redemption_pkh — required for
+//!                          the `merge` phase (which needs two tokens of
+//!                          the SAME TYPE).
 //!
 //! # Running
 //!
@@ -184,6 +221,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(DEFAULT_MINT_FLAGS);
+    let mint_to_issuer = env::var("SMOKE_MINT_TO_ISSUER")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    // When set, this string overrides the issuer Type-42 keyID. Required
+    // for `merge` (two tokens must share a redemption_pkh, which means
+    // sharing an issuer key, which means sharing the keyID). When unset,
+    // the existing per-call `smoke-{millis}` derivation is used.
+    let mint_issuer_keyid_override = env::var("SMOKE_MINT_ISSUER_KEYID").ok();
 
     println!("== STAS-3 mainnet smoke test ==");
     println!("  WALLET_URL         = {wallet_url}");
@@ -294,8 +339,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let issuer_triple =
-            Brc43KeyArgs::self_under("stas3issuer", format!("smoke-{now_ms}"));
+        let issuer_keyid = mint_issuer_keyid_override
+            .clone()
+            .unwrap_or_else(|| format!("smoke-{now_ms}"));
+        let issuer_triple = Brc43KeyArgs::self_under("stas3issuer", issuer_keyid.as_str());
         let issuer_pk = wallet
             .get_public_key(
                 GetPublicKeyArgs {
@@ -316,24 +363,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       issuer pubkey:  {}", issuer_pk.public_key.to_der_hex());
         println!("       issuer pkh:     {}", hex::encode(issuer_pkh));
 
-        println!("[6/?] Deriving destination key...");
-        let dest_triple = Brc43KeyArgs::self_under("stas3owner", "dest1");
-        let dest_pk = wallet
-            .get_public_key(
-                GetPublicKeyArgs {
-                    identity_key: false,
-                    protocol_id: Some(dest_triple.protocol_id.clone()),
-                    key_id: Some(dest_triple.key_id.clone()),
-                    counterparty: Some(dest_triple.counterparty.clone()),
-                    privileged: false,
-                    privileged_reason: None,
-                    for_self: Some(true),
-                    seek_permission: None,
-                },
-                Some(&originator),
-            )
-            .await?;
-        let dest_pkh = hash160(&dest_pk.public_key.to_der());
+        // SMOKE_MINT_TO_ISSUER=1 → produce a token where
+        // `owner_pkh == redemption_pkh` (precondition for the redeem
+        // phase). Otherwise derive the standard `stas3owner/dest1`.
+        println!("[6/?] Deriving destination key (mint_to_issuer={mint_to_issuer})...");
+        let (dest_triple, dest_pkh) = if mint_to_issuer {
+            // Use the issuer triple itself for ownership; pkh already computed.
+            (issuer_triple.clone(), issuer_pkh)
+        } else {
+            let dt = Brc43KeyArgs::self_under("stas3owner", "dest1");
+            let dpk = wallet
+                .get_public_key(
+                    GetPublicKeyArgs {
+                        identity_key: false,
+                        protocol_id: Some(dt.protocol_id.clone()),
+                        key_id: Some(dt.key_id.clone()),
+                        counterparty: Some(dt.counterparty.clone()),
+                        privileged: false,
+                        privileged_reason: None,
+                        for_self: Some(true),
+                        seek_permission: None,
+                    },
+                    Some(&originator),
+                )
+                .await?;
+            (dt, hash160(&dpk.public_key.to_der()))
+        };
         println!("       dest keyID:     {:?}", dest_triple.key_id);
         println!("       dest pkh:       {}", hex::encode(dest_pkh));
 
@@ -483,8 +538,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let issuer_triple =
-            Brc43KeyArgs::self_under("stas3issuer", format!("smoke-{now_ms}"));
+        let issuer_keyid = mint_issuer_keyid_override
+            .clone()
+            .unwrap_or_else(|| format!("smoke-{now_ms}"));
+        let issuer_triple = Brc43KeyArgs::self_under("stas3issuer", issuer_keyid.as_str());
         let issuer_pk = wallet
             .get_public_key(
                 GetPublicKeyArgs {
@@ -505,24 +562,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       issuer pubkey:  {}", issuer_pk.public_key.to_der_hex());
         println!("       issuer pkh:     {}", hex::encode(issuer_pkh));
 
-        println!("[6/?] Deriving destination key...");
-        let dest_triple = Brc43KeyArgs::self_under("stas3owner", "dest1");
-        let dest_pk = wallet
-            .get_public_key(
-                GetPublicKeyArgs {
-                    identity_key: false,
-                    protocol_id: Some(dest_triple.protocol_id.clone()),
-                    key_id: Some(dest_triple.key_id.clone()),
-                    counterparty: Some(dest_triple.counterparty.clone()),
-                    privileged: false,
-                    privileged_reason: None,
-                    for_self: Some(true),
-                    seek_permission: None,
-                },
-                Some(&originator),
-            )
-            .await?;
-        let dest_pkh = hash160(&dest_pk.public_key.to_der());
+        // SMOKE_MINT_TO_ISSUER=1 → produce a token where
+        // `owner_pkh == redemption_pkh` (precondition for the redeem
+        // phase). Otherwise derive the standard `stas3owner/dest1`.
+        println!("[6/?] Deriving destination key (mint_to_issuer={mint_to_issuer})...");
+        let (dest_triple, dest_pkh) = if mint_to_issuer {
+            (issuer_triple.clone(), issuer_pkh)
+        } else {
+            let dt = Brc43KeyArgs::self_under("stas3owner", "dest1");
+            let dpk = wallet
+                .get_public_key(
+                    GetPublicKeyArgs {
+                        identity_key: false,
+                        protocol_id: Some(dt.protocol_id.clone()),
+                        key_id: Some(dt.key_id.clone()),
+                        counterparty: Some(dt.counterparty.clone()),
+                        privileged: false,
+                        privileged_reason: None,
+                        for_self: Some(true),
+                        seek_permission: None,
+                    },
+                    Some(&originator),
+                )
+                .await?;
+            (dt, hash160(&dpk.public_key.to_der()))
+        };
         println!("       dest keyID:     {:?}", dest_triple.key_id);
         println!("       dest pkh:       {}", hex::encode(dest_pkh));
 
@@ -1205,12 +1269,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // -------------------------------------------------------------------
+    // Phase: confiscate
+    // -------------------------------------------------------------------
+    if phase == "confiscate" {
+        run_confiscate_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
+    // Phase: merge
+    // -------------------------------------------------------------------
+    if phase == "merge" {
+        run_merge_phase(
+            &*wallet,
+            &stas,
+            &originator,
+            &id.public_key.to_der(),
+            &arc_url,
+            arc_api_key.as_deref(),
+            broadcast,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
         return Err(format!(
             "unknown SMOKE_PHASE={phase} \
-             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer | redeem | split | freeze | unfreeze)"
+             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer | redeem | split | freeze | unfreeze | confiscate | merge)"
         )
         .into());
     }
@@ -2154,6 +2252,464 @@ async fn run_freeze_or_unfreeze_phase<W: WalletInterface>(
     );
 
     println!("\n✓ {op_name} phase complete — STAS-3 state transition broadcast on-chain");
+    println!("  txid: {final_txid}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase: confiscate
+// ---------------------------------------------------------------------------
+//
+// Picks a STAS-3 token from `stas3tokens` that:
+//   - has CONFISCATABLE flag set, AND
+//   - is currently `Frozen` (per spec §5.3, confiscation seizes a frozen UTXO).
+//
+// Derives the confiscation authority via `stas3confiscauth/main` (the same
+// triple that was used at mint when CONFISCATABLE was set), verifies it
+// matches the relevant service field on the input lock (`service_fields[0]`
+// when CONFISCATABLE-only, `service_fields[1]` when both FREEZABLE and
+// CONFISCATABLE are set — left-to-right by lowest flag bit per spec §5.2.2),
+// builds + signs + broadcasts the confiscate tx, and internalizes the new
+// STAS output (now owned by `stas3owner/confisc-dest`).
+
+#[allow(clippy::too_many_arguments)]
+async fn run_confiscate_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_basket = stas.config().token_basket.clone();
+    let fuel_basket = stas.config().fuel_basket.clone();
+
+    println!("\n[4/?] Listing token basket {token_basket:?}...");
+    let tokens = list_basket(wallet, &token_basket, originator).await?;
+    if tokens.is_empty() {
+        return Err(format!(
+            "confiscate phase requires a STAS-3 token in basket {token_basket:?}; \
+             run SMOKE_PHASE=mint-broadcast first"
+        )
+        .into());
+    }
+
+    // Find a token that is both CONFISCATABLE-flagged and Frozen.
+    let mut chosen: Option<(
+        &Output,
+        bsv::script::locking_script::LockingScript,
+        bsv::script::templates::stas3::DecodedLock,
+    )> = None;
+    for o in &tokens {
+        let (lock, decoded) = decode_token_output(o)?;
+        let is_confisc = stas3_flags::is_confiscatable(decoded.flags);
+        let is_frozen = matches!(decoded.action_data, ActionData::Frozen(_));
+        if is_confisc && is_frozen {
+            chosen = Some((o, lock, decoded));
+            break;
+        }
+    }
+    let (token_output, locking_script, decoded) = chosen.ok_or_else(|| {
+        "confiscate phase requires a STAS-3 token with CONFISCATABLE flag set \
+         AND current_action_data == Frozen; mint one with \
+         SMOKE_MINT_FLAGS=3 SMOKE_PHASE=mint-broadcast then SMOKE_PHASE=freeze first"
+            .to_string()
+    })?;
+    let token_outpoint = &token_output.outpoint;
+    println!(
+        "       using outpoint: {token_outpoint} ({} sats, flags=0x{:02x}, frozen=true)",
+        token_output.satoshis, decoded.flags
+    );
+
+    println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
+    let token_input = stas.find_token(token_outpoint).await?;
+
+    // Derive the confiscation authority triple (`stas3confiscauth/main`).
+    println!(
+        "[6/?] Deriving confiscation authority triple (stas3confiscauth/{CONFISC_AUTH_KEY_ID})..."
+    );
+    let auth_triple = Brc43KeyArgs::self_under("stas3confiscauth", CONFISC_AUTH_KEY_ID);
+    let auth_pkh = derive_pkh_for_triple(wallet, originator, &auth_triple).await?;
+    println!("       confiscation auth pkh: {}", hex::encode(auth_pkh));
+
+    // Verify auth_pkh matches the right service field on the input lock.
+    // Position depends on flags: CONFISCATABLE-only → service_fields[0];
+    // FREEZABLE+CONFISCATABLE → service_fields[1] (lowest bit first).
+    let confisc_field_idx = if stas3_flags::is_freezable(decoded.flags) {
+        1
+    } else {
+        0
+    };
+    if let Some(expected) = decoded.service_fields.get(confisc_field_idx) {
+        if expected.as_slice() != auth_pkh {
+            println!(
+                "       WARNING: derived confisc auth pkh ({}) != \
+                 service_fields[{confisc_field_idx}] on token ({}); \
+                 confiscate tx will fail engine verify",
+                hex::encode(auth_pkh),
+                hex::encode(expected),
+            );
+        } else {
+            println!(
+                "       ✓ matches token's service_fields[{confisc_field_idx}]"
+            );
+        }
+    } else {
+        println!(
+            "       WARNING: token has no service_fields[{confisc_field_idx}] \
+             — flags=0x{:02x} disagrees with decoded layout",
+            decoded.flags
+        );
+    }
+
+    // Derive the destination owner (where the confiscated token goes).
+    println!("[7/?] Deriving confiscation destination (stas3owner/confisc-dest)...");
+    let dest_triple = Brc43KeyArgs::self_under("stas3owner", "confisc-dest");
+    let dest_pkh = derive_pkh_for_triple(wallet, originator, &dest_triple).await?;
+    println!("       confisc dest pkh: {}", hex::encode(dest_pkh));
+
+    let change_pkh = hash160(identity_pubkey_der);
+    let change_satoshis: u64 = 1_200;
+
+    println!("[8/?] Picking fuel UTXO for confiscate...");
+    let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[9/?] Calling Stas3Wallet::confiscate...");
+    let mut confisc_tx = stas
+        .confiscate(
+            token_input,
+            funding.clone(),
+            SigningKey::P2pkh(auth_triple.clone()),
+            dest_pkh,
+            change_pkh,
+            change_satoshis,
+        )
+        .await?;
+    let confisc_txid = confisc_tx
+        .id()
+        .map_err(|e| format!("confiscate tx id: {e}"))?;
+    let confisc_hex = confisc_tx
+        .to_bytes()
+        .map_err(|e| format!("confiscate tx bytes: {e}"))?;
+    println!("       confiscate_tx txid: {confisc_txid}");
+    println!("       confiscate_tx size: {} bytes", confisc_hex.len());
+
+    println!("[10/?] Engine-verifying confiscate_tx STAS input (index 0)...");
+    let valid = verify_input(&confisc_tx, 0, &locking_script, token_output.satoshis)
+        .map_err(|e| format!("confiscate tx STAS input verify: {e:?}"))?;
+    if !valid {
+        return Err("confiscate tx STAS input (index 0) failed engine verify".into());
+    }
+    println!("       ✓ STAS input engine-verified OK");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        println!("  txid: {confisc_txid}");
+        println!("  hex:  {}", hex::encode(&confisc_hex));
+        println!("\n✓ confiscate dry-run complete");
+        return Ok(());
+    }
+
+    println!("[11/?] Fetching source txs from token + fuel baskets...");
+    let lookup = build_token_and_fuel_lookup_beef(
+        wallet,
+        originator,
+        &token_basket,
+        &fuel_basket,
+    )
+    .await?;
+    hydrate_inputs_from_lookup(&mut confisc_tx, &lookup)?;
+
+    println!("[11b/?] Signing fuel input (P2PKH) before broadcast...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut confisc_tx,
+        1,
+        funding.satoshis,
+        &funding.locking_script,
+        &funding.triple,
+    )
+    .await?;
+
+    println!("[12/?] Broadcasting confiscate_tx via ARC ({arc_url})...");
+    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &confisc_tx).await?;
+    println!("       confiscate_tx broadcast OK: txid={bcast_txid}");
+
+    let final_txid = confisc_tx
+        .id()
+        .map_err(|e| format!("recompute confiscate txid post-sign: {e}"))?;
+    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
+
+    println!("[13/?] Building atomic BEEF for confiscate_tx...");
+    let atomic_beef = build_atomic_beef_for(lookup, &confisc_tx, &final_txid)?;
+    println!("       atomic BEEF size: {} bytes", atomic_beef.len());
+
+    println!("[14/?] Internalizing confiscated STAS-3 output (index 0) into {token_basket:?}...");
+    stas.internalize_stas_outputs(
+        atomic_beef,
+        vec![(0u32, dest_triple, None)],
+        "stas3 smoke confiscate",
+    )
+    .await
+    .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+
+    println!("[15/?] Re-listing token basket to verify new owner...");
+    let after = list_basket(wallet, &token_basket, originator).await?;
+    println!(
+        "       before: {} UTXO(s)  after: {} UTXO(s)",
+        tokens.len(),
+        after.len()
+    );
+
+    println!("\n✓ confiscate phase complete — STAS-3 token seized to confisc-dest on-chain");
+    println!("  txid: {final_txid}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase: merge
+// ---------------------------------------------------------------------------
+//
+// Picks 2 STAS-3 tokens of the SAME TYPE from `stas3tokens` (same
+// redemption_pkh + flags + service_fields + optional_data), hydrates each
+// `TokenInput.source_tx_bytes` from the token-basket BEEF (required by the
+// merge factory per spec §9.5 — the raw preceding tx is needed to excise
+// the asset locking script for the trailing piece array), and atomically
+// merges them into one STAS output owned by `stas3owner/merge-dest`.
+
+/// Returns `true` when two tokens are mergeable (same type per spec §8.1):
+/// same redemption_pkh, flags, service_fields, AND optional_data.
+fn is_same_token_type(
+    a: &bsv::script::templates::stas3::DecodedLock,
+    b: &bsv::script::templates::stas3::DecodedLock,
+) -> bool {
+    a.redemption_pkh == b.redemption_pkh
+        && a.flags == b.flags
+        && a.service_fields == b.service_fields
+        && a.optional_data == b.optional_data
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_merge_phase<W: WalletInterface>(
+    wallet: &dyn WalletInterface,
+    stas: &Stas3Wallet<W>,
+    originator: &str,
+    identity_pubkey_der: &[u8],
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    broadcast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_basket = stas.config().token_basket.clone();
+    let fuel_basket = stas.config().fuel_basket.clone();
+
+    println!("\n[4/?] Listing token basket {token_basket:?}...");
+    let tokens = list_basket(wallet, &token_basket, originator).await?;
+    if tokens.len() < 2 {
+        return Err(format!(
+            "merge phase requires 2+ STAS-3 tokens of the same type in basket \
+             {token_basket:?}; got {}. Mint twice with the same SMOKE_MINT_ISSUER_KEYID \
+             (e.g. SMOKE_MINT_ISSUER_KEYID=merge1 SMOKE_PHASE=mint-broadcast \
+             — repeat) so both tokens share a redemption_pkh.",
+            tokens.len()
+        )
+        .into());
+    }
+
+    // Decode all tokens, then find any pair of the same type.
+    let mut decoded_all: Vec<(usize, bsv::script::locking_script::LockingScript,
+        bsv::script::templates::stas3::DecodedLock)> = Vec::new();
+    for (i, o) in tokens.iter().enumerate() {
+        let (lock, dec) = decode_token_output(o)?;
+        decoded_all.push((i, lock, dec));
+    }
+
+    let mut pair: Option<(usize, usize)> = None;
+    'outer: for i in 0..decoded_all.len() {
+        for j in (i + 1)..decoded_all.len() {
+            if is_same_token_type(&decoded_all[i].2, &decoded_all[j].2) {
+                pair = Some((i, j));
+                break 'outer;
+            }
+        }
+    }
+    let (idx_a, idx_b) = pair.ok_or_else(|| {
+        "merge phase requires 2+ STAS-3 tokens of the same type \
+         (same redemption_pkh + flags + service_fields + optional_data); \
+         no such pair found. Mint twice with the same SMOKE_MINT_ISSUER_KEYID."
+            .to_string()
+    })?;
+
+    let token_a = &tokens[idx_a];
+    let token_b = &tokens[idx_b];
+    let lock_a = decoded_all[idx_a].1.clone();
+    let lock_b = decoded_all[idx_b].1.clone();
+    println!(
+        "       picked pair: {} ({} sats) + {} ({} sats)",
+        token_a.outpoint, token_a.satoshis, token_b.outpoint, token_b.satoshis
+    );
+
+    // Resolve TokenInputs (find_token leaves source_tx_bytes = None — we
+    // hydrate it ourselves below from the token-basket BEEF).
+    println!("[5/?] Resolving TokenInputs via find_token...");
+    let mut token_input_a = stas.find_token(&token_a.outpoint).await?;
+    let mut token_input_b = stas.find_token(&token_b.outpoint).await?;
+
+    // Pre-fetch the token + fuel BEEFs (we need them anyway for hydrating
+    // source_transaction on every input pre-broadcast, and we ALSO need to
+    // populate source_tx_bytes for merge per spec §9.5).
+    println!("[6/?] Fetching source txs from token + fuel baskets...");
+    let lookup = build_token_and_fuel_lookup_beef(
+        wallet,
+        originator,
+        &token_basket,
+        &fuel_basket,
+    )
+    .await?;
+    let src_a = lookup
+        .find_txid(&token_input_a.txid_hex)
+        .and_then(|btx| btx.tx.clone())
+        .ok_or_else(|| {
+            format!(
+                "source tx {} for merge input A not found in token-basket BEEF",
+                token_input_a.txid_hex
+            )
+        })?;
+    let src_b = lookup
+        .find_txid(&token_input_b.txid_hex)
+        .and_then(|btx| btx.tx.clone())
+        .ok_or_else(|| {
+            format!(
+                "source tx {} for merge input B not found in token-basket BEEF",
+                token_input_b.txid_hex
+            )
+        })?;
+    let src_a_bytes = src_a
+        .to_bytes()
+        .map_err(|e| format!("serialize merge input A source tx: {e}"))?;
+    let src_b_bytes = src_b
+        .to_bytes()
+        .map_err(|e| format!("serialize merge input B source tx: {e}"))?;
+    token_input_a.source_tx_bytes = Some(src_a_bytes);
+    token_input_b.source_tx_bytes = Some(src_b_bytes);
+    println!("       hydrated source_tx_bytes for both merge inputs");
+
+    // Derive merge destination (recipient of the merged token).
+    println!("[7/?] Deriving merge destination (stas3owner/merge-dest)...");
+    let dest_triple = Brc43KeyArgs::self_under("stas3owner", "merge-dest");
+    let dest_pkh = derive_pkh_for_triple(wallet, originator, &dest_triple).await?;
+    println!("       merge dest pkh: {}", hex::encode(dest_pkh));
+
+    let change_pkh = hash160(identity_pubkey_der);
+    // Merge tx is bigger than transfer (~4.5kB-ish with EAC optional_data
+    // on both inputs). Leave a healthy fee budget.
+    let change_satoshis: u64 = 800;
+
+    println!("[8/?] Picking fuel UTXO for merge...");
+    let funding = stas.pick_fuel(change_satoshis.saturating_add(500)).await?;
+    println!(
+        "       picked fuel: {}.{} ({} sats)",
+        funding.txid_hex, funding.vout, funding.satoshis
+    );
+
+    println!("[9/?] Calling Stas3Wallet::merge (2 STAS inputs + 1 fuel)...");
+    let mut merge_tx = stas
+        .merge(
+            vec![token_input_a, token_input_b],
+            funding.clone(),
+            dest_pkh,
+            change_pkh,
+            change_satoshis,
+            Some(b"stas3 smoke merge".to_vec()),
+        )
+        .await?;
+    let merge_txid = merge_tx.id().map_err(|e| format!("merge tx id: {e}"))?;
+    let merge_hex = merge_tx
+        .to_bytes()
+        .map_err(|e| format!("merge tx bytes: {e}"))?;
+    println!("       merge_tx txid: {merge_txid}");
+    println!("       merge_tx size: {} bytes", merge_hex.len());
+
+    // Engine-verify both STAS inputs (index 0 and 1).
+    println!("[10/?] Engine-verifying merge_tx STAS inputs (index 0 and 1)...");
+    let valid_0 = verify_input(&merge_tx, 0, &lock_a, token_a.satoshis)
+        .map_err(|e| format!("merge tx STAS input 0 verify: {e:?}"))?;
+    if !valid_0 {
+        return Err("merge tx STAS input 0 failed engine verify".into());
+    }
+    let valid_1 = verify_input(&merge_tx, 1, &lock_b, token_b.satoshis)
+        .map_err(|e| format!("merge tx STAS input 1 verify: {e:?}"))?;
+    if !valid_1 {
+        return Err("merge tx STAS input 1 failed engine verify".into());
+    }
+    println!("       ✓ both STAS inputs engine-verified OK");
+
+    if !broadcast {
+        println!("\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)");
+        println!("  txid: {merge_txid}");
+        println!("  hex:  {}", hex::encode(&merge_hex));
+        println!("\n✓ merge dry-run complete");
+        return Ok(());
+    }
+
+    // Hydrate source_transaction on every input (3 inputs: 2 STAS + 1 fuel)
+    // so EF serialization works.
+    hydrate_inputs_from_lookup(&mut merge_tx, &lookup)?;
+
+    // Sign the fuel input (input 2 — STAS inputs are at 0 and 1).
+    println!("[10b/?] Signing fuel input (P2PKH, index 2) before broadcast...");
+    sign_p2pkh_input_in_smoke(
+        wallet,
+        originator,
+        &mut merge_tx,
+        2,
+        funding.satoshis,
+        &funding.locking_script,
+        &funding.triple,
+    )
+    .await?;
+
+    println!("[11/?] Broadcasting merge_tx via ARC ({arc_url})...");
+    let bcast_txid = arc_broadcast(arc_url, arc_api_key, &merge_tx).await?;
+    println!("       merge_tx broadcast OK: txid={bcast_txid}");
+
+    let final_txid = merge_tx
+        .id()
+        .map_err(|e| format!("recompute merge txid post-sign: {e}"))?;
+    debug_assert_eq!(final_txid, bcast_txid, "computed txid != ARC-returned txid");
+
+    println!("[12/?] Building atomic BEEF for merge_tx...");
+    let atomic_beef = build_atomic_beef_for(lookup, &merge_tx, &final_txid)?;
+    println!("       atomic BEEF size: {} bytes", atomic_beef.len());
+
+    println!("[13/?] Internalizing merged STAS-3 output (index 0) into {token_basket:?}...");
+    stas.internalize_stas_outputs(
+        atomic_beef,
+        vec![(0u32, dest_triple, None)],
+        "stas3 smoke merge",
+    )
+    .await
+    .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+
+    println!("[14/?] Re-listing token basket to verify merged UTXO...");
+    let after = list_basket(wallet, &token_basket, originator).await?;
+    println!(
+        "       before: {} UTXO(s)  after: {} UTXO(s)",
+        tokens.len(),
+        after.len()
+    );
+
+    println!(
+        "\n✓ merge phase complete — 2 STAS-3 tokens merged into 1 ({} + {} = {} sats)",
+        token_a.satoshis,
+        token_b.satoshis,
+        token_a.satoshis + token_b.satoshis
+    );
     println!("  txid: {final_txid}");
     Ok(())
 }
