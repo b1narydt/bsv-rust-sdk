@@ -17,12 +17,16 @@
 //!
 //! Only the `connect` phase runs by default. Set `SMOKE_PHASE` to opt in:
 //!
-//! - `connect` — ping the wallet, fetch identity key, list current fuel basket
-//! - `topup`   — connect + provision N fresh fuel UTXOs via `top_up_fuel`,
-//!               then re-list to confirm they appear
+//! - `connect`  — ping the wallet, fetch identity key, list current fuel basket
+//! - `topup`    — connect + provision N fresh fuel UTXOs via `top_up_fuel`,
+//!                then re-list to confirm they appear
+//! - `pickfuel` — connect + call `pick_fuel` against the current basket,
+//!                verify the picked UTXO has parsable customInstructions
+//!                (proves the read-back path on top of what topup wrote).
+//!                Read-only — no broadcast.
 //!
-//! Future phases (`mint`, `transfer`, etc.) layer on top of `topup` and will
-//! be added once the topup phase has been verified on chain.
+//! Future phases (`mint`, `transfer`, etc.) require an ARC endpoint and will
+//! be added once `pickfuel` has confirmed the read-back path.
 //!
 //! # Configuration (env vars)
 //!
@@ -130,7 +134,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if phase == "connect" {
-        println!("\n✓ connect phase complete (set SMOKE_PHASE=topup to provision fuel)");
+        println!("\n✓ connect phase complete (set SMOKE_PHASE=topup or pickfuel)");
+        return Ok(());
+    }
+
+    // -------------------------------------------------------------------
+    // Phase: pickfuel  (read-only — no broadcast)
+    // -------------------------------------------------------------------
+    if phase == "pickfuel" {
+        if before.is_empty() {
+            return Err(format!(
+                "pickfuel phase requires fuel UTXOs in basket {fuel_basket:?}; \
+                 run SMOKE_PHASE=topup SMOKE_BROADCAST=1 first"
+            )
+            .into());
+        }
+        let min = fuel_sats.min(before.iter().map(|o| o.satoshis).min().unwrap_or(1));
+        println!("\n[4/4] Picking fuel UTXO with at least {min} sats...");
+        let picked = stas.pick_fuel(min).await?;
+        println!("       picked outpoint: {}.{}", picked.txid_hex, picked.vout);
+        println!("       satoshis:        {}", picked.satoshis);
+        println!(
+            "       triple:          protocol={:?} keyID={:?} counterparty={:?}",
+            picked.triple.protocol_id.protocol,
+            picked.triple.key_id,
+            picked.triple.counterparty.counterparty_type
+        );
+        println!(
+            "\n✓ pickfuel phase complete — pick_fuel + customInstructions JSON \
+             round-trip works against the live wallet"
+        );
         return Ok(());
     }
 
@@ -138,7 +171,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
-        return Err(format!("unknown SMOKE_PHASE={phase} (expected: connect | topup)").into());
+        return Err(format!(
+            "unknown SMOKE_PHASE={phase} (expected: connect | topup | pickfuel)"
+        )
+        .into());
     }
 
     println!(
