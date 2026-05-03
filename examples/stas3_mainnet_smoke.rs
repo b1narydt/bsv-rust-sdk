@@ -1805,7 +1805,8 @@ async fn run_split_phase<W: WalletInterface>(
     );
 
     let change_pkh = hash160(identity_pubkey_der);
-    let change_satoshis: u64 = 1_200;
+    // Split tx ~9.7kB (2 STAS-3 outputs); needs ~1000 sat fee at mainnet rate.
+    let change_satoshis: u64 = 1_000;
 
     println!("[7/?] Picking fuel UTXO for split...");
     let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
