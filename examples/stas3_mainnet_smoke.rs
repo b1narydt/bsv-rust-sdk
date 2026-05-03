@@ -807,18 +807,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       change pkh:     {}", hex::encode(change_pkh));
 
         // The change_satoshis parameter controls how many satoshis go back to
-        // change_pkh from the fuel UTXO. 1800 sats is a comfortable floor on
-        // mainnet (covers typical relay fees with room to spare).
-        let change_satoshis: u64 = 1_800;
+        // change_pkh from the fuel UTXO. fee = funding - token_sats - change.
+        // Transfer tx with 11 EAC optional_data elements is ~3.4kB; at
+        // 0.2 sat/byte ARC expects ~700 sat fee. With a 2000-sat fuel UTXO,
+        // change=1200 leaves ~800 sats fee budget (the STAS output keeps its 1
+        // sat regardless).
+        let change_satoshis: u64 = 1_200;
+
+        // Pick fuel manually (instead of transfer_with_fuel_pick) so we keep
+        // the funding triple — needed below to sign the fuel input before
+        // broadcast (the factory leaves funding inputs unsigned by convention).
+        println!("[8/?] Picking fuel UTXO for transfer...");
+        let funding = stas.pick_fuel(change_satoshis.saturating_add(200)).await?;
+        println!(
+            "       picked fuel: {}.{} ({} sats)",
+            funding.txid_hex, funding.vout, funding.satoshis
+        );
 
         println!(
-            "[8/?] Calling transfer_with_fuel_pick \
-             (dest_pkh={}, change_sats={change_satoshis})...",
+            "[8b/?] Calling transfer (dest_pkh={}, change_sats={change_satoshis})...",
             hex::encode(dest_pkh)
         );
         let transfer_tx = stas
-            .transfer_with_fuel_pick(
+            .transfer(
                 token_input,
+                funding.clone(),
                 dest_pkh,
                 change_pkh,
                 change_satoshis,
@@ -929,6 +942,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             input.source_transaction = Some(Box::new(src_tx));
         }
 
+        // Sign the fuel input (input 1) — the transfer factory only signs the
+        // STAS input. Without this, ARC rejects with "inputs must have an
+        // unlocking script."
+        println!("[10b/?] Signing fuel input (P2PKH) before broadcast...");
+        sign_p2pkh_input_in_smoke(
+            &*wallet,
+            &originator,
+            &mut transfer_tx,
+            1,
+            funding.satoshis,
+            &funding.locking_script,
+            &funding.triple,
+        )
+        .await?;
+        println!("       fuel input signed");
+
         println!("[11/?] Broadcasting transfer_tx via ARC ({arc_url})...");
         let bcast_txid =
             arc_broadcast(&arc_url, arc_api_key.as_deref(), &transfer_tx).await?;
@@ -936,6 +965,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Build atomic BEEF for internalize_action.
         println!("[12/?] Building atomic BEEF for internalize_action...");
+
+        // Recompute the txid AFTER signing the fuel input — signing changes
+        // the unlocking script, which changes the tx bytes, which changes
+        // the txid. The pre-broadcast `transfer_txid` (cached before signing)
+        // is stale; the ARC response txid (`bcast_txid`) is the real one.
+        let final_txid = transfer_tx
+            .id()
+            .map_err(|e| format!("recompute transfer txid post-sign: {e}"))?;
+        debug_assert_eq!(
+            final_txid, bcast_txid,
+            "computed txid != ARC-returned txid"
+        );
 
         // Reuse lookup_beef (already has both baskets' source txs) and add
         // the transfer tx itself, then produce atomic BEEF.
@@ -946,7 +987,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         beef.sort_txs();
 
         let atomic_beef_bytes = beef
-            .to_binary_atomic(&transfer_txid)
+            .to_binary_atomic(&final_txid)
             .map_err(|e| format!("to_binary_atomic: {e}"))?;
         println!(
             "       atomic BEEF size: {} bytes",
@@ -975,7 +1016,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         // Find the new outpoint (txid matches transfer_txid, vout 0).
-        let expected_outpoint = format!("{transfer_txid}.0");
+        let expected_outpoint = format!("{final_txid}.0");
         let new_output = after.iter().find(|o| o.outpoint == expected_outpoint);
         match new_output {
             Some(out) => {
@@ -1090,6 +1131,100 @@ async fn list_basket(
         )
         .await?;
     Ok(result.outputs)
+}
+
+/// Sign a P2PKH input on `tx` using the wallet's `create_signature` against
+/// the BIP-143 preimage hash, then install the resulting `<sig+sighash>
+/// <pubkey>` unlocking script. Mirrors `factory::issue::sign_p2pkh_input`
+/// (which is module-private). Used by the smoke test to sign the fuel
+/// input on a transfer tx before broadcast — the transfer factory leaves
+/// funding inputs unsigned by convention.
+async fn sign_p2pkh_input_in_smoke(
+    wallet: &dyn WalletInterface,
+    originator: &str,
+    tx: &mut Transaction,
+    input_index: usize,
+    source_satoshis: u64,
+    prev_locking_script: &bsv::script::locking_script::LockingScript,
+    triple: &Brc43KeyArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bsv::primitives::hash::hash256;
+    use bsv::script::templates::stas3::build_preimage;
+    use bsv::script::unlocking_script::UnlockingScript;
+    use bsv::wallet::interfaces::CreateSignatureArgs;
+
+    let preimage = build_preimage(tx, input_index, source_satoshis, prev_locking_script)
+        .map_err(|e| format!("build_preimage input {input_index}: {e:?}"))?;
+    let preimage_hash = hash256(&preimage).to_vec();
+
+    let sig_result = wallet
+        .create_signature(
+            CreateSignatureArgs {
+                protocol_id: triple.protocol_id.clone(),
+                key_id: triple.key_id.clone(),
+                counterparty: triple.counterparty.clone(),
+                data: None,
+                hash_to_directly_sign: Some(preimage_hash),
+                privileged: false,
+                privileged_reason: None,
+                seek_permission: None,
+            },
+            Some(originator),
+        )
+        .await
+        .map_err(|e| format!("create_signature for input {input_index}: {e}"))?;
+    let mut sig = sig_result.signature;
+    sig.push(0x41); // SIGHASH_ALL | SIGHASH_FORKID
+
+    let pk = wallet
+        .get_public_key(
+            GetPublicKeyArgs {
+                identity_key: false,
+                protocol_id: Some(triple.protocol_id.clone()),
+                key_id: Some(triple.key_id.clone()),
+                counterparty: Some(triple.counterparty.clone()),
+                privileged: false,
+                privileged_reason: None,
+                for_self: Some(true),
+                seek_permission: None,
+            },
+            Some(originator),
+        )
+        .await
+        .map_err(|e| format!("get_public_key for input {input_index}: {e}"))?;
+    let pubkey_der = pk.public_key.to_der();
+
+    // P2PKH unlock = <sig+sighash> <pubkey>
+    let mut unlock = Vec::with_capacity(1 + sig.len() + 1 + pubkey_der.len());
+    push_data_minimal_smoke(&mut unlock, &sig);
+    push_data_minimal_smoke(&mut unlock, &pubkey_der);
+
+    tx.inputs[input_index].unlocking_script = Some(UnlockingScript::from_binary(&unlock));
+    Ok(())
+}
+
+/// Minimal Bitcoin push encoder for `data` (length up to 65535). Used by
+/// `sign_p2pkh_input_in_smoke` since the SDK's `push_data_minimal` is
+/// crate-private to `templates::stas3::lock`.
+fn push_data_minimal_smoke(out: &mut Vec<u8>, data: &[u8]) {
+    let n = data.len();
+    if n == 0 {
+        out.push(0x00); // OP_0
+    } else if n <= 75 {
+        out.push(n as u8);
+        out.extend_from_slice(data);
+    } else if n <= 255 {
+        out.push(0x4c); // OP_PUSHDATA1
+        out.push(n as u8);
+        out.extend_from_slice(data);
+    } else if n <= 65535 {
+        out.push(0x4d); // OP_PUSHDATA2
+        out.push((n & 0xff) as u8);
+        out.push(((n >> 8) & 0xff) as u8);
+        out.extend_from_slice(data);
+    } else {
+        panic!("push too large for smoke helper: {n} bytes");
+    }
 }
 
 /// POST a transaction to ARC `/v1/tx` as Extended Format hex with
