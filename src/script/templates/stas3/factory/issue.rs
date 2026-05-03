@@ -96,10 +96,18 @@ pub struct IssueRequest<'a, W: WalletInterface + ?Sized> {
     /// `OP_FALSE OP_RETURN <scheme>` of the contract tx output 0.
     /// Mirrors `scheme.toBytes()` in the TS reference.
     pub scheme_bytes: Vec<u8>,
-    /// The funding UTXO consumed by the contract tx input 0. `triple` is
-    /// ignored on this path — the factory uses `issuer_signing_key`
-    /// throughout (the funding triple was relevant on transfer/split
-    /// where the funding owner differs from the token authority).
+    /// The funding UTXO consumed by the contract tx input 0. The
+    /// `funding_input.triple` is honored: the factory signs the funding
+    /// input with the funder's own key (matching transfer/split/merge
+    /// convention). The issuer key is used only for the issue tx (which
+    /// spends the contract tx's two outputs — both locked to the
+    /// issuer).
+    ///
+    /// Note: the contract tx's change output and the issue tx's change
+    /// output are both still locked to `redemption_pkh` (the issuer's
+    /// pkh). For mints where funder != issuer, the funder is effectively
+    /// transferring the leftover (funding − token_sats − fees) to the
+    /// issuer. Budget accordingly.
     pub funding_input: FundingInput,
     /// At least one destination required.
     pub destinations: Vec<IssueDestination>,
@@ -223,7 +231,30 @@ pub async fn build_issue<W: WalletInterface + ?Sized>(
         contract_change,
     );
 
-    // Sign contract tx input 0 (the funding input) with the issuer key.
+    // Sign contract tx input 0 (the funding input) with the FUNDER's key
+    // (from `funding_input.triple`), not the issuer key. This lets any
+    // fuel UTXO bankroll a mint — issuer and funder identities are
+    // independent. Matches the transfer/split/merge convention where
+    // funding inputs are signed by their own owner.
+    let funding_pk = req
+        .wallet
+        .get_public_key(
+            GetPublicKeyArgs {
+                identity_key: false,
+                protocol_id: Some(req.funding_input.triple.protocol_id.clone()),
+                key_id: Some(req.funding_input.triple.key_id.clone()),
+                counterparty: Some(req.funding_input.triple.counterparty.clone()),
+                privileged: false,
+                privileged_reason: None,
+                for_self: Some(true),
+                seek_permission: None,
+            },
+            req.originator,
+        )
+        .await
+        .map_err(|e| Stas3Error::InvalidScript(format!("funding pubkey: {e}")))?;
+    let funding_pubkey_bytes = funding_pk.public_key.to_der();
+
     sign_p2pkh_input(
         req.wallet,
         req.originator,
@@ -231,8 +262,8 @@ pub async fn build_issue<W: WalletInterface + ?Sized>(
         0,
         req.funding_input.satoshis,
         &req.funding_input.locking_script,
-        &issuer_triple,
-        &issuer_pubkey_bytes,
+        &req.funding_input.triple,
+        &funding_pubkey_bytes,
     )
     .await?;
 
