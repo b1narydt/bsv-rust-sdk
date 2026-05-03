@@ -10,7 +10,9 @@
 //! This module provides:
 //! - Script primitives ([`build_locking_script`], [`decode_locking_script`])
 //! - Operation factories ([`factory::build_transfer`],
-//!   [`factory::build_split`], [`factory::build_merge`],
+//!   [`factory::build_split`], [`factory::build_merge`] (atomic 2-input;
+//!   use [`factory::build_merge_chain`] for N>2 via chained binary-tree
+//!   merges, mirroring the dxs reference SDK),
 //!   [`factory::build_swap_mark`], [`factory::build_swap_cancel`],
 //!   [`factory::build_swap_execute`], [`factory::build_freeze`],
 //!   [`factory::build_unfreeze`], [`factory::build_confiscate`],
@@ -129,12 +131,12 @@ pub use wallet::{CustomInstructions, Stas3Wallet, Stas3WalletConfig};
 // methods, but the raw factory functions (and their request structs) are
 // exported for advanced flows that need finer control.
 pub use factory::{
-    build_confiscate, build_freeze, build_merge, build_redeem, build_split,
-    build_swap_cancel, build_swap_execute, build_swap_mark, build_transfer,
-    build_unfreeze, ConfiscateRequest, FreezeRequest, FundingInput, MergeRequest,
-    RedeemRequest, SigningKey, SplitDestination, SplitRequest, SwapCancelRequest,
-    SwapExecuteRequest, SwapMarkRequest, TokenInput, TransferRequest,
-    UnfreezeRequest,
+    build_confiscate, build_freeze, build_merge, build_merge_chain, build_redeem,
+    build_split, build_swap_cancel, build_swap_execute, build_swap_mark,
+    build_transfer, build_unfreeze, ConfiscateRequest, FreezeRequest, FundingInput,
+    MergeChainRequest, MergeRequest, RedeemRequest, SigningKey, SplitDestination,
+    SplitRequest, SwapCancelRequest, SwapExecuteRequest, SwapMarkRequest, TokenInput,
+    TransferRequest, UnfreezeRequest,
 };
 
 #[cfg(test)]
@@ -1370,61 +1372,7 @@ mod integration_tests {
         Ok((tx, verify_meta))
     }
 
-    /// Wave-2A.2: 3-input merge wires through the factory. Engine
-    /// verification is deferred — the spec §8.1 wire layout for the N>2
-    /// trailing piece array is ambiguous (single concatenated array vs.
-    /// per-source groups), and the canonical engine ASM dispatch differs
-    /// between merge variants. Marked `#[ignore]` until either:
-    ///   (a) a TS reference implementation lands in dxs-bsv-token-sdk for
-    ///       N>2, or
-    ///   (b) the canonical engine's per-input merge-section dispatch for
-    ///       txType > 2 is documented in the spec.
-    /// See `factory/merge.rs` module doc for the rotation order used.
-    #[tokio::test]
-    #[ignore = "TODO Wave-2A.2: N>2 wire format ambiguous; wiring builds, engine-verify deferred"]
-    async fn test_factory_merge_3input_engine_verifies() {
-        let (tx, meta) =
-            build_n_input_merge_for_test(3, &["a", "b", "c"]).await.unwrap();
-        for (i, (lock, amt)) in meta.iter().enumerate() {
-            let valid = verify_input(&tx, i, lock, *amt);
-            match &valid {
-                Ok(true) => {}
-                Ok(false) => panic!(
-                    "engine rejected 3-input merge input {i} (Ok(false))\n\
-                     unlocking_script bytes: {}",
-                    tx.inputs[i]
-                        .unlocking_script
-                        .as_ref()
-                        .map(|s| hex_dump(&s.to_binary()))
-                        .unwrap_or_default()
-                ),
-                Err(e) => panic!("engine errored on 3-input merge input {i}: {e:?}"),
-            }
-            assert!(valid.unwrap(), "engine rejected 3-input merge input {i}");
-        }
-    }
-
-    /// Wave-2A.2: 4-input merge wires through the factory.
-    /// See `test_factory_merge_3input_engine_verifies` for ignore rationale.
-    #[tokio::test]
-    #[ignore = "TODO Wave-2A.2: N>2 wire format ambiguous; wiring builds, engine-verify deferred"]
-    async fn test_factory_merge_4input_engine_verifies() {
-        let (tx, meta) =
-            build_n_input_merge_for_test(4, &["a", "b", "c", "d"]).await.unwrap();
-        for (i, (lock, amt)) in meta.iter().enumerate() {
-            let valid = verify_input(&tx, i, lock, *amt);
-            match &valid {
-                Ok(true) => {}
-                Ok(false) => panic!(
-                    "engine rejected 4-input merge input {i} (Ok(false))"
-                ),
-                Err(e) => panic!("engine errored on 4-input merge input {i}: {e:?}"),
-            }
-            assert!(valid.unwrap(), "engine rejected 4-input merge input {i}");
-        }
-    }
-
-    /// Wave-2A.2: build_merge MUST reject N=1 (below spec §8.1 lower bound).
+    /// `build_merge` MUST reject N=1 (below the atomic-merge minimum).
     #[tokio::test]
     async fn test_factory_merge_n_equals_1_rejected() {
         // build_n_input_merge_for_test asserts key_ids.len() == n, so we
@@ -1497,15 +1445,317 @@ mod integration_tests {
         );
     }
 
-    /// Wave-2A.2: build_merge MUST reject N=8 (above spec §8.1 upper bound).
+    /// `build_merge` MUST reject N=3 (only N=2 is supported atomically;
+    /// N>2 callers must use `build_merge_chain`).
     #[tokio::test]
-    async fn test_factory_merge_n_equals_8_rejected() {
+    async fn test_factory_merge_n_equals_3_rejected() {
         let result =
-            build_n_input_merge_for_test(8, &["a", "b", "c", "d", "e", "f", "g", "h"])
-                .await;
+            build_n_input_merge_for_test(3, &["a", "b", "c"]).await;
         assert!(
             matches!(result, Err(super::error::Stas3Error::InvalidScript(_))),
-            "merge with N=8 must be rejected as InvalidScript; got {:?}",
+            "merge with N=3 must be rejected as InvalidScript; got {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    /// Helper for `build_merge_chain` tests: returns the raw materials
+    /// (N original STAS source UTXOs + N-1 funding UTXOs + per-merge
+    /// destination metadata) plus a `sources` map keyed by txid that
+    /// callers extend with chain txs to drive engine verification.
+    async fn build_chain_test_setup(
+        n: usize,
+        key_ids: &[&str],
+    ) -> (
+        ProtoWallet,                                       // owner_wallet
+        Vec<super::factory::TokenInput>,                   // n stas inputs
+        Vec<super::factory::FundingInput>,                 // n-1 fundings
+        [u8; 20],                                          // dest_pkh
+        super::factory::SigningKey,                        // dest_signing_key
+        Vec<[u8; 20]>,                                     // n-1 change_pkhs
+        Vec<u64>,                                          // n-1 change_satoshis
+        std::collections::HashMap<String, Transaction>,    // sources by txid
+    ) {
+        use super::factory::{FundingInput, SigningKey, TokenInput};
+
+        assert!(n >= 2, "chain test requires n >= 2");
+        assert_eq!(key_ids.len(), n, "key_ids must have len n");
+
+        let owner_root = PrivateKey::from_hex("01").unwrap();
+        let funding_root = PrivateKey::from_hex("02").unwrap();
+        let owner_wallet = ProtoWallet::new(owner_root);
+        let funding_wallet = ProtoWallet::new(funding_root);
+
+        let funding_pkh = derive_pkh(&funding_wallet, "stas3fuel", "1").await;
+        let dest_pkh = derive_pkh(&owner_wallet, "stas3owner", "dest").await;
+        let dest_signing_key = SigningKey::P2pkh(
+            super::key_triple::KeyTriple::self_under("stas3owner", "dest"),
+        );
+        let redemption_pkh = [0xab; 20];
+
+        let amt: u64 = 100;
+        let funding_amount: u64 = 5_000;
+
+        let mut sources: std::collections::HashMap<String, Transaction> =
+            std::collections::HashMap::new();
+        let mut stas_inputs: Vec<TokenInput> = Vec::with_capacity(n);
+        for (i, kid) in key_ids.iter().enumerate() {
+            let pkh = derive_pkh(&owner_wallet, "stas3owner", kid).await;
+            let lock = build_locking_script(&LockParams {
+                owner_pkh: pkh,
+                action_data: ActionData::Passive(vec![]),
+                redemption_pkh,
+                flags: 0,
+                service_fields: vec![],
+                optional_data: vec![],
+            })
+            .unwrap();
+
+            let mut src = Transaction::new();
+            let mut placeholder_txid =
+                "00000000000000000000000000000000000000000000000000000000000000".to_string();
+            placeholder_txid.push_str(&format!("{:02x}", 0x40 + i));
+            src.inputs.push(TransactionInput {
+                source_transaction: None,
+                source_txid: Some(placeholder_txid),
+                source_output_index: 0,
+                unlocking_script: Some(UnlockingScript::from_binary(&[0x00])),
+                sequence: 0xffff_ffff,
+            });
+            src.outputs.push(TransactionOutput {
+                satoshis: Some(amt),
+                locking_script: lock.clone(),
+                change: false,
+            });
+            let src_bytes = src.to_bytes().expect("serialize src");
+            let src_txid_hex = src.id().expect("src txid");
+
+            stas_inputs.push(TokenInput {
+                txid_hex: src_txid_hex.clone(),
+                vout: 0,
+                satoshis: amt,
+                locking_script: lock.clone(),
+                signing_key: SigningKey::P2pkh(
+                    super::key_triple::KeyTriple::self_under("stas3owner", *kid),
+                ),
+                current_action_data: ActionData::Passive(vec![]),
+                source_tx_bytes: Some(src_bytes),
+            });
+            sources.insert(src_txid_hex, src);
+        }
+
+        // n-1 distinct funding source txs (distinct txids so each merge has
+        // a real outpoint). All hold `funding_amount`; each merge consumes
+        // one.
+        let mut fundings: Vec<FundingInput> = Vec::with_capacity(n - 1);
+        let mut change_pkhs: Vec<[u8; 20]> = Vec::with_capacity(n - 1);
+        let mut change_satoshis: Vec<u64> = Vec::with_capacity(n - 1);
+        for j in 0..(n - 1) {
+            let mut src_funding = Transaction::new();
+            let mut placeholder_txid =
+                "00000000000000000000000000000000000000000000000000000000000000".to_string();
+            placeholder_txid.push_str(&format!("{:02x}", 0x80 + j));
+            src_funding.inputs.push(TransactionInput {
+                source_transaction: None,
+                source_txid: Some(placeholder_txid),
+                source_output_index: 0,
+                unlocking_script: Some(UnlockingScript::from_binary(&[0x00])),
+                sequence: 0xffff_ffff,
+            });
+            src_funding.outputs.push(TransactionOutput {
+                satoshis: Some(funding_amount),
+                locking_script: make_p2pkh_lock(&funding_pkh),
+                change: false,
+            });
+            let src_funding_txid_hex =
+                src_funding.id().expect("src_funding txid");
+            fundings.push(FundingInput {
+                txid_hex: src_funding_txid_hex.clone(),
+                vout: 0,
+                satoshis: funding_amount,
+                locking_script: make_p2pkh_lock(&funding_pkh),
+                triple: super::key_triple::KeyTriple::self_under("stas3fuel", "1"),
+            });
+            change_pkhs.push(funding_pkh);
+            change_satoshis.push(funding_amount - 200);
+            sources.insert(src_funding_txid_hex, src_funding);
+        }
+
+        let _ = &funding_wallet;
+        (
+            owner_wallet,
+            stas_inputs,
+            fundings,
+            dest_pkh,
+            dest_signing_key,
+            change_pkhs,
+            change_satoshis,
+            sources,
+        )
+    }
+
+    /// Engine-verify every STAS input of every tx in a `build_merge_chain`
+    /// result by looking up each input's source tx (either an original or
+    /// a prior chain tx) in `sources`.
+    fn verify_chain(
+        chain: &[Transaction],
+        sources: &std::collections::HashMap<String, Transaction>,
+    ) {
+        for (tx_idx, tx) in chain.iter().enumerate() {
+            // Layout: [stas_0, stas_1, funding]. Verify the 2 STAS inputs.
+            for input_idx in 0..2 {
+                let input = &tx.inputs[input_idx];
+                let prev_txid = input
+                    .source_txid
+                    .as_ref()
+                    .expect("chain tx input must have source_txid");
+                let prev_vout = input.source_output_index as usize;
+                let source_tx = sources
+                    .get(prev_txid)
+                    .unwrap_or_else(|| panic!(
+                        "tx[{tx_idx}] input[{input_idx}] source_txid {prev_txid} \
+                         not in sources map"
+                    ));
+                let source_output = &source_tx.outputs[prev_vout];
+                let lock = source_output.locking_script.clone();
+                let amount =
+                    source_output.satoshis.expect("source output satoshis");
+                let valid = verify_input(tx, input_idx, &lock, amount);
+                match &valid {
+                    Ok(true) => {}
+                    Ok(false) => panic!(
+                        "engine rejected chain tx[{tx_idx}] input[{input_idx}] \
+                         (Ok(false))\nunlocking_script bytes: {}",
+                        tx.inputs[input_idx]
+                            .unlocking_script
+                            .as_ref()
+                            .map(|s| hex_dump(&s.to_binary()))
+                            .unwrap_or_default()
+                    ),
+                    Err(e) => panic!(
+                        "engine errored on chain tx[{tx_idx}] input[{input_idx}]: {e:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// 3-input merge via `build_merge_chain` — produces 2 transactions
+    /// (binary-tree pairwise merges), each STAS input of each tx must
+    /// engine-verify.
+    #[tokio::test]
+    async fn test_factory_merge_chain_3_inputs_engine_verifies() {
+        use super::factory::{build_merge_chain, MergeChainRequest};
+
+        let (
+            owner_wallet,
+            stas_inputs,
+            fundings,
+            dest_pkh,
+            dest_signing_key,
+            change_pkhs,
+            change_satoshis,
+            mut sources,
+        ) = build_chain_test_setup(3, &["a", "b", "c"]).await;
+
+        let chain = build_merge_chain(MergeChainRequest {
+            wallet: &owner_wallet,
+            originator: None,
+            stas_inputs,
+            fundings,
+            destination_owner_pkh: dest_pkh,
+            destination_signing_key: dest_signing_key,
+            redemption_pkh: [0xab; 20],
+            flags: 0,
+            service_fields: vec![],
+            optional_data: vec![],
+            note: None,
+            change_pkhs,
+            change_satoshis,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(chain.len(), 2, "n=3 chain must produce 2 txs");
+
+        // Extend sources with chain txs so later txs' inputs resolve.
+        for tx in &chain {
+            sources.insert(tx.id().expect("chain tx id"), tx.clone());
+        }
+        verify_chain(&chain, &sources);
+    }
+
+    /// 4-input merge via `build_merge_chain` — produces 3 transactions.
+    #[tokio::test]
+    async fn test_factory_merge_chain_4_inputs_engine_verifies() {
+        use super::factory::{build_merge_chain, MergeChainRequest};
+
+        let (
+            owner_wallet,
+            stas_inputs,
+            fundings,
+            dest_pkh,
+            dest_signing_key,
+            change_pkhs,
+            change_satoshis,
+            mut sources,
+        ) = build_chain_test_setup(4, &["a", "b", "c", "d"]).await;
+
+        let chain = build_merge_chain(MergeChainRequest {
+            wallet: &owner_wallet,
+            originator: None,
+            stas_inputs,
+            fundings,
+            destination_owner_pkh: dest_pkh,
+            destination_signing_key: dest_signing_key,
+            redemption_pkh: [0xab; 20],
+            flags: 0,
+            service_fields: vec![],
+            optional_data: vec![],
+            note: None,
+            change_pkhs,
+            change_satoshis,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(chain.len(), 3, "n=4 chain must produce 3 txs");
+
+        for tx in &chain {
+            sources.insert(tx.id().expect("chain tx id"), tx.clone());
+        }
+        verify_chain(&chain, &sources);
+    }
+
+    /// `build_merge_chain` rejects N<2 with `InvalidScript`.
+    #[tokio::test]
+    async fn test_factory_merge_chain_n_below_2_rejected() {
+        use super::factory::{build_merge_chain, MergeChainRequest, SigningKey};
+
+        let owner_wallet = ProtoWallet::new(PrivateKey::from_hex("01").unwrap());
+        let dest_pkh = derive_pkh(&owner_wallet, "stas3owner", "dest").await;
+
+        let result = build_merge_chain(MergeChainRequest {
+            wallet: &owner_wallet,
+            originator: None,
+            stas_inputs: vec![],
+            fundings: vec![],
+            destination_owner_pkh: dest_pkh,
+            destination_signing_key: SigningKey::P2pkh(
+                super::key_triple::KeyTriple::self_under("stas3owner", "dest"),
+            ),
+            redemption_pkh: [0xab; 20],
+            flags: 0,
+            service_fields: vec![],
+            optional_data: vec![],
+            note: None,
+            change_pkhs: vec![],
+            change_satoshis: vec![],
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(super::error::Stas3Error::InvalidScript(_))),
+            "merge_chain with N=0 must be rejected; got {:?}",
             result.as_ref().err()
         );
     }

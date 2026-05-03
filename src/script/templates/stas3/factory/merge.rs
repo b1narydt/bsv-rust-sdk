@@ -1,31 +1,29 @@
 //! STAS-3 merge factory (spec v0.2 §5, §8.1, §9.5).
 //!
-//! Builds a fully-formed (each STAS-input-signed) merge transaction:
-//! 2..=7 STAS in -> 1 STAS out (new owner) + P2PKH change.
+//! Builds a fully-formed (each STAS-input-signed) atomic 2-input merge
+//! transaction: 2 STAS in -> 1 STAS out (new owner) + P2PKH change.
 //!
-//! ## Per-input txType
+//! ## Why 2-input only?
 //!
-//! `txType` (slot 18) per spec §8.1 directly encodes the **merge input
-//! count** N (in 2..=7). All N inputs share the same `txType = N` for the
-//! operation. Each input's trailing piece array carries the rotation-ordered
-//! fragments of the N-1 OTHER inputs' source-tx bytes (split at the shared
-//! counterparty script, head+gaps+tail per source).
+//! Spec §8.1 defines `txType` (slot 18) as the merge input count N (in
+//! 2..=7), and per-input trailing piece arrays carry rotation-ordered
+//! fragments of the OTHER inputs' source-tx bytes. For N=2 the encoding
+//! is unambiguous and engine-verifies. For N>2 the spec is silent on
+//! how multiple source-tx piece groups are encoded in the single per-
+//! input trailing array, and the dxs reference SDK
+//! (`dxsapp/dxs-bsv-token-sdk`) explicitly limits merge to 2 STAS
+//! inputs (`docs/DSTAS_CONFORMANCE_MATRIX.md`: "Merge limited to 2 STAS
+//! inputs"; `BuildMergeTx` only accepts `outPoint1, outPoint2`).
 //!
-//! For N=2 this collapses to the canonical 2-input behavior: each input's
-//! trailing piece array is the OTHER input's source-tx pieces.
-//!
-//! For N>2 the wire format described in spec §8.1 is "piece count (N) +
-//! array of N pieces" — the spec is silent on whether/how to encode multiple
-//! source-tx piece groups in the single per-input trailing array. The
-//! current implementation flattens the N-1 OTHER inputs' piece sequences in
-//! rotation order [(i+1)%N, (i+2)%N, ..., (i+N-1)%N] and is engine-verified
-//! for N=2 only (see integration tests). N>2 cases are wired but engine
-//! verification is deferred — see TODO on the corresponding tests.
+//! For N>2 use [`build_merge_chain`](super::build_merge_chain), which
+//! mirrors the dxs `mergeStasTransactions` binary-tree pattern: pair
+//! inputs 2-at-a-time and chain merged outputs across multiple
+//! transactions.
 //!
 //! ## STAS output
 //!
 //! A merge produces exactly one STAS output owned by `destination_owner_pkh`,
-//! carrying the SUM of all STAS input satoshis (sum-conservation per spec
+//! carrying the SUM of both STAS input satoshis (sum-conservation per spec
 //! §5.1). var2 is reset to `Passive(empty)` per spec §5.1.
 
 use crate::script::unlocking_script::UnlockingScript;
@@ -58,7 +56,8 @@ use super::types::{FundingInput, TokenInput};
 pub struct MergeRequest<'a, W: WalletInterface> {
     pub wallet: &'a W,
     pub originator: Option<&'a str>,
-    /// 2..=7 STAS inputs to merge. Each MUST set `source_tx_bytes`.
+    /// Exactly 2 STAS inputs to merge. Each MUST set `source_tx_bytes`.
+    /// For N>2, use [`build_merge_chain`](super::build_merge_chain).
     pub stas_inputs: Vec<TokenInput>,
     pub funding_input: FundingInput,
     /// Destination owner of the merged STAS output. MUST be Type-42 derived
@@ -75,20 +74,23 @@ pub struct MergeRequest<'a, W: WalletInterface> {
     pub change_satoshis: u64,
 }
 
-/// Build a signed STAS-3 merge transaction.
+/// Build a signed STAS-3 atomic 2-input merge transaction.
 ///
-/// Layout: N STAS inputs (each signed with its own owner key) + 1 funding
+/// Layout: 2 STAS inputs (each signed with its own owner key) + 1 funding
 /// input -> 1 STAS output (new owner, satoshis = sum of inputs) +
 /// 1 P2PKH change output. The funding input is left unsigned for the caller
 /// (matches the convention of the other factory builders).
+///
+/// Rejects N != 2 with [`Stas3Error::InvalidScript`]. For N>2 use
+/// [`build_merge_chain`](super::build_merge_chain).
 pub async fn build_merge<W: WalletInterface>(
     req: MergeRequest<'_, W>,
 ) -> Result<Transaction, Stas3Error> {
     let n = req.stas_inputs.len();
-    // Spec §8.1: txType in 2..=7 directly encodes the merge input count.
-    if !(2..=7).contains(&n) {
+    if n != 2 {
         return Err(Stas3Error::InvalidScript(format!(
-            "merge supports 2..=7 STAS inputs (spec §8.1); got {n}"
+            "build_merge requires exactly 2 STAS inputs; got {n}. \
+             For N>2 use build_merge_chain (mirrors dxs binary-tree merge)."
         )));
     }
     for (i, t) in req.stas_inputs.iter().enumerate() {
@@ -111,7 +113,7 @@ pub async fn build_merge<W: WalletInterface>(
     })?;
     let change_lock = make_p2pkh_lock(&req.change_pkh);
 
-    // 2. Assemble the spending tx skeleton: N STAS inputs, 1 funding input,
+    // 2. Assemble the spending tx skeleton: 2 STAS inputs, 1 funding input,
     //    1 STAS output, 1 P2PKH change output.
     let mut tx = Transaction::new();
     tx.version = STAS3_TX_VERSION;
@@ -138,16 +140,12 @@ pub async fn build_merge<W: WalletInterface>(
     //    `sourceOutputIndex` (mergeVout), and pieces formed by splitting
     //    the OTHER input's source-tx bytes at every occurrence of the
     //    counterparty script (everything past `[owner_push][var2_push]`).
-    //    For a regular (non-swap) merge both tokens have the same
-    //    counterparty script, so we use input 0's counterparty script for
-    //    both inputs (matches `Stas3.ts::buildMergeSection`).
+    //    Both tokens share the same counterparty script for a regular
+    //    (non-swap) merge, so we use input 0's for both
+    //    (matches `Stas3.ts::buildMergeSection`).
     let counterparty_script_shared =
         counterparty_script_from_lock(&req.stas_inputs[0].locking_script)?;
 
-    // Per-input: extract pieces of input i's OWN source tx so we can
-    // assemble per-(i,j) trailing arrays via rotation below. Each token's
-    // pieces are produced by splitting its source tx at the shared
-    // counterparty script (§9.5).
     let per_input_pieces: Vec<Vec<Vec<u8>>> = req
         .stas_inputs
         .iter()
@@ -157,41 +155,12 @@ pub async fn build_merge<W: WalletInterface>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // tx_type directly encodes the merge input count (spec §8.1).
-    let tx_type = match n {
-        2 => TxType::Merge2,
-        3 => TxType::Merge3,
-        4 => TxType::Merge4,
-        5 => TxType::Merge5,
-        6 => TxType::Merge6,
-        7 => TxType::Merge7,
-        _ => unreachable!("guarded by 2..=7 check above"),
-    };
-
-    for input_idx in 0..n {
+    for input_idx in 0..2 {
         let token = &req.stas_inputs[input_idx];
 
-        // Build the rotation-ordered piece array — flatten pieces from the
-        // (N-1) OTHER inputs in forward rotation order
-        // [(i+1)%N, (i+2)%N, ..., (i+N-1)%N]. For N=2 this collapses to the
-        // single OTHER input's piece array, matching the existing canonical
-        // 2-input behavior.
-        //
-        // NOTE: For N>2 both forward and reverse rotations were tested and
-        // engine-rejected (Script(VerifyFailed)). The spec §8.1 wire layout
-        // for N>2 trailing piece arrays is ambiguous — see merge.rs module
-        // doc and the corresponding `#[ignore]`d tests.
-        let mut pieces: Vec<Vec<u8>> = Vec::new();
-        for k in 1..n {
-            let other_idx = (input_idx + k) % n;
-            pieces.extend(per_input_pieces[other_idx].iter().cloned());
-        }
-
-        // The merge_vout slot points to the FIRST OTHER input — for N=2 this
-        // is the canonical (1 - input_idx). For N>2 the spec is silent on
-        // the multi-input slot encoding, so we default to (i+1)%N.
-        let first_other_idx = (input_idx + 1) % n;
-        let merge_vout = req.stas_inputs[first_other_idx].vout;
+        let other_idx = 1 - input_idx;
+        let pieces = per_input_pieces[other_idx].clone();
+        let merge_vout = req.stas_inputs[other_idx].vout;
 
         let preimage = build_preimage(
             &tx,
@@ -199,7 +168,6 @@ pub async fn build_merge<W: WalletInterface>(
             token.satoshis,
             &token.locking_script,
         )?;
-        // Honor §10.3 sentinel via the input's decoded owner_pkh.
         let token_decoded = decode_locking_script(&token.locking_script)?;
         let authz = sign_with_signing_key(
             req.wallet,
@@ -226,7 +194,7 @@ pub async fn build_merge<W: WalletInterface>(
                 vout: req.funding_input.vout,
                 txid_le: txid_le_arr,
             }),
-            tx_type,
+            tx_type: TxType::Merge2,
             spend_type: SpendType::Transfer,
             preimage,
             authz,
