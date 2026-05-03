@@ -24,3 +24,4 @@ PUBLISHING.md
 # Reference clones (siblings) — vendored under src/ when build-required
 .ref
 .ref/
+.claude/

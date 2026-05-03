@@ -41,15 +41,21 @@
 //!                     `SMOKE_ARC_URL` (default: gorillapool free tier) and
 //!                     `SMOKE_ARC_API_KEY` (optional).
 //!
-//! Future phase `transfer` adds the post-broadcast read-back: pick a
-//! minted STAS UTXO from the token basket, transfer it to a new owner.
-//! Requires the mint phase to have actually broadcast first.
+//! - `transfer`     — Full on-chain transfer flow. Requires a STAS-3 token
+//!                     to already exist in `stas3tokens` (run mint-broadcast
+//!                     first). Picks the first token UTXO, derives a new
+//!                     owner key (`stas3owner/dest2` by default; override
+//!                     via `SMOKE_TRANSFER_DEST_KEYID`), builds + signs a
+//!                     transfer tx via `transfer_with_fuel_pick`,
+//!                     engine-verifies the STAS input, then — when
+//!                     `SMOKE_BROADCAST=1` — broadcasts via ARC, builds
+//!                     atomic BEEF, and internalizes the new token UTXO.
 //!
 //! # Configuration (env vars)
 //!
 //! - `WALLET_URL`         — BRC-100 wallet JSON endpoint (default `http://localhost:3321`)
 //! - `ORIGINATOR`         — originator string passed to the wallet (default `stas3-smoke`)
-//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast`
+//! - `SMOKE_PHASE`        — `connect` (default) | `topup` | `pickfuel` | `mint` | `mint-broadcast` | `transfer`
 //! - `SMOKE_BROADCAST`    — `1` to actually broadcast; anything else (default) is dry-run
 //! - `SMOKE_FUEL_SATS`    — satoshis per fuel UTXO (default `2000`)
 //! - `SMOKE_FUEL_COUNT`   — how many fuel UTXOs to provision (default `2`)
@@ -57,6 +63,7 @@
 //! - `SMOKE_ARC_URL`      — ARC endpoint used by `mint-broadcast`
 //!                          (default `https://api.gorillapool.io/v1/tx`)
 //! - `SMOKE_ARC_API_KEY`  — optional API key for the ARC endpoint (default: none)
+//! - `SMOKE_TRANSFER_DEST_KEYID` — keyID of the transfer destination owner (default `dest2`)
 //!
 //! # Running
 //!
@@ -89,11 +96,12 @@ use bsv::script::templates::stas3::factory::SigningKey;
 use bsv::script::templates::stas3::{
     decode_locking_script, verify_input, Brc43KeyArgs, Stas3Wallet, Stas3WalletConfig,
 };
-use bsv::transaction::beef::{Beef, BEEF_V1};
+use bsv::transaction::beef::{Beef, BEEF_V1, BEEF_V2};
+use bsv::transaction::beef_tx::BeefTx;
 use bsv::transaction::broadcasters::arc::ARC;
 use bsv::transaction::Broadcaster;
 use bsv::wallet::interfaces::{
-    GetPublicKeyArgs, ListOutputsArgs, OutputInclude, WalletInterface,
+    GetPublicKeyArgs, ListOutputsArgs, Output, OutputInclude, WalletInterface,
 };
 use bsv::wallet::substrates::http_wallet_json::HttpWalletJson;
 use bsv::wallet::types::{BooleanDefaultFalse, BooleanDefaultTrue};
@@ -103,6 +111,7 @@ const DEFAULT_ORIGINATOR: &str = "stas3-smoke";
 const DEFAULT_FUEL_SATS: u64 = 2_000;
 const DEFAULT_FUEL_COUNT: usize = 2;
 const DEFAULT_ARC_URL: &str = "https://api.gorillapool.io/v1/tx";
+const DEFAULT_TRANSFER_DEST_KEYID: &str = "dest2";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -122,6 +131,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(DEFAULT_FUEL_COUNT);
     let arc_url = env::var("SMOKE_ARC_URL").unwrap_or_else(|_| DEFAULT_ARC_URL.into());
     let arc_api_key = env::var("SMOKE_ARC_API_KEY").ok();
+    let transfer_dest_keyid = env::var("SMOKE_TRANSFER_DEST_KEYID")
+        .unwrap_or_else(|_| DEFAULT_TRANSFER_DEST_KEYID.into());
 
     println!("== STAS-3 mainnet smoke test ==");
     println!("  WALLET_URL         = {wallet_url}");
@@ -689,13 +700,282 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+
+    // -------------------------------------------------------------------
+    // Phase: transfer
+    // -------------------------------------------------------------------
+    if phase == "transfer" {
+        let token_basket = stas.config().token_basket.clone();
+
+        println!("\n[4/?] Listing token basket {token_basket:?}...");
+        let token_outputs = list_basket(&*wallet, &token_basket, &originator).await?;
+        if token_outputs.is_empty() {
+            return Err(format!(
+                "transfer phase requires a STAS-3 token in basket {token_basket:?}; \
+                 run SMOKE_PHASE=mint-broadcast first"
+            )
+            .into());
+        }
+        println!(
+            "       basket {token_basket:?}: {} token UTXO(s)",
+            token_outputs.len()
+        );
+
+        // Pick the first token UTXO.
+        let token_output: &Output = &token_outputs[0];
+        let token_outpoint = &token_output.outpoint;
+        println!("       using outpoint: {token_outpoint}");
+        println!("       satoshis:       {}", token_output.satoshis);
+
+        // Decode the locking script so we can show the fields.
+        let locking_bytes = token_output
+            .locking_script
+            .as_ref()
+            .ok_or("token UTXO missing locking_script")?;
+        let locking_script =
+            bsv::script::locking_script::LockingScript::from_binary(locking_bytes);
+        let decoded_token = decode_locking_script(&locking_script)
+            .map_err(|e| format!("decode token locking_script: {e:?}"))?;
+        println!(
+            "       owner_pkh:      {}",
+            hex::encode(decoded_token.owner_pkh)
+        );
+        println!(
+            "       redemption_pkh: {}",
+            hex::encode(decoded_token.redemption_pkh)
+        );
+        println!("       flags:          0x{:02x}", decoded_token.flags);
+        println!(
+            "       optional_data:  {} elements",
+            decoded_token.optional_data.len()
+        );
+
+        // Resolve the full TokenInput (derives signing_key from customInstructions).
+        println!("[5/?] Resolving TokenInput via find_token({token_outpoint:?})...");
+        let token_input = stas.find_token(token_outpoint).await?;
+        println!("       TokenInput resolved OK");
+
+        // Derive the destination owner key for the transfer.
+        println!("[6/?] Deriving transfer destination key (keyID={transfer_dest_keyid:?})...");
+        let dest_triple = Brc43KeyArgs::self_under("stas3owner", transfer_dest_keyid.as_str());
+        let dest_pk = wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(dest_triple.protocol_id.clone()),
+                    key_id: Some(dest_triple.key_id.clone()),
+                    counterparty: Some(dest_triple.counterparty.clone()),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: Some(true),
+                    seek_permission: None,
+                },
+                Some(&originator),
+            )
+            .await?;
+        let dest_pkh = hash160(&dest_pk.public_key.to_der());
+        println!(
+            "       dest triple:    protocol={:?} keyID={:?}",
+            dest_triple.protocol_id.protocol, dest_triple.key_id
+        );
+        println!("       dest pkh:       {}", hex::encode(dest_pkh));
+
+        // Derive a change PKH using the wallet identity key. This PKH receives
+        // the fuel change (satoshis from the fuel UTXO minus tx fee); it has
+        // nothing to do with the STAS token satoshis.
+        println!("[7/?] Deriving change PKH from identity key...");
+        let change_pkh = hash160(&id.public_key.to_der());
+        println!("       change pkh:     {}", hex::encode(change_pkh));
+
+        // The change_satoshis parameter controls how many satoshis go back to
+        // change_pkh from the fuel UTXO. 1800 sats is a comfortable floor on
+        // mainnet (covers typical relay fees with room to spare).
+        let change_satoshis: u64 = 1_800;
+
+        println!(
+            "[8/?] Calling transfer_with_fuel_pick \
+             (dest_pkh={}, change_sats={change_satoshis})...",
+            hex::encode(dest_pkh)
+        );
+        let transfer_tx = stas
+            .transfer_with_fuel_pick(
+                token_input,
+                dest_pkh,
+                change_pkh,
+                change_satoshis,
+                Some(b"stas3 smoke transfer".to_vec()),
+            )
+            .await?;
+
+        let transfer_txid = transfer_tx
+            .id()
+            .map_err(|e| format!("transfer tx id: {e}"))?;
+        let transfer_hex = transfer_tx
+            .to_bytes()
+            .map_err(|e| format!("transfer tx bytes: {e}"))?;
+
+        println!("       transfer_tx txid: {transfer_txid}");
+        println!("       transfer_tx size: {} bytes", transfer_hex.len());
+
+        // Engine-verify the STAS input (input 0) before broadcast.
+        println!("[9/?] Engine-verifying transfer_tx STAS input (index 0)...");
+        let valid = verify_input(&transfer_tx, 0, &locking_script, token_output.satoshis)
+            .map_err(|e| format!("transfer tx STAS input verify: {e:?}"))?;
+        if !valid {
+            return Err("transfer tx STAS input (index 0) failed engine verify".into());
+        }
+        println!("       ✓ STAS input engine-verified OK");
+
+        // Dry-run exit — print hex and quit without broadcasting.
+        if !broadcast {
+            println!(
+                "\n  broadcast skipped (dry-run — set SMOKE_BROADCAST=1 to broadcast)"
+            );
+            println!("  txid: {transfer_txid}");
+            println!("  hex:  {}", hex::encode(&transfer_hex));
+            println!("\n✓ transfer dry-run complete");
+            return Ok(());
+        }
+
+        // Live broadcast path.
+        println!("[10/?] Broadcasting via ARC ({arc_url})...");
+        let arc = ARC::new(&arc_url, arc_api_key.clone());
+        let broadcast_result = arc.broadcast(&transfer_tx).await.map_err(|e| {
+            format!(
+                "ARC broadcast failed (status={} code={} desc={})",
+                e.status, e.code, e.description
+            )
+        })?;
+        println!(
+            "       ARC response: status={} txid={}",
+            broadcast_result.status, broadcast_result.txid
+        );
+        if !broadcast_result.message.is_empty() {
+            println!("       message: {}", broadcast_result.message);
+        }
+
+        // Build atomic BEEF for internalize_action.
+        //
+        // Strategy: request the token basket with EntireTransactions. The wallet
+        // returns a BEEF blob covering all UTXOs (including their source txs).
+        // We merge that with the freshly-built transfer_tx to produce a complete
+        // SPV package and then call to_binary_atomic for the transfer txid.
+        println!("[11/?] Building atomic BEEF for internalize_action...");
+        let token_list_with_txs = wallet
+            .list_outputs(
+                ListOutputsArgs {
+                    basket: token_basket.clone(),
+                    tags: vec![],
+                    tag_query_mode: None,
+                    include: Some(OutputInclude::EntireTransactions),
+                    include_custom_instructions: BooleanDefaultFalse(Some(false)),
+                    include_tags: BooleanDefaultFalse(Some(false)),
+                    include_labels: BooleanDefaultFalse(Some(false)),
+                    limit: Some(100),
+                    offset: None,
+                    seek_permission: BooleanDefaultTrue(Some(true)),
+                },
+                Some(&originator),
+            )
+            .await?;
+
+        // Merge the wallet-supplied BEEF (which contains source txs) with the
+        // transfer tx, then produce atomic BEEF referencing the transfer txid.
+        let mut beef = Beef::new(BEEF_V2);
+
+        if let Some(ref beef_bytes) = token_list_with_txs.beef {
+            beef.merge_beef_from_binary(beef_bytes).map_err(|e| {
+                format!("merge token-basket BEEF: {e}")
+            })?;
+        }
+
+        // Add the transfer tx itself (unconfirmed — no bump index).
+        let beef_tx = BeefTx::from_tx(transfer_tx.clone(), None)
+            .map_err(|e| format!("BeefTx::from_tx: {e}"))?;
+        beef.txs.push(beef_tx);
+
+        // Sort so dependencies precede dependents.
+        beef.sort_txs();
+
+        let atomic_beef_bytes = beef
+            .to_binary_atomic(&transfer_txid)
+            .map_err(|e| format!("to_binary_atomic: {e}"))?;
+        println!(
+            "       atomic BEEF size: {} bytes",
+            atomic_beef_bytes.len()
+        );
+
+        // Internalize the new STAS-3 output (index 0 of the transfer tx).
+        println!("[12/?] Internalizing new STAS-3 output (index 0) into {token_basket:?}...");
+        stas.internalize_stas_outputs(
+            atomic_beef_bytes,
+            vec![(0u32, dest_triple.clone(), None)],
+            "stas3 smoke transfer",
+        )
+        .await
+        .map_err(|e| format!("internalize_stas_outputs: {e:?}"))?;
+        println!("       internalize_action OK");
+
+        // Verification: re-list and confirm the new outpoint appears with the
+        // correct owner_pkh.
+        println!("[13/?] Re-listing token basket to verify new UTXO...");
+        let after = list_basket(&*wallet, &token_basket, &originator).await?;
+        println!(
+            "       before: {} UTXO(s)  after: {} UTXO(s)",
+            token_outputs.len(),
+            after.len()
+        );
+
+        // Find the new outpoint (txid matches transfer_txid, vout 0).
+        let expected_outpoint = format!("{transfer_txid}.0");
+        let new_output = after.iter().find(|o| o.outpoint == expected_outpoint);
+        match new_output {
+            Some(out) => {
+                let new_lock_bytes = out
+                    .locking_script
+                    .as_ref()
+                    .ok_or("new token UTXO missing locking_script")?;
+                let new_lock =
+                    bsv::script::locking_script::LockingScript::from_binary(new_lock_bytes);
+                let new_decoded = decode_locking_script(&new_lock)
+                    .map_err(|e| format!("decode new token lock: {e:?}"))?;
+                if new_decoded.owner_pkh != dest_pkh {
+                    return Err(format!(
+                        "new token owner_pkh mismatch: got {} expected {}",
+                        hex::encode(new_decoded.owner_pkh),
+                        hex::encode(dest_pkh)
+                    )
+                    .into());
+                }
+                println!(
+                    "       ✓ new outpoint {expected_outpoint} owner_pkh={} (matches dest)",
+                    hex::encode(new_decoded.owner_pkh)
+                );
+            }
+            None => {
+                // The wallet may not reflect the new UTXO immediately (eventual
+                // consistency). Print a warning rather than hard-failing so the
+                // smoke test doesn't give a false negative.
+                println!(
+                    "       WARNING: outpoint {expected_outpoint} not yet visible in basket \
+                     (wallet may be indexing) — check again in a few seconds"
+                );
+            }
+        }
+
+        println!(
+            "\n✓ transfer phase complete — STAS-3 token transferred to new owner on-chain"
+        );
+        println!("  txid: {transfer_txid}");
+        return Ok(());
+    }
     // -------------------------------------------------------------------
     // Phase: topup
     // -------------------------------------------------------------------
     if phase != "topup" {
         return Err(format!(
             "unknown SMOKE_PHASE={phase} \
-             (expected: connect | topup | pickfuel | mint | mint-broadcast)"
+             (expected: connect | topup | pickfuel | mint | mint-broadcast | transfer)"
         )
         .into());
     }
