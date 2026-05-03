@@ -800,38 +800,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         contract_tx.inputs[0].source_transaction = Some(Box::new(fuel_source_tx));
 
         // --- Step 1: hand contract_tx to wallet (broadcast + record, no basket) ---
-        // Wallet-driven broadcast: we package the contract_tx into atomic BEEF
-        // (subject = contract_txid, includes the fuel source tx for the SPV
-        // chain) and call internalize with NO basket insertions. This tells
-        // the wallet "broadcast + record this tx, but don't make any basket
-        // entries from it." Per the wrapper's docstring, this avoids racing
-        // the wallet's own ARC broadcast.
-        println!("[11/?] Constructing atomic BEEF for contract_tx (no outputs to internalize)...");
-        let mut contract_beef = Beef::new(BEEF_V1);
-        contract_beef
-            .merge_beef_from_binary(&fuel_beef_bytes)
-            .map_err(|e| format!("merge wallet fuel BEEF: {e}"))?;
+        // Contract_tx has only issuer-P2PKH outputs (transient — they're
+        // consumed by issue_tx in the same atomic flow). The wallet rejects
+        // internalize_action with empty outputs ("must be at least one
+        // output"). So WE broadcast contract_tx via ARC ourselves; the wallet
+        // doesn't need to know about it as a tracked tx, only as a parent
+        // referenced via SPV in issue_tx's BEEF (which we'll attach below).
+        println!("[11/?] Broadcasting contract_tx via ARC (transient — no basket entries)...");
         let contract_tx_bytes = contract_tx
             .to_bytes()
             .map_err(|e| format!("serialize contract_tx: {e}"))?;
-        contract_beef
-            .merge_raw_tx(&contract_tx_bytes, None)
-            .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
-        let contract_atomic = contract_beef
-            .to_binary_atomic(&contract_txid)
-            .map_err(|e| format!("to_binary_atomic(contract_txid): {e}"))?;
-        println!(
-            "       contract atomic BEEF: {} bytes ({} txs, {} bumps)",
-            contract_atomic.len(),
-            contract_beef.txs.len(),
-            contract_beef.bumps.len()
-        );
-
-        println!("[11b/?] Internalizing contract_tx (wallet broadcasts + records, no basket entries)...");
-        stas.internalize_stas_outputs(contract_atomic, vec![], "stas3 smoke mint contract")
-            .await
-            .map_err(|e| format!("internalize contract_tx: {e}"))?;
-        println!("       contract_tx internalized (broadcast handled by wallet)");
+        let _ = contract_tx_bytes; // referenced again below
+        let contract_bcast =
+            arc_broadcast(&_arc_url, _arc_api_key.as_deref(), &contract_tx).await?;
+        println!("       contract_tx broadcast OK: txid={contract_bcast}");
 
         // --- Step 2: hand issue_tx to wallet (broadcast + record + basket insert) ---
         // Hydrate issue_tx's two inputs with the just-internalized contract_tx
@@ -1353,6 +1335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stas,
             &originator,
             &id.public_key.to_der(),
+            &_arc_url,
+            _arc_api_key.as_deref(),
             broadcast,
         )
         .await?;
@@ -1542,6 +1526,8 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
     stas: &Stas3Wallet<W>,
     originator: &str,
     identity_pubkey_der: &[u8],
+    _arc_url: &str,
+    _arc_api_key: Option<&str>,
     broadcast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use bsv::script::templates::stas3::eac::{EacFields, EnergySource};
@@ -1662,24 +1648,15 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
         .to_bytes()
         .map_err(|e| format!("serialize contract_tx: {e}"))?;
 
-    // --- Step 1: hand contract_tx to wallet (broadcast + record, no basket) ---
-    println!("[9/?] Internalizing contract_tx (wallet broadcasts + records, no basket entries)...");
-    {
-        let mut contract_beef = Beef::new(BEEF_V1);
-        contract_beef
-            .merge_beef_from_binary(&fuel_beef_bytes)
-            .map_err(|e| format!("merge fuel BEEF (contract): {e}"))?;
-        contract_beef
-            .merge_raw_tx(&contract_tx_bytes, None)
-            .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
-        let contract_atomic = contract_beef
-            .to_binary_atomic(&contract_txid)
-            .map_err(|e| format!("to_binary_atomic(contract_txid): {e}"))?;
-        stas.internalize_stas_outputs(contract_atomic, vec![], "stas3 smoke mam-contract")
-            .await
-            .map_err(|e| format!("internalize contract_tx: {e}"))?;
-    }
-    println!("       contract_tx internalized");
+    // --- Step 1: WE broadcast contract_tx via ARC (transient — no STAS outputs) ---
+    // The wallet's internalize_action requires non-empty `outputs`, so we
+    // can't register contract_tx with the wallet. Instead, broadcast it
+    // ourselves; the wallet only needs to see it referenced via SPV in
+    // issue_tx's BEEF (attached below).
+    println!("[9/?] Broadcasting contract_tx via ARC (transient — no basket entries)...");
+    let contract_bcast =
+        arc_broadcast(&_arc_url, _arc_api_key.as_deref(), &contract_tx).await?;
+    println!("       contract_tx broadcast OK: txid={contract_bcast}");
 
     let mut issue_tx = result.issue_tx.clone();
     issue_tx.inputs[0].source_transaction = Some(Box::new(contract_tx.clone()));
@@ -1821,14 +1798,31 @@ async fn run_mint_and_merge_phase<W: WalletInterface>(
         .map_err(|e| format!("serialize merge_tx: {e}"))?;
 
     // --- Step 3: hand merge_tx to wallet (broadcast + insert merged STAS-3 output) ---
-    println!("[17/?] Building atomic BEEF for merge_tx...");
+    // BEEF chain for merge_tx:
+    //   merge_tx inputs[0,1] → issue_tx → contract_tx → contract_fuel_src
+    //   merge_tx input[2]    → merge_fuel_src
+    // All non-subject txs need to be in the BEEF (otherwise wallet's
+    // validateAtomicBeef rejects with "tx parameter must be valid AtomicBEEF").
+    println!("[17/?] Building atomic BEEF for merge_tx (chain: merge → issue → contract → fuel)...");
     let mut merge_beef = Beef::new(BEEF_V1);
+    // Start from the wallet's fuel basket BEEF — gives us the bumps for both
+    // the contract's fuel src and the merge's fuel src (they may be the same UTXO).
     merge_beef
-        .merge_raw_tx(&merge_fuel_src_bytes, None)
-        .map_err(|e| format!("merge merge_fuel source into BEEF: {e}"))?;
+        .merge_beef_from_binary(&fuel_beef_bytes)
+        .map_err(|e| format!("merge wallet fuel BEEF into merge BEEF: {e}"))?;
+    // Add contract_tx (parent of issue_tx).
+    let contract_tx_bytes_for_merge = contract_tx
+        .to_bytes()
+        .map_err(|e| format!("re-serialize contract_tx for merge BEEF: {e}"))?;
+    merge_beef
+        .merge_raw_tx(&contract_tx_bytes_for_merge, None)
+        .map_err(|e| format!("merge contract_tx into merge BEEF: {e}"))?;
+    // Add issue_tx (parent of merge inputs 0+1).
     merge_beef
         .merge_raw_tx(&issue_tx_bytes, None)
         .map_err(|e| format!("merge issue_tx into merge BEEF: {e}"))?;
+    // Suppress unused warning on the older variable.
+    let _ = &merge_fuel_src_bytes;
     merge_beef
         .merge_raw_tx(&merge_tx_bytes, None)
         .map_err(|e| format!("merge merge_tx into BEEF: {e}"))?;
