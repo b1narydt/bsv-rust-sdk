@@ -98,8 +98,7 @@ use bsv::script::templates::stas3::{
 };
 use bsv::transaction::beef::{Beef, BEEF_V1, BEEF_V2};
 use bsv::transaction::beef_tx::BeefTx;
-use bsv::transaction::broadcasters::arc::ARC;
-use bsv::transaction::Broadcaster;
+use bsv::transaction::transaction::Transaction;
 use bsv::wallet::interfaces::{
     GetPublicKeyArgs, ListOutputsArgs, Output, OutputInclude, WalletInterface,
 };
@@ -110,7 +109,9 @@ const DEFAULT_WALLET_URL: &str = "http://localhost:3321";
 const DEFAULT_ORIGINATOR: &str = "stas3-smoke";
 const DEFAULT_FUEL_SATS: u64 = 2_000;
 const DEFAULT_FUEL_COUNT: usize = 2;
-const DEFAULT_ARC_URL: &str = "https://api.gorillapool.io/v1/tx";
+// NOTE: the ARC broadcaster auto-appends "/v1/tx" to this URL — pass the
+// base host only.
+const DEFAULT_ARC_URL: &str = "https://arc.gorillapool.io";
 const DEFAULT_TRANSFER_DEST_KEYID: &str = "dest2";
 
 #[tokio::main]
@@ -556,38 +557,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        // --- Live broadcast path ---
-        println!("[10/?] Broadcasting via ARC ({arc_url})...");
-        let arc = ARC::new(&arc_url, arc_api_key.clone());
-
-        println!("       Broadcasting contract_tx ({contract_txid})...");
-        let contract_resp = arc.broadcast(&result.contract_tx).await.map_err(|e| {
-            format!(
-                "FAILED to broadcast contract_tx: code={} status={} desc={}",
-                e.code, e.status, e.description
-            )
-        })?;
-        println!(
-            "       contract_tx broadcast OK: txid={} status={} msg={}",
-            contract_resp.txid, contract_resp.status, contract_resp.message
-        );
-
-        println!("       Broadcasting issue_tx ({issue_txid})...");
-        let issue_resp = arc.broadcast(&result.issue_tx).await.map_err(|e| {
-            format!(
-                "FAILED to broadcast issue_tx: code={} status={} desc={}",
-                e.code, e.status, e.description
-            )
-        })?;
-        println!(
-            "       issue_tx broadcast OK: txid={} status={} msg={}",
-            issue_resp.txid, issue_resp.status, issue_resp.message
-        );
-
-        // --- Build atomic BEEF for internalize_action ---
-        // The wallet needs an AtomicBEEF containing:
-        //   fuel source tx (mined, from wallet) + contract_tx + issue_tx
-        println!("[11/?] Fetching fuel source tx for BEEF construction...");
+        // --- Fetch fuel source tx FIRST (needed for both EF broadcast + BEEF) ---
+        // ARC requires Extended Format (EF) hex — that requires every input to
+        // carry its source-output data. The factory leaves source_transaction
+        // unpopulated, so we hydrate it here from the wallet's BEEF.
+        println!("[10/?] Fetching fuel source tx (needed for EF broadcast + BEEF)...");
         let fuel_with_tx = wallet
             .list_outputs(
                 ListOutputsArgs {
@@ -611,46 +585,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let fuel_beef_bytes = fuel_with_tx
             .beef
             .ok_or("list_outputs(EntireTransactions) returned no BEEF field")?;
-
         println!("       fuel basket BEEF: {} bytes", fuel_beef_bytes.len());
 
-        // Build a BEEF starting from the wallet's BEEF (preserves bumps + fuel source tx),
-        // then add contract_tx and issue_tx on top.
+        // Parse the wallet's BEEF and extract the fuel source tx so we can
+        // attach it to the contract_tx's funding input. Without this the
+        // factory leaves source_transaction = None, and to_hex_ef() (used by
+        // ARC.broadcast under the hood) fails with "missing source transaction".
+        let mut fuel_beef_cursor = std::io::Cursor::new(&fuel_beef_bytes);
+        let parsed_fuel_beef = Beef::from_binary(&mut fuel_beef_cursor)
+            .map_err(|e| format!("parse wallet fuel BEEF: {e}"))?;
+        let fuel_source_tx = parsed_fuel_beef
+            .find_txid(&funding.txid_hex)
+            .and_then(|btx| btx.tx.clone())
+            .ok_or_else(|| {
+                format!(
+                    "fuel source txid {} not found in wallet BEEF \
+                     (BEEF has {} txs: {:?})",
+                    funding.txid_hex,
+                    parsed_fuel_beef.txs.len(),
+                    parsed_fuel_beef.txs.iter().map(|t| &t.txid).collect::<Vec<_>>()
+                )
+            })?;
+        println!("       fuel source tx parsed (txid={})", funding.txid_hex);
+
+        // Hydrate contract_tx input 0 with the fuel source tx so EF serialization works.
+        let mut contract_tx = result.contract_tx.clone();
+        contract_tx.inputs[0].source_transaction = Some(Box::new(fuel_source_tx));
+
+        // --- Live broadcast path ---
+        // NOTE: bypassing the SDK's ARC broadcaster here. It sends EF hex with
+        // Content-Type: application/octet-stream which ARC rejects (octet-stream
+        // expects raw binary, not hex). We POST hex with Content-Type: text/plain
+        // which ARC accepts. SDK fix is a separate PR.
+        println!("[11/?] Broadcasting via ARC ({arc_url})...");
+
+        println!("       Broadcasting contract_tx ({contract_txid})...");
+        let contract_resp_txid =
+            arc_broadcast(&arc_url, arc_api_key.as_deref(), &contract_tx).await?;
+        println!("       contract_tx broadcast OK: txid={contract_resp_txid}");
+
+        // Hydrate issue_tx's two inputs with the just-broadcast contract_tx so
+        // EF serialization works. Inputs 0 and 1 both spend contract_tx outputs.
+        let mut issue_tx = result.issue_tx.clone();
+        issue_tx.inputs[0].source_transaction = Some(Box::new(contract_tx.clone()));
+        issue_tx.inputs[1].source_transaction = Some(Box::new(contract_tx.clone()));
+
+        println!("       Broadcasting issue_tx ({issue_txid})...");
+        let issue_resp_txid =
+            arc_broadcast(&arc_url, arc_api_key.as_deref(), &issue_tx).await?;
+        println!("       issue_tx broadcast OK: txid={issue_resp_txid}");
+
+        // --- Build atomic BEEF for internalize_action ---
         println!("[12/?] Constructing atomic BEEF for issue_tx internalization...");
         let mut beef = Beef::new(BEEF_V1);
         beef.merge_beef_from_binary(&fuel_beef_bytes)
             .map_err(|e| format!("merge wallet BEEF: {e}"))?;
 
-        // Confirm the fuel source tx made it into our BEEF.
-        if beef.find_txid(&funding.txid_hex).is_none() {
-            return Err(format!(
-                "fuel source txid {} not found in BEEF from wallet \
-                 (BEEF has {} txs: {:?})",
-                funding.txid_hex,
-                beef.txs.len(),
-                beef.txs.iter().map(|t| &t.txid).collect::<Vec<_>>()
-            )
-            .into());
-        }
-        println!(
-            "       wallet BEEF merged: {} tx(s), {} bump(s); \
-             fuel source tx {} confirmed",
-            beef.txs.len(),
-            beef.bumps.len(),
-            funding.txid_hex
-        );
-
         // Add contract_tx (no bump — just broadcast, not yet mined).
-        let contract_tx_bytes = result
-            .contract_tx
+        let contract_tx_bytes = contract_tx
             .to_bytes()
             .map_err(|e| format!("serialize contract_tx: {e}"))?;
         beef.merge_raw_tx(&contract_tx_bytes, None)
             .map_err(|e| format!("merge contract_tx into BEEF: {e}"))?;
 
         // Add issue_tx (no bump — just broadcast, not yet mined).
-        let issue_tx_bytes = result
-            .issue_tx
+        let issue_tx_bytes = issue_tx
             .to_bytes()
             .map_err(|e| format!("serialize issue_tx: {e}"))?;
         beef.merge_raw_tx(&issue_tx_bytes, None)
@@ -837,30 +836,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        // Live broadcast path.
-        println!("[10/?] Broadcasting via ARC ({arc_url})...");
-        let arc = ARC::new(&arc_url, arc_api_key.clone());
-        let broadcast_result = arc.broadcast(&transfer_tx).await.map_err(|e| {
-            format!(
-                "ARC broadcast failed (status={} code={} desc={})",
-                e.status, e.code, e.description
-            )
-        })?;
-        println!(
-            "       ARC response: status={} txid={}",
-            broadcast_result.status, broadcast_result.txid
-        );
-        if !broadcast_result.message.is_empty() {
-            println!("       message: {}", broadcast_result.message);
-        }
-
-        // Build atomic BEEF for internalize_action.
-        //
-        // Strategy: request the token basket with EntireTransactions. The wallet
-        // returns a BEEF blob covering all UTXOs (including their source txs).
-        // We merge that with the freshly-built transfer_tx to produce a complete
-        // SPV package and then call to_binary_atomic for the transfer txid.
-        println!("[11/?] Building atomic BEEF for internalize_action...");
+        // Hydrate transfer_tx inputs with their source transactions BEFORE
+        // broadcast — ARC requires Extended Format (EF) hex which embeds each
+        // input's source-output data. Both baskets contribute: token basket
+        // for the STAS input, fuel basket for the funding input.
+        println!("[10/?] Fetching source txs from token + fuel baskets...");
         let token_list_with_txs = wallet
             .list_outputs(
                 ListOutputsArgs {
@@ -878,23 +858,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(&originator),
             )
             .await?;
+        let fuel_list_with_txs = wallet
+            .list_outputs(
+                ListOutputsArgs {
+                    basket: stas.config().fuel_basket.clone(),
+                    tags: vec![],
+                    tag_query_mode: None,
+                    include: Some(OutputInclude::EntireTransactions),
+                    include_custom_instructions: BooleanDefaultFalse(Some(false)),
+                    include_tags: BooleanDefaultFalse(Some(false)),
+                    include_labels: BooleanDefaultFalse(Some(false)),
+                    limit: Some(100),
+                    offset: None,
+                    seek_permission: BooleanDefaultTrue(Some(true)),
+                },
+                Some(&originator),
+            )
+            .await?;
 
-        // Merge the wallet-supplied BEEF (which contains source txs) with the
-        // transfer tx, then produce atomic BEEF referencing the transfer txid.
-        let mut beef = Beef::new(BEEF_V2);
-
-        if let Some(ref beef_bytes) = token_list_with_txs.beef {
-            beef.merge_beef_from_binary(beef_bytes).map_err(|e| {
-                format!("merge token-basket BEEF: {e}")
-            })?;
+        // Merge both BEEFs into a lookup so we can resolve each input's source tx.
+        let mut lookup_beef = Beef::new(BEEF_V2);
+        if let Some(ref b) = token_list_with_txs.beef {
+            lookup_beef
+                .merge_beef_from_binary(b)
+                .map_err(|e| format!("merge token BEEF: {e}"))?;
+        }
+        if let Some(ref b) = fuel_list_with_txs.beef {
+            lookup_beef
+                .merge_beef_from_binary(b)
+                .map_err(|e| format!("merge fuel BEEF: {e}"))?;
         }
 
-        // Add the transfer tx itself (unconfirmed — no bump index).
+        // Hydrate every input on transfer_tx.
+        let mut transfer_tx = transfer_tx;
+        for (i, input) in transfer_tx.inputs.iter_mut().enumerate() {
+            let src_txid = input
+                .source_txid
+                .as_ref()
+                .ok_or_else(|| format!("transfer_tx input {i} missing source_txid"))?
+                .clone();
+            let src_tx = lookup_beef
+                .find_txid(&src_txid)
+                .and_then(|btx| btx.tx.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "source tx {src_txid} for transfer_tx input {i} not found in \
+                         wallet BEEFs (token+fuel)"
+                    )
+                })?;
+            input.source_transaction = Some(Box::new(src_tx));
+        }
+
+        println!("[11/?] Broadcasting transfer_tx via ARC ({arc_url})...");
+        let bcast_txid =
+            arc_broadcast(&arc_url, arc_api_key.as_deref(), &transfer_tx).await?;
+        println!("       transfer_tx broadcast OK: txid={bcast_txid}");
+
+        // Build atomic BEEF for internalize_action.
+        println!("[12/?] Building atomic BEEF for internalize_action...");
+
+        // Reuse lookup_beef (already has both baskets' source txs) and add
+        // the transfer tx itself, then produce atomic BEEF.
+        let mut beef = lookup_beef;
         let beef_tx = BeefTx::from_tx(transfer_tx.clone(), None)
             .map_err(|e| format!("BeefTx::from_tx: {e}"))?;
         beef.txs.push(beef_tx);
-
-        // Sort so dependencies precede dependents.
         beef.sort_txs();
 
         let atomic_beef_bytes = beef
@@ -1042,4 +1070,53 @@ async fn list_basket(
         )
         .await?;
     Ok(result.outputs)
+}
+
+/// POST a transaction to ARC `/v1/tx` as Extended Format hex with
+/// `Content-Type: text/plain` (which ARC accepts; `application/octet-stream`
+/// is reserved for raw binary and rejects hex input). Returns the broadcast
+/// txid on success.
+async fn arc_broadcast(
+    arc_url: &str,
+    arc_api_key: Option<&str>,
+    tx: &Transaction,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let ef_hex = tx
+        .to_hex_ef()
+        .map_err(|e| format!("to_hex_ef: {e}"))?;
+    let url = format!("{}/v1/tx", arc_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "text/plain")
+        .body(ef_hex);
+    if let Some(key) = arc_api_key {
+        req = req.header("X-Api-Key", key);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("ARC POST {url}: network error {e}"))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "ARC rejected tx: status={} body={}",
+            status.as_u16(),
+            body
+        )
+        .into());
+    }
+    // ARC returns JSON like {"txid":"...","status":200,...}
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    let txid = parsed
+        .get("txid")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if txid.is_empty() {
+        return Err(format!("ARC accepted but no txid in response: body={body}").into());
+    }
+    Ok(txid)
 }
