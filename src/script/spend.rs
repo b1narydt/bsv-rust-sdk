@@ -374,10 +374,17 @@ mod tests {
     }
 
     #[test]
-    fn test_op_return_fails() {
+    fn test_op_return_terminates_successfully() {
+        // Post-Genesis BSV semantics (matching bsv-blockchain/ts-sdk
+        // Spend.ts:571-578 and bsv-blockchain/go-sdk
+        // script/interpreter/operations.go:583-598): top-level OP_RETURN is a
+        // successful early termination. The script's stack at that moment
+        // determines validity — here the unlocking pushed OP_1 (truthy), so
+        // validate returns Ok(true). Required by covenant scripts (e.g.
+        // STAS-3) that end with OP_RETURN as a success marker.
         let mut spend = make_spend("OP_1", "OP_RETURN");
         let result = spend.validate();
-        assert!(result.is_err());
+        assert!(matches!(result, Ok(true)));
     }
 
     #[test]

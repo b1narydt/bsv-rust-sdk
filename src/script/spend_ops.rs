@@ -119,9 +119,27 @@ impl Spend {
             }
 
             Op::OpReturn => {
-                return Err(ScriptError::InvalidScript(
-                    "OP_RETURN encountered".to_string(),
-                ));
+                // Post-Genesis BSV semantics: OP_RETURN at top level is a
+                // successful early termination. Used by covenant scripts
+                // (e.g. STAS-3) that end with OP_RETURN as a success marker.
+                // The parser truncates everything after this point into the
+                // OP_RETURN chunk's data, so we jump to end-of-script and let
+                // the caller inspect the stack — if the script left a falsy
+                // top, validate() will still return false.
+                //
+                // Matches bsv-blockchain/ts-sdk src/script/Spend.ts:571-578
+                // (unconditional) and bsv-blockchain/go-sdk
+                // script/interpreter/operations.go:583-598 (Genesis-active).
+                let chunks_len = match self.context {
+                    crate::script::spend::ScriptContext::Unlocking => {
+                        self.unlocking_script.chunks().len()
+                    }
+                    crate::script::spend::ScriptContext::Locking => {
+                        self.locking_script.chunks().len()
+                    }
+                };
+                self.program_counter = chunks_len;
+                return Ok(());
             }
 
             Op::OpVer => {
