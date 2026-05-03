@@ -103,6 +103,10 @@ required-features = ["network"]
 name = "stas3_server"
 required-features = ["network"]
 
+[[example]]
+name = "stas3_mainnet_smoke"
+required-features = ["network"]
+
 # ---------------------------------------------------------------------------
 # Feature graph
 # ---------------------------------------------------------------------------
