@@ -4,6 +4,23 @@
 //! the standard binary tx to `/tx` (no `/v1/` prefix) with
 //! `Content-Type: application/octet-stream`. No auth on submit per the
 //! Arcade handler source (`services/api_server/handlers.go`).
+//!
+//! ## Response contract
+//!
+//! Arcade's `POST /tx` handler (main, commit 0a2671c — see
+//! `services/api_server/handlers.go:552` and the routes.go `ResponseFormat`
+//! doc) returns:
+//!
+//! - **`202 Accepted`** with body `{"status": "submitted"}`. **No `txid`
+//!   field.** The server computes the txid the same way the client does,
+//!   so it has nothing to add by echoing it back.
+//! - **`4xx` / `5xx`** with body `{"error": "<message>"}`.
+//!
+//! This broadcaster therefore asserts `status == "submitted"` on a 202 and
+//! returns the **locally-computed** canonical txid (`Transaction::id()`).
+//! The stale openspec at `services/api_server/openspec/specs/api-server/
+//! spec.md` suggests the txid is returned, but the route doc + handler are
+//! the source of truth and contradict that.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -74,32 +91,45 @@ impl Broadcaster for Arcade {
 
         let (status, body) = parse_broadcast_body(response).await?;
 
-        if status == 200 || status == 201 || status == 202 {
-            let txid = body["txid"].as_str().unwrap_or("").to_string();
-            if txid.is_empty() {
+        if (200..300).contains(&status) {
+            // Arcade returns 202 {"status":"submitted"} with NO txid field
+            // (services/api_server/handlers.go:552, main commit 0a2671c).
+            // Assert the status, then return the locally-computed txid.
+            let body_status = body["status"].as_str().unwrap_or("");
+            if body_status != "submitted" {
                 return Err(BroadcastFailure {
                     status,
                     code: "MALFORMED_SUCCESS_BODY".to_string(),
                     description: format!(
-                        "Arcade ({}) returned 2xx but no txid in body: {}",
-                        status, body
+                        "Arcade ({}) returned 2xx but body status was {:?}, expected \"submitted\": {}",
+                        status, body_status, body
                     ),
                 });
             }
+            let txid = tx.id().map_err(|e| BroadcastFailure {
+                status,
+                code: "TXID_COMPUTE_ERROR".to_string(),
+                description: format!("failed to compute canonical txid: {}", e),
+            })?;
             Ok(BroadcastResponse {
                 status: "success".to_string(),
                 txid,
-                message: body["txStatus"].as_str().unwrap_or("").to_string(),
+                message: "submitted".to_string(),
             })
         } else {
+            // Non-2xx: Arcade returns {"error": "<msg>"} per handlers.go.
+            // Use the upstream HTTP status as the failure code (canonical
+            // TS @bsv/sdk ARC.ts parity — see parse_broadcast_body docs).
+            let description = body["error"]
+                .as_str()
+                .or_else(|| body["description"].as_str())
+                .or_else(|| body["message"].as_str())
+                .unwrap_or("unknown error")
+                .to_string();
             Err(BroadcastFailure {
                 status,
-                code: body["code"].as_str().unwrap_or("UNKNOWN").to_string(),
-                description: body["description"]
-                    .as_str()
-                    .or_else(|| body["message"].as_str())
-                    .unwrap_or("unknown error")
-                    .to_string(),
+                code: status.to_string(),
+                description,
             })
         }
     }
@@ -120,21 +150,29 @@ mod tests {
         let mock_server = MockServer::start().await;
         let tx = make_test_tx();
         let expected = tx.to_bytes().expect("to_bytes");
+        let local_txid = tx.id().expect("id");
 
+        // Canonical Arcade response: 202 {"status":"submitted"}, NO txid
+        // field. Client returns the locally-computed canonical txid.
         Mock::given(method("POST"))
             .and(path("/tx"))
             .and(header("Content-Type", "application/octet-stream"))
             .and(body_bytes(expected))
             .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-                "txid": "deadbeef",
-                "txStatus": "RECEIVED"
+                "status": "submitted"
             })))
             .mount(&mock_server)
             .await;
 
         let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
         let resp = arcade.broadcast(&tx).await.expect("broadcast ok");
-        assert_eq!(resp.txid, "deadbeef");
+        assert_eq!(
+            resp.txid, local_txid,
+            "Arcade does not echo the txid in its response — the broadcaster \
+             must return the locally-computed canonical txid"
+        );
+        assert_eq!(resp.status, "success");
+        assert_eq!(resp.message, "submitted");
     }
 
     #[tokio::test]
@@ -143,7 +181,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/tx"))
             .respond_with(
-                ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})),
+                ResponseTemplate::new(202)
+                    .set_body_json(serde_json::json!({"status": "submitted"})),
             )
             .mount(&mock_server)
             .await;
@@ -177,7 +216,8 @@ mod tests {
             .and(header("X-CallbackToken", "secret"))
             .and(header("X-FullStatusUpdates", "true"))
             .respond_with(
-                ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})),
+                ResponseTemplate::new(202)
+                    .set_body_json(serde_json::json!({"status": "submitted"})),
             )
             .mount(&mock_server)
             .await;
