@@ -132,7 +132,9 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/tx"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})),
+            )
             .mount(&mock_server)
             .await;
         let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
@@ -144,7 +146,10 @@ mod tests {
             .headers
             .iter()
             .any(|(name, _)| name.as_str().eq_ignore_ascii_case("authorization"));
-        assert!(!auth_present, "Authorization header should be absent on Arcade submit");
+        assert!(
+            !auth_present,
+            "Authorization header should be absent on Arcade submit"
+        );
     }
 
     #[tokio::test]
@@ -155,7 +160,9 @@ mod tests {
             .and(header("X-CallbackUrl", "https://example/cb"))
             .and(header("X-CallbackToken", "secret"))
             .and(header("X-FullStatusUpdates", "true"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"txid": "x"})),
+            )
             .mount(&mock_server)
             .await;
         let cfg = ArcadeConfig {

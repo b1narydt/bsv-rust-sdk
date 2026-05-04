@@ -144,10 +144,7 @@ impl Broadcaster for WhatsOnChainBroadcasterWithUrl {
 ///
 /// Production callers pass `max_wait_secs` (typically 60); tests use
 /// [`wait_for_visibility_against`] for an explicit base URL.
-pub async fn wait_for_visibility(
-    txid: &str,
-    max_wait_secs: u64,
-) -> Result<(), BroadcastFailure> {
+pub async fn wait_for_visibility(txid: &str, max_wait_secs: u64) -> Result<(), BroadcastFailure> {
     wait_for_visibility_against("https://api.whatsonchain.com", "main", txid, max_wait_secs).await
 }
 

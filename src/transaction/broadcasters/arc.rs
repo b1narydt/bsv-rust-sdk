@@ -165,7 +165,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/tx"))
             .and(header_regex("XDeployment-ID", r"^rust-sdk-[0-9a-f]{32}$"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})),
+            )
             .mount(&mock_server)
             .await;
         let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
@@ -178,7 +180,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/tx"))
             .and(header("Authorization", "Bearer test-key-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})),
+            )
             .mount(&mock_server)
             .await;
         let cfg = ArcConfig {
@@ -194,19 +198,27 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/tx"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"txid": "x"})),
+            )
             .mount(&mock_server)
             .await;
         let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
         let _ = arc.broadcast(&make_test_tx_with_source()).await;
 
-        let received = mock_server.received_requests().await.expect("request recording enabled");
+        let received = mock_server
+            .received_requests()
+            .await
+            .expect("request recording enabled");
         assert_eq!(received.len(), 1, "expected exactly one request");
         let auth_present = received[0]
             .headers
             .keys()
             .any(|name| name.as_str().eq_ignore_ascii_case("authorization"));
-        assert!(!auth_present, "Authorization header should be absent without api_key");
+        assert!(
+            !auth_present,
+            "Authorization header should be absent without api_key"
+        );
     }
 
     #[tokio::test]
