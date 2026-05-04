@@ -110,6 +110,68 @@ impl Broadcaster for ARC {
         let (status, body) = parse_broadcast_body(response).await?;
 
         if status == 200 || status == 201 {
+            // Canonical TS @bsv/sdk ARC.ts (master, blob bb5b2f181) detects a
+            // fixed list of txStatus values that ARC returns with HTTP 200
+            // but indicate a broadcast failure. Also matches ORPHAN as a
+            // substring in either txStatus or extraInfo (case-insensitive).
+            // The Rust port previously reported these as success with txid
+            // set, which is dangerous in mint-and-merge flows where a
+            // DOUBLE_SPEND_ATTEMPTED would be persisted as confirmed.
+            const ERROR_TX_STATUSES: &[&str] = &[
+                "DOUBLE_SPEND_ATTEMPTED",
+                "REJECTED",
+                "INVALID",
+                "MALFORMED",
+                "MINED_IN_STALE_BLOCK",
+            ];
+
+            let tx_status_raw = body["txStatus"].as_str().unwrap_or("");
+            let extra_info_raw = body["extraInfo"].as_str().unwrap_or("");
+            let tx_status_upper = tx_status_raw.to_ascii_uppercase();
+            let extra_info_upper = extra_info_raw.to_ascii_uppercase();
+            let is_error_status = ERROR_TX_STATUSES.contains(&tx_status_upper.as_str());
+            let is_orphan =
+                tx_status_upper.contains("ORPHAN") || extra_info_upper.contains("ORPHAN");
+
+            if is_error_status || is_orphan {
+                let body_txid = body["txid"].as_str().unwrap_or("").to_string();
+                let code = if tx_status_upper.is_empty() {
+                    "UNKNOWN".to_string()
+                } else {
+                    tx_status_upper.clone()
+                };
+                let mut description = format!("{} {}", tx_status_raw, extra_info_raw);
+                let trimmed_desc = description.trim().to_string();
+                description = trimmed_desc;
+                // BroadcastFailure has no `more`/`competingTxs` field today
+                // (see broadcaster.rs); surface competingTxs in the
+                // description so downstream callers can still observe them.
+                if let Some(competing) = body.get("competingTxs") {
+                    if !competing.is_null() {
+                        let competing_str = competing.to_string();
+                        if !competing_str.is_empty() && competing_str != "null" {
+                            description = if description.is_empty() {
+                                format!("competingTxs={}", competing_str)
+                            } else {
+                                format!("{} competingTxs={}", description, competing_str)
+                            };
+                        }
+                    }
+                }
+                if !body_txid.is_empty() {
+                    description = if description.is_empty() {
+                        format!("txid={}", body_txid)
+                    } else {
+                        format!("{} txid={}", description, body_txid)
+                    };
+                }
+                return Err(BroadcastFailure {
+                    status,
+                    code,
+                    description,
+                });
+            }
+
             let txid = body["txid"].as_str().unwrap_or("").to_string();
             if txid.is_empty() {
                 return Err(BroadcastFailure {
@@ -312,5 +374,112 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, 200);
         assert_eq!(err.code, "MALFORMED_SUCCESS_BODY");
+    }
+
+    /// Canonical TS @bsv/sdk ARC.ts treats DOUBLE_SPEND_ATTEMPTED on a
+    /// 200 OK as a broadcast failure. Rust must not silently surface it
+    /// as success — see fix(sdk): ARC — return BroadcastFailure on 2xx
+    /// with error txStatus.
+    #[tokio::test]
+    async fn test_arc_2xx_with_double_spend_attempted_returns_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": "deadbeef",
+                "txStatus": "DOUBLE_SPEND_ATTEMPTED",
+                "extraInfo": "competing tx already in mempool",
+                "competingTxs": ["abc123"]
+            })))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 200);
+        assert_eq!(err.code, "DOUBLE_SPEND_ATTEMPTED");
+        assert!(
+            err.description.contains("DOUBLE_SPEND_ATTEMPTED"),
+            "expected txStatus in description, got: {}",
+            err.description
+        );
+        assert!(
+            err.description.contains("competing tx already in mempool"),
+            "expected extraInfo in description, got: {}",
+            err.description
+        );
+        assert!(
+            err.description.contains("abc123"),
+            "expected competingTxs surfaced in description, got: {}",
+            err.description
+        );
+    }
+
+    /// ARC.ts matches ORPHAN as a substring (case-insensitive) in either
+    /// txStatus or extraInfo. Test the extraInfo branch.
+    #[tokio::test]
+    async fn test_arc_2xx_with_orphan_in_extra_info_returns_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": "deadbeef",
+                "txStatus": "SEEN_ON_NETWORK",
+                "extraInfo": "tx is an orphan: missing parent abc"
+            })))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 200);
+        // txStatus is non-empty, so the code is the uppercased status
+        // (SEEN_ON_NETWORK). The fact that it's a failure comes from
+        // ORPHAN substring detection in extraInfo.
+        assert_eq!(err.code, "SEEN_ON_NETWORK");
+        assert!(
+            err.description.contains("orphan")
+                || err.description.contains("ORPHAN")
+                || err.description.contains("missing parent"),
+            "expected orphan/extraInfo in description, got: {}",
+            err.description
+        );
+    }
+
+    /// REJECTED on 200 must be surfaced as a failure with
+    /// `code = "REJECTED"`.
+    #[tokio::test]
+    async fn test_arc_2xx_with_rejected_status_returns_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": "deadbeef",
+                "txStatus": "REJECTED",
+                "extraInfo": "policy violation"
+            })))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 200);
+        assert_eq!(err.code, "REJECTED");
+        assert!(
+            err.description.contains("REJECTED"),
+            "expected txStatus in description, got: {}",
+            err.description
+        );
+        assert!(
+            err.description.contains("policy violation"),
+            "expected extraInfo in description, got: {}",
+            err.description
+        );
     }
 }
