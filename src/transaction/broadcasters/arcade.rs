@@ -148,7 +148,13 @@ mod tests {
             .mount(&mock_server)
             .await;
         let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
-        let _ = arcade.broadcast(&make_test_tx()).await;
+        // Asserting on the broadcast result (not `let _ = ...`) so any
+        // wiremock matcher / response-shape regression surfaces here
+        // instead of silently passing the auth-header assertion below.
+        arcade
+            .broadcast(&make_test_tx())
+            .await
+            .expect("broadcast ok");
 
         let received = mock_server.received_requests().await.expect("requests");
         assert_eq!(received.len(), 1);
@@ -181,6 +187,11 @@ mod tests {
             full_status_updates: true,
         };
         let arcade = Arcade::new(&mock_server.uri(), cfg);
-        let _ = arcade.broadcast(&make_test_tx()).await;
+        // Same rationale as test_arcade_no_authorization_header: assert
+        // on the result so a header-matcher regression surfaces.
+        arcade
+            .broadcast(&make_test_tx())
+            .await
+            .expect("broadcast ok");
     }
 }
