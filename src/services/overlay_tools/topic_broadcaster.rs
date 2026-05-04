@@ -38,6 +38,10 @@ pub struct TopicBroadcaster {
     network: Network,
     /// Whether to allow plain HTTP.
     allow_http: bool,
+    /// When set, short-circuits SHIP discovery and broadcasts directly to
+    /// these hosts. Used by tests to bypass `LookupResolver`. None in
+    /// production — always populated via SHIP lookup.
+    manual_hosts: Option<HashMap<String, HashSet<String>>>,
 }
 
 impl TopicBroadcaster {
@@ -67,6 +71,7 @@ impl TopicBroadcaster {
             ack_mode: config.acknowledgment_mode,
             network: config.network,
             allow_http,
+            manual_hosts: None,
         })
     }
 
@@ -74,6 +79,11 @@ impl TopicBroadcaster {
     async fn find_interested_hosts(
         &self,
     ) -> Result<HashMap<String, HashSet<String>>, ServicesError> {
+        // Test override: when manual hosts are injected, skip discovery
+        // entirely. This is gated to test builds via `new_with_manual_hosts`.
+        if let Some(ref hosts) = self.manual_hosts {
+            return Ok(hosts.clone());
+        }
         if self.network == Network::Local {
             let mut result = HashMap::new();
             result.insert(
@@ -337,21 +347,31 @@ impl Broadcaster for TopicBroadcaster {
     }
 }
 
-/// Test-only helpers that expose internal send logic without LookupResolver.
+/// Test-only helpers that bypass `LookupResolver`-based SHIP discovery so
+/// parity tests can drive `broadcast()` end-to-end against a mock server.
 #[cfg(test)]
 impl TopicBroadcaster {
-    /// Construct a TopicBroadcaster with a pre-resolved host map, bypassing
-    /// LookupResolver discovery. Used by parity tests to point at a mock server.
+    /// Construct a `TopicBroadcaster` whose host discovery is short-circuited
+    /// to the supplied `hosts` map. Each entry maps a host base URL (e.g.
+    /// `http://127.0.0.1:1234`) to the set of topics that host claims.
+    ///
+    /// Production code paths must use [`TopicBroadcaster::new`] (which uses
+    /// `LookupResolver`); this helper exists solely to drive `broadcast()`
+    /// in tests without standing up a real SHIP/lookup stack.
     pub(crate) fn new_with_manual_hosts(
         topics: Vec<String>,
         config: TopicBroadcasterConfig,
-        _resolver: LookupResolver,
+        resolver: LookupResolver,
+        hosts: HashMap<String, HashSet<String>>,
     ) -> Result<Self, ServicesError> {
-        Self::new(topics, config, _resolver)
+        let mut bc = Self::new(topics, config, resolver)?;
+        bc.manual_hosts = Some(hosts);
+        Ok(bc)
     }
 
-    /// Expose `send_to_host` as `pub(crate)` for parity tests.
-    pub(crate) async fn send_to_host_for_test(
+    /// Expose `send_to_host` as `pub(crate)` for low-level wire-form tests
+    /// that don't go through the full `broadcast()` flow.
+    pub(crate) async fn send_to_host_wire_form_test_only(
         &self,
         host: &str,
         tagged_beef: &TaggedBEEF,
@@ -484,12 +504,17 @@ mod tests {
         assert!(broadcaster.check_acknowledgments(&acks).is_err());
     }
 
-    /// Parity test: assert outbound HTTP wire form matches canonical @bsv/sdk
+    /// Wire-form parity test (low-level): asserts that the outbound HTTP
+    /// request from `send_to_host` matches canonical @bsv/sdk
     /// SHIPBroadcaster.ts (lines 96-99):
     ///   POST <host>/submit
     ///   Content-Type: application/octet-stream
     ///   X-Topics: JSON-stringified topics array (e.g. `["tm_test"]`)
     ///   Body: binary BEEF bytes
+    ///
+    /// This test only covers the wire form of a single send, not the full
+    /// `broadcast()` orchestration (host discovery, ack checking, etc.) —
+    /// that is covered by `test_topic_broadcaster_end_to_end_against_mock`.
     #[cfg(feature = "network")]
     #[tokio::test]
     async fn test_topic_broadcaster_canonical_wire_form() {
@@ -536,19 +561,93 @@ mod tests {
         };
 
         let result = broadcaster
-            .send_to_host_for_test(&mock_server.uri(), &tagged_beef)
+            .send_to_host_wire_form_test_only(&mock_server.uri(), &tagged_beef)
             .await;
 
         // The mock verifies headers + body automatically; also assert a non-error
         // response was received.
         assert!(
             result.is_ok(),
-            "send_to_host_for_test returned an error: {:?}",
+            "send_to_host_wire_form_test_only returned an error: {:?}",
             result.err()
         );
 
         // Verify wiremock's expectations (the expect(1) assertion fires on drop
         // but we can also call verify explicitly for clarity).
+        mock_server.verify().await;
+    }
+
+    /// End-to-end test of the full `broadcast()` flow with manual host
+    /// injection (bypassing LookupResolver). Covers:
+    /// - host-discovery short-circuit via `new_with_manual_hosts`
+    /// - the wire-form headers + body sent to /submit
+    /// - parsing the STEAK response, ack tracking, and the final
+    ///   BroadcastResponse shape (txid + success message).
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn test_topic_broadcaster_end_to_end_against_mock() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Mock /submit returns a STEAK that admits one output for tm_test.
+        Mock::given(method("POST"))
+            .and(path("/submit"))
+            .and(header("Content-Type", "application/octet-stream"))
+            .and(header("X-Topics", r#"["tm_test"]"#))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tm_test": { "outputsToAdmit": [0], "coinsToRetain": [] }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Inject the mock server's URL as the only interested host for
+        // tm_test, bypassing LookupResolver entirely.
+        let mut hosts: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut topics_for_host = HashSet::new();
+        topics_for_host.insert("tm_test".to_string());
+        hosts.insert(mock_server.uri(), topics_for_host);
+
+        let resolver = LookupResolver::for_network(Network::Local);
+        let broadcaster = TopicBroadcaster::new_with_manual_hosts(
+            vec!["tm_test".to_string()],
+            TopicBroadcasterConfig {
+                network: Network::Local,
+                acknowledgment_mode: AcknowledgmentMode::RequireFromAny,
+                ..Default::default()
+            },
+            resolver,
+            hosts,
+        )
+        .unwrap();
+
+        // Use a real V1 BEEF from test-vectors/beef_valid.json so that
+        // `broadcast_beef` can parse it into a Transaction and recover the
+        // txid before submitting to interested hosts.
+        let vectors_json =
+            std::fs::read_to_string("test-vectors/beef_valid.json").expect("read vectors");
+        let vectors: Vec<serde_json::Value> =
+            serde_json::from_str(&vectors_json).expect("parse vectors");
+        let beef_hex: &str = vectors[0]["hex"].as_str().expect("hex string");
+        let beef_bytes: Vec<u8> = (0..beef_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&beef_hex[i..i + 2], 16).expect("hex byte"))
+            .collect();
+
+        let result = broadcaster.broadcast_beef(beef_bytes).await;
+
+        let resp = result.expect("end-to-end broadcast should succeed");
+        assert_eq!(resp.status, "success");
+        assert!(!resp.txid.is_empty(), "txid must be non-empty");
+        assert!(
+            resp.message.contains("Sent to 1"),
+            "expected message to mention 1 host, got: {}",
+            resp.message
+        );
+
+        // Confirm wiremock saw exactly one /submit POST with the matchers above.
         mock_server.verify().await;
     }
 }

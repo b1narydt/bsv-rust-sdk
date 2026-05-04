@@ -5,11 +5,13 @@
 //!
 //! Wire format matches canonical `@bsv/sdk` `Teranode.ts` (binary-octet-stream
 //! variant of the bitcoin-sv/arc OpenAPI spec) with the bitcoin-sv/arc
-//! `/v1/tx` URL shape. See spec §4.2 for the rationale.
+//! `/v1/tx` URL shape. See the bitcoin-sv/arc OpenAPI spec on GitHub
+//! (`https://github.com/bitcoin-sv/arc`) for endpoint details.
 
 use async_trait::async_trait;
 use reqwest::Client;
 
+use super::util::parse_broadcast_body;
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -54,6 +56,10 @@ impl ARC {
 }
 
 fn default_deployment_id() -> String {
+    // Use `getrandom` directly (already a transitive dep) to avoid pulling in
+    // `rand` or `uuid` for what is just a 16-byte non-cryptographic telemetry
+    // ID. The `rand` dep was removed in commit 41ff58c — please don't bring
+    // it back without checking the dep graph first.
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("getrandom failed");
     let hex = bytes.iter().fold(String::with_capacity(32), |mut acc, b| {
@@ -101,11 +107,20 @@ impl Broadcaster for ARC {
             description: format!("network error: {}", e),
         })?;
 
-        let status = response.status().as_u16() as u32;
-        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::json!({}));
+        let (status, body) = parse_broadcast_body(response).await?;
 
         if status == 200 || status == 201 {
             let txid = body["txid"].as_str().unwrap_or("").to_string();
+            if txid.is_empty() {
+                return Err(BroadcastFailure {
+                    status,
+                    code: "MALFORMED_SUCCESS_BODY".to_string(),
+                    description: format!(
+                        "ARC ({}) returned 2xx but no txid in body: {}",
+                        status, body
+                    ),
+                });
+            }
             Ok(BroadcastResponse {
                 status: "success".to_string(),
                 txid,
@@ -171,7 +186,9 @@ mod tests {
             .mount(&mock_server)
             .await;
         let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
-        let _ = arc.broadcast(&make_test_tx_with_source()).await;
+        arc.broadcast(&make_test_tx_with_source())
+            .await
+            .expect("broadcast ok");
     }
 
     #[tokio::test]
@@ -190,7 +207,9 @@ mod tests {
             ..ArcConfig::default()
         };
         let arc = ARC::new(&mock_server.uri(), cfg);
-        let _ = arc.broadcast(&make_test_tx_with_source()).await;
+        arc.broadcast(&make_test_tx_with_source())
+            .await
+            .expect("broadcast ok");
     }
 
     #[tokio::test]
@@ -204,7 +223,9 @@ mod tests {
             .mount(&mock_server)
             .await;
         let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
-        let _ = arc.broadcast(&make_test_tx_with_source()).await;
+        arc.broadcast(&make_test_tx_with_source())
+            .await
+            .expect("broadcast ok");
 
         let received = mock_server
             .received_requests()
@@ -236,5 +257,52 @@ mod tests {
         let result = arc.broadcast(&make_test_tx_with_source()).await;
         let err = result.unwrap_err();
         assert_eq!(err.status, 400);
+        assert_eq!(err.code, "ERR_BAD_REQUEST");
+        assert!(
+            err.description.contains("Invalid transaction"),
+            "expected description to contain 'Invalid transaction', got: {}",
+            err.description
+        );
+    }
+
+    #[tokio::test]
+    async fn test_arc_non_json_body_surfaces_raw_preview() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(
+                ResponseTemplate::new(502).set_body_string("<html>502 Bad Gateway</html>"),
+            )
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 502);
+        assert_eq!(err.code, "NON_JSON_BODY");
+        assert!(
+            err.description.contains("502 Bad Gateway"),
+            "expected raw body in description, got: {}",
+            err.description
+        );
+    }
+
+    #[tokio::test]
+    async fn test_arc_2xx_with_empty_txid_returns_malformed_error() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 200);
+        assert_eq!(err.code, "MALFORMED_SUCCESS_BODY");
     }
 }

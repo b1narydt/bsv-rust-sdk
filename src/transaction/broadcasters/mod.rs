@@ -7,4 +7,6 @@ pub mod arc;
 #[cfg(feature = "network")]
 pub mod arcade;
 #[cfg(feature = "network")]
+mod util;
+#[cfg(feature = "network")]
 pub mod whats_on_chain;

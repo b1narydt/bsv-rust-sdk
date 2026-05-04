@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
+use super::util::parse_broadcast_body;
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -71,11 +72,20 @@ impl Broadcaster for Arcade {
             description: format!("network error: {}", e),
         })?;
 
-        let status = response.status().as_u16() as u32;
-        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::json!({}));
+        let (status, body) = parse_broadcast_body(response).await?;
 
         if status == 200 || status == 201 || status == 202 {
             let txid = body["txid"].as_str().unwrap_or("").to_string();
+            if txid.is_empty() {
+                return Err(BroadcastFailure {
+                    status,
+                    code: "MALFORMED_SUCCESS_BODY".to_string(),
+                    description: format!(
+                        "Arcade ({}) returned 2xx but no txid in body: {}",
+                        status, body
+                    ),
+                });
+            }
             Ok(BroadcastResponse {
                 status: "success".to_string(),
                 txid,
