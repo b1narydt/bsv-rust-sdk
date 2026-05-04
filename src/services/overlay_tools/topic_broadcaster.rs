@@ -76,13 +76,18 @@ impl TopicBroadcaster {
     }
 
     /// Find hosts interested in the configured topics via SHIP lookup.
+    ///
+    /// Returns the host→topics map plus the count of SHIP outputs whose
+    /// BEEF failed to decode. The decode-failure count lets callers
+    /// distinguish "lookup returned no SHIP adverts" (legitimate empty
+    /// result) from "every advert was unparseable" (silent corruption).
     async fn find_interested_hosts(
         &self,
-    ) -> Result<HashMap<String, HashSet<String>>, ServicesError> {
+    ) -> Result<(HashMap<String, HashSet<String>>, usize), ServicesError> {
         // Test override: when manual hosts are injected, skip discovery
         // entirely. This is gated to test builds via `new_with_manual_hosts`.
         if let Some(ref hosts) = self.manual_hosts {
-            return Ok(hosts.clone());
+            return Ok((hosts.clone(), 0));
         }
         if self.network == Network::Local {
             let mut result = HashMap::new();
@@ -90,7 +95,7 @@ impl TopicBroadcaster {
                 "http://localhost:8080".to_string(),
                 self.topics.iter().cloned().collect(),
             );
-            return Ok(result);
+            return Ok((result, 0));
         }
 
         let answer = self
@@ -105,24 +110,38 @@ impl TopicBroadcaster {
             .await?;
 
         let mut results: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut decode_failures: usize = 0;
 
         if let LookupAnswer::OutputList { outputs } = answer {
             for output in &outputs {
-                if let Ok(parsed) = OverlayAdminTokenTemplate::decode_from_beef(
+                match OverlayAdminTokenTemplate::decode_from_beef(
                     &output.beef,
                     output.output_index as usize,
                 ) {
-                    if parsed.protocol == "SHIP" && self.topics.contains(&parsed.topic_or_service) {
-                        results
-                            .entry(parsed.domain)
-                            .or_default()
-                            .insert(parsed.topic_or_service);
+                    Ok(parsed) => {
+                        if parsed.protocol == "SHIP"
+                            && self.topics.contains(&parsed.topic_or_service)
+                        {
+                            results
+                                .entry(parsed.domain)
+                                .or_default()
+                                .insert(parsed.topic_or_service);
+                        }
+                    }
+                    Err(_) => {
+                        // Count rather than log: this crate has no tracing
+                        // dependency, and a stderr eprintln! would break
+                        // library hygiene. The count is folded into
+                        // ERR_NO_HOSTS_INTERESTED so operators can see
+                        // "lookup returned N adverts but all failed to
+                        // decode" instead of just "no hosts".
+                        decode_failures = decode_failures.saturating_add(1);
                     }
                 }
             }
         }
 
-        Ok(results)
+        Ok((results, decode_failures))
     }
 
     /// Send tagged BEEF to a host and return the STEAK acknowledgment.
@@ -231,7 +250,7 @@ impl TopicBroadcaster {
         beef: Vec<u8>,
         txid: String,
     ) -> Result<BroadcastResponse, BroadcastFailure> {
-        let interested_hosts =
+        let (interested_hosts, decode_failures) =
             self.find_interested_hosts()
                 .await
                 .map_err(|e| BroadcastFailure {
@@ -241,12 +260,23 @@ impl TopicBroadcaster {
                 })?;
 
         if interested_hosts.is_empty() {
+            // Surface BEEF decode failures so operators can distinguish
+            // "no SHIP adverts published" from "every advert failed to
+            // decode" (silent corruption masquerading as no-hosts).
+            let decode_suffix = if decode_failures > 0 {
+                format!(
+                    " ({} SHIP advert(s) failed to decode — possible BEEF corruption)",
+                    decode_failures
+                )
+            } else {
+                String::new()
+            };
             return Err(BroadcastFailure {
                 status: 0,
                 code: "ERR_NO_HOSTS_INTERESTED".to_string(),
                 description: format!(
-                    "No {:?} hosts are interested in receiving this transaction",
-                    self.network
+                    "No {:?} hosts are interested in receiving this transaction{}",
+                    self.network, decode_suffix
                 ),
             });
         }
