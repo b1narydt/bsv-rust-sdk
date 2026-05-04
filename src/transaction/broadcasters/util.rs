@@ -6,10 +6,12 @@
 
 use crate::transaction::broadcaster::BroadcastFailure;
 
-/// Maximum number of body bytes echoed back inside a `BroadcastFailure`
-/// description on parse failure. Larger bodies are truncated to keep error
-/// messages bounded.
-pub(super) const MAX_BODY_PREVIEW_BYTES: usize = 4096;
+/// Maximum number of body characters echoed back inside a `BroadcastFailure`
+/// description on parse failure. The bound is enforced via `chars().take(N)`
+/// (UTF-8-codepoint-safe), so the unit is chars, not bytes — a body of
+/// 4-byte codepoints could legally exceed 4 KiB after the truncation.
+/// Larger bodies are truncated to keep error messages bounded.
+pub(super) const MAX_BODY_PREVIEW_CHARS: usize = 4096;
 
 /// Parse a JSON broadcaster response body, returning the HTTP status and the
 /// parsed JSON. On read failure or non-JSON body, returns a
@@ -34,7 +36,7 @@ pub(super) async fn parse_broadcast_body(
         Err(e) => {
             let preview: String = String::from_utf8_lossy(&bytes)
                 .chars()
-                .take(MAX_BODY_PREVIEW_BYTES)
+                .take(MAX_BODY_PREVIEW_CHARS)
                 .collect();
             Err(BroadcastFailure {
                 status,
