@@ -56,7 +56,7 @@ impl ARC {
 }
 
 fn default_deployment_id() -> String {
-    // Use `getrandom` directly (already a transitive dep) to avoid pulling in
+    // Use `getrandom` directly (already a direct dep) to avoid pulling in
     // `rand` or `uuid` for what is just a 16-byte non-cryptographic telemetry
     // ID. The `rand` dep was removed in commit 41ff58c — please don't bring
     // it back without checking the dep graph first.
