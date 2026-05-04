@@ -1,11 +1,35 @@
 //! ARC broadcaster implementation.
 //!
 //! Broadcasts transactions to an ARC (Bitcoin SV Transaction Processor) service
-//! by POSTing the binary EF tx to `/v1/tx` with `Content-Type: application/octet-stream`.
+//! by POSTing the binary EF tx to `/v1/tx` with
+//! `Content-Type: application/octet-stream`.
 //!
-//! Wire format matches canonical `@bsv/sdk` `Teranode.ts` (binary-octet-stream
-//! variant of the bitcoin-sv/arc OpenAPI spec) with the bitcoin-sv/arc
-//! `/v1/tx` URL shape. See the bitcoin-sv/arc OpenAPI spec on GitHub
+//! ## Canonicality — what this broadcaster matches and what it doesn't
+//!
+//! `@bsv/sdk` ships **two** distinct ARC-family broadcasters and this Rust
+//! port is a hybrid of the two:
+//!
+//! - **`ARC.ts`** — canonical for the public ARC service. POSTs to
+//!   `{URL}/v1/tx` with `Content-Type: application/json` and body
+//!   `{rawTx: <hex EF, fallback to plain hex>}`. Auth: `Authorization:
+//!   Bearer <key>` when an api-key is set, plus optional callback headers.
+//!   Surfaces a fixed list of `txStatus` values (DOUBLE_SPEND_ATTEMPTED,
+//!   REJECTED, INVALID, MALFORMED, MINED_IN_STALE_BLOCK) and ORPHAN
+//!   substrings as failures even on HTTP 200.
+//! - **`Teranode.ts`** — canonical for self-hosted Teranode nodes. POSTs to
+//!   `{URL}` (no `/v1/tx` suffix) with `Content-Type: application/octet-
+//!   stream` and a binary EF body. No auth.
+//!
+//! This Rust broadcaster targets ARC's **`/v1/tx` URL** (canonical to
+//! `ARC.ts`) but uses **`Teranode.ts`'s binary octet-stream wire format**
+//! for the body. ARC's OpenAPI accepts both JSON and octet-stream so this
+//! works server-side, but it is **not strict `ARC.ts` parity** — it is a
+//! deliberate hybrid. Future maintainers porting parity changes should
+//! check the right canonical TS file:
+//!   - URL/headers/auth/2xx-failure detection → `ARC.ts`
+//!   - Body format (binary EF + octet-stream) → `Teranode.ts`
+//!
+//! See the bitcoin-sv/arc OpenAPI spec on GitHub
 //! (`https://github.com/bitcoin-sv/arc`) for endpoint details.
 
 use async_trait::async_trait;
