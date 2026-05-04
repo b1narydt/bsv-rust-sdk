@@ -137,6 +137,64 @@ impl Broadcaster for WhatsOnChainBroadcasterWithUrl {
     }
 }
 
+/// Wait for a tx to become visible on WhatsOnChain via GET, with bounded
+/// exponential backoff. Tries at t=0; on 404, sleeps `gap`ms then retries,
+/// where `gap` doubles each attempt up to `max_wait_secs`. Returns Ok on
+/// first 200 within budget; Err after exhausting attempts.
+///
+/// Production callers pass `max_wait_secs` (typically 60); tests use
+/// [`wait_for_visibility_against`] for an explicit base URL.
+pub async fn wait_for_visibility(
+    txid: &str,
+    max_wait_secs: u64,
+) -> Result<(), BroadcastFailure> {
+    wait_for_visibility_against("https://api.whatsonchain.com", "main", txid, max_wait_secs).await
+}
+
+/// Test-friendly variant of [`wait_for_visibility`] taking an explicit base
+/// URL + network. Production callers should use `wait_for_visibility`.
+pub async fn wait_for_visibility_against(
+    base_url: &str,
+    network: &str,
+    txid: &str,
+    max_wait_secs: u64,
+) -> Result<(), BroadcastFailure> {
+    let url = format!(
+        "{}/v1/bsv/{}/tx/{}",
+        base_url.trim_end_matches('/'),
+        network,
+        txid
+    );
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_wait_secs);
+    let mut sleep_ms: u64 = 2_000;
+    let mut attempts: u32 = 0;
+    loop {
+        attempts += 1;
+        let resp = client.get(&url).send().await;
+        if let Ok(r) = resp {
+            if r.status().as_u16() == 200 {
+                return Ok(());
+            }
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(BroadcastFailure {
+                status: 404,
+                code: "NOT_VISIBLE".to_string(),
+                description: format!(
+                    "tx {} not visible on WoC after {} attempts within {}s",
+                    txid, attempts, max_wait_secs
+                ),
+            });
+        }
+        let remaining = deadline.saturating_duration_since(now).as_millis() as u64;
+        let to_sleep = sleep_ms.min(remaining);
+        tokio::time::sleep(std::time::Duration::from_millis(to_sleep)).await;
+        sleep_ms = sleep_ms.saturating_mul(2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +260,31 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status, 400);
         assert_eq!(err.description, "Invalid transaction format");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_visibility_returns_ok_on_first_200() {
+        let mock_server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/v1/bsv/main/tx/abc123"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let result = wait_for_visibility_against(&mock_server.uri(), "main", "abc123", 60).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_visibility_errors_after_404_exhaustion() {
+        let mock_server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/v1/bsv/main/tx/notfound"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let result = wait_for_visibility_against(&mock_server.uri(), "main", "notfound", 3).await;
+        assert!(result.is_err());
     }
 }
