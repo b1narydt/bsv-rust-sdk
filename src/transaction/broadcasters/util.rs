@@ -66,3 +66,71 @@ pub(super) async fn parse_broadcast_body(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A non-JSON body of >4 KiB must be truncated to MAX_BODY_PREVIEW_CHARS
+    /// characters in the failure description, so error messages stay
+    /// bounded even when an upstream returns a multi-megabyte HTML
+    /// gateway page.
+    #[tokio::test]
+    async fn test_parse_broadcast_body_truncates_oversized_body() {
+        let mock_server = MockServer::start().await;
+        // 8192 ASCII bytes (and chars) — twice the cap.
+        let oversized: String = "A".repeat(8192);
+        Mock::given(method("POST"))
+            .and(path("/echo"))
+            .respond_with(ResponseTemplate::new(502).set_body_string(oversized.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}/echo", mock_server.uri()))
+            .send()
+            .await
+            .expect("send");
+        let err = parse_broadcast_body(resp).await.unwrap_err();
+
+        assert_eq!(err.status, 502);
+        // Description format: "non-JSON body: ({serde_err}): {preview}".
+        // The preview substring is the `oversized` body truncated to
+        // MAX_BODY_PREVIEW_CHARS chars. Total description length must be
+        // bounded by MAX_BODY_PREVIEW_CHARS plus a small overhead for the
+        // prefix and the serde error message — pick a generous bound
+        // (256 chars) since serde error wording can vary across versions.
+        const PREFIX_OVERHEAD_BUDGET: usize = 256;
+        let upper_bound = MAX_BODY_PREVIEW_CHARS + PREFIX_OVERHEAD_BUDGET;
+        let actual_chars = err.description.chars().count();
+        assert!(
+            actual_chars <= upper_bound,
+            "description exceeded MAX_BODY_PREVIEW_CHARS+overhead: \
+             {} chars (cap was {} + {} overhead = {})",
+            actual_chars,
+            MAX_BODY_PREVIEW_CHARS,
+            PREFIX_OVERHEAD_BUDGET,
+            upper_bound
+        );
+        // Lower bound: the preview should still contain MAX_BODY_PREVIEW_CHARS
+        // 'A's even with the prefix, so the description is at least that
+        // long.
+        assert!(
+            actual_chars >= MAX_BODY_PREVIEW_CHARS,
+            "description shorter than MAX_BODY_PREVIEW_CHARS: {} chars",
+            actual_chars
+        );
+        // And the preview must NOT contain all 8192 'A's — exactly
+        // MAX_BODY_PREVIEW_CHARS would round-trip if no truncation
+        // happened.
+        let a_count = err.description.chars().filter(|c| *c == 'A').count();
+        assert_eq!(
+            a_count, MAX_BODY_PREVIEW_CHARS,
+            "expected exactly MAX_BODY_PREVIEW_CHARS 'A's in preview \
+             after truncation, got {}",
+            a_count
+        );
+    }
+}

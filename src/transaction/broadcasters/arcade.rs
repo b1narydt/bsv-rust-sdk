@@ -234,4 +234,77 @@ mod tests {
             .await
             .expect("broadcast ok");
     }
+
+    /// A 2xx response that doesn't contain `{"status":"submitted"}` is a
+    /// protocol violation (the Arcade handler only ever writes that
+    /// payload on accept). Surface it as a malformed-success error so
+    /// nobody persists the broadcast as confirmed.
+    #[tokio::test]
+    async fn test_arcade_2xx_with_status_not_submitted_returns_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tx"))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"status": "queued"})),
+            )
+            .mount(&mock_server)
+            .await;
+        let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
+        let err = arcade.broadcast(&make_test_tx()).await.unwrap_err();
+        assert_eq!(err.status, 202);
+        assert_eq!(err.code, "MALFORMED_SUCCESS_BODY");
+        assert!(
+            err.description.contains("queued"),
+            "expected actual body status surfaced in description, got: {}",
+            err.description
+        );
+    }
+
+    /// 4xx with the canonical `{"error": "..."}` JSON shape per Arcade's
+    /// handler must surface the message in the description and the HTTP
+    /// status as the code (canonical TS ARC.ts non-2xx parity).
+    #[tokio::test]
+    async fn test_arcade_4xx_json_error_surfaces_description() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tx"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid hex"
+            })))
+            .mount(&mock_server)
+            .await;
+        let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
+        let err = arcade.broadcast(&make_test_tx()).await.unwrap_err();
+        assert_eq!(err.status, 400);
+        assert_eq!(err.code, "400");
+        assert!(
+            err.description.contains("invalid hex"),
+            "expected upstream error message, got: {}",
+            err.description
+        );
+    }
+
+    /// 5xx with a non-JSON body (e.g. an HTML gateway error page) must
+    /// surface the upstream HTTP status as the code and include the body
+    /// preview in the description (canonical TS ARC.ts non-2xx parity).
+    #[tokio::test]
+    async fn test_arcade_5xx_non_json_body_surfaces_status_and_preview() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tx"))
+            .respond_with(
+                ResponseTemplate::new(502).set_body_string("<html>502 Bad Gateway</html>"),
+            )
+            .mount(&mock_server)
+            .await;
+        let arcade = Arcade::new(&mock_server.uri(), ArcadeConfig::default());
+        let err = arcade.broadcast(&make_test_tx()).await.unwrap_err();
+        assert_eq!(err.status, 502);
+        assert_eq!(err.code, "502");
+        assert!(
+            err.description.contains("502 Bad Gateway"),
+            "expected raw body preview in description, got: {}",
+            err.description
+        );
+    }
 }

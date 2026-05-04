@@ -506,4 +506,46 @@ mod tests {
             err.description
         );
     }
+
+    /// `default_deployment_id` is the source of the `XDeployment-ID`
+    /// header per ArcConfig. It must (a) match the canonical format
+    /// `^rust-sdk-[0-9a-f]{32}$` (16 random bytes hex-encoded), and
+    /// (b) yield distinct values on consecutive calls so multiple
+    /// concurrent ARC instances don't collide on telemetry.
+    #[test]
+    fn test_default_deployment_id_is_unique_per_call() {
+        let a = default_deployment_id();
+        let b = default_deployment_id();
+
+        // Format: literal prefix + exactly 32 lowercase hex chars.
+        let re_format = |s: &str| -> bool {
+            if let Some(rest) = s.strip_prefix("rust-sdk-") {
+                rest.len() == 32
+                    && rest
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            } else {
+                false
+            }
+        };
+        assert!(
+            re_format(&a),
+            "deployment_id {:?} did not match ^rust-sdk-[0-9a-f]{{32}}$",
+            a
+        );
+        assert!(
+            re_format(&b),
+            "deployment_id {:?} did not match ^rust-sdk-[0-9a-f]{{32}}$",
+            b
+        );
+
+        // Two consecutive calls must differ. With 16 bytes (128 bits) of
+        // randomness the collision probability is negligible — a flake
+        // here would indicate getrandom is returning constant data.
+        assert_ne!(
+            a, b,
+            "default_deployment_id returned the same value twice — \
+             getrandom may be broken"
+        );
+    }
 }

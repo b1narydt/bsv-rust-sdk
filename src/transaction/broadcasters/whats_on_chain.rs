@@ -443,4 +443,41 @@ mod tests {
             elapsed
         );
     }
+
+    /// Drives wait_for_visibility's all-network-errors branch by pointing
+    /// at a closed local port (TcpListener is bound, then immediately
+    /// dropped — the OS may keep the port reserved briefly but inbound
+    /// connect() either gets ECONNREFUSED or a request error). On budget
+    /// exhaustion the failure should carry status: 0 and the description
+    /// must include the "last network error" prefix from the
+    /// LastAttempt::NetworkError branch.
+    #[tokio::test]
+    async fn test_wait_for_visibility_all_network_errors_returns_zero_status() {
+        // Bind to ephemeral port, capture the address, then drop the
+        // listener so the port is closed. This is the standard "find a
+        // dead port" trick that avoids hard-coding a port number which
+        // might collide with an actual service.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local_addr");
+        drop(listener);
+        let dead_url = format!("http://{}", addr);
+
+        // Short budget so the test doesn't burn 60s. The retry loop will
+        // attempt at least once; on failure it sleeps then retries until
+        // the deadline.
+        let result = wait_for_visibility_against(&dead_url, "main", "abc123", 1).await;
+
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.status, 0,
+            "all-network-error branch must report status 0 (no HTTP \
+             response was ever received)"
+        );
+        assert_eq!(err.code, "NOT_VISIBLE");
+        assert!(
+            err.description.contains("last network error"),
+            "expected description to include 'last network error', got: {}",
+            err.description
+        );
+    }
 }
