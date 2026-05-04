@@ -56,7 +56,12 @@ impl ARC {
 fn default_deployment_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("getrandom failed");
-    format!("rust-sdk-{}", hex::encode(bytes))
+    let hex = bytes.iter().fold(String::with_capacity(32), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{:02x}", b);
+        acc
+    });
+    format!("rust-sdk-{}", hex)
 }
 
 #[async_trait]
@@ -194,6 +199,14 @@ mod tests {
             .await;
         let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
         let _ = arc.broadcast(&make_test_tx_with_source()).await;
+
+        let received = mock_server.received_requests().await.expect("request recording enabled");
+        assert_eq!(received.len(), 1, "expected exactly one request");
+        let auth_present = received[0]
+            .headers
+            .keys()
+            .any(|name| name.as_str().eq_ignore_ascii_case("authorization"));
+        assert!(!auth_present, "Authorization header should be absent without api_key");
     }
 
     #[tokio::test]
