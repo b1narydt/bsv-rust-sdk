@@ -281,7 +281,15 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 502);
-        assert_eq!(err.code, "NON_JSON_BODY");
+        // Canonical TS ARC.ts uses response.status.toString() as the code
+        // for non-2xx failures; the previous "NON_JSON_BODY" code masked
+        // the upstream HTTP status from caller-side retry logic.
+        assert_eq!(err.code, "502");
+        assert!(
+            err.description.starts_with("non-JSON body:"),
+            "expected description to start with 'non-JSON body:', got: {}",
+            err.description
+        );
         assert!(
             err.description.contains("502 Bad Gateway"),
             "expected raw body in description, got: {}",
