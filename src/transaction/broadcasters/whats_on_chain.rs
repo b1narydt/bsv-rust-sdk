@@ -61,6 +61,7 @@ impl Broadcaster for WhatsOnChainBroadcaster {
         let response = self
             .client
             .post(&url)
+            .header("Accept", "text/plain")
             .json(&serde_json::json!({ "txhex": raw_hex }))
             .send()
             .await
@@ -106,6 +107,7 @@ impl Broadcaster for WhatsOnChainBroadcasterWithUrl {
         let response = self
             .client
             .post(&url)
+            .header("Accept", "text/plain")
             .json(&serde_json::json!({ "txhex": raw_hex }))
             .send()
             .await
@@ -163,6 +165,23 @@ mod tests {
         let resp = result.unwrap();
         assert_eq!(resp.txid, "abc123def456");
         assert_eq!(resp.status, "success");
+    }
+
+    #[tokio::test]
+    async fn test_woc_sends_accept_text_plain_header() {
+        let mock_server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/bsv/main/tx/raw"))
+            .and(matchers::header("Accept", "text/plain"))
+            .and(matchers::header("Content-Type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("\"deadbeef\""))
+            .mount(&mock_server)
+            .await;
+
+        let woc = WhatsOnChainBroadcasterWithUrl::new("main", &mock_server.uri());
+        let tx = make_test_tx();
+        let resp = woc.broadcast(&tx).await.expect("broadcast ok");
+        assert_eq!(resp.txid, "deadbeef");
     }
 
     #[tokio::test]
