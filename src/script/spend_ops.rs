@@ -119,17 +119,19 @@ impl Spend {
             }
 
             Op::OpReturn => {
-                // Post-Genesis BSV semantics: OP_RETURN at top level is a
-                // successful early termination. Used by covenant scripts
-                // (e.g. STAS-3) that end with OP_RETURN as a success marker.
-                // The parser truncates everything after this point into the
-                // OP_RETURN chunk's data, so we jump to end-of-script and let
-                // the caller inspect the stack — if the script left a falsy
-                // top, validate() will still return false.
+                // Post-Genesis BSV semantics. With no open OP_IF, OP_RETURN
+                // is a successful early termination — jump to end-of-script
+                // and let the caller inspect the stack. With an open OP_IF,
+                // termination is deferred until the matching OP_ENDIF: until
+                // then, only structural ops execute (the
+                // `returning_from_conditional` gate in `step()` handles this).
                 //
-                // Matches bsv-blockchain/ts-sdk src/script/Spend.ts:571-578
-                // (unconditional) and bsv-blockchain/go-sdk
-                // script/interpreter/operations.go:583-598 (Genesis-active).
+                // Matches ts-sdk Spend.ts:902-913 and go-sdk
+                // operations.go:583-598.
+                if !self.if_stack.is_empty() {
+                    self.returning_from_conditional = true;
+                    return Ok(());
+                }
                 let chunks_len = match self.context {
                     crate::script::spend::ScriptContext::Unlocking => {
                         self.unlocking_script.chunks().len()
@@ -1059,6 +1061,18 @@ impl Spend {
         sighash_type: u32,
     ) -> Vec<u8> {
         use crate::primitives::hash::hash256;
+
+        // Precondition: `input_index` must address one of the N inputs (the
+        // signed input or one of `other_inputs`). Out-of-range silently drops
+        // the current input from the splice loops below, producing a hash
+        // that disagrees with TS/Go canonical. All in-tree callers validate
+        // `input_index` upstream; this guard catches API misuse in tests.
+        debug_assert!(
+            self.input_index <= self.other_inputs.len(),
+            "input_index {} exceeds total inputs {}",
+            self.input_index,
+            self.other_inputs.len() + 1
+        );
 
         // Sighash type flags
         let sighash_forkid: u32 = 0x40;

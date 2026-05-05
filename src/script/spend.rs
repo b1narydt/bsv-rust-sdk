@@ -67,6 +67,13 @@ pub struct Spend {
     pub(crate) program_counter: usize,
     pub(crate) last_code_separator: Option<usize>,
 
+    // OP_RETURN encountered inside an open OP_IF/OP_NOTIF: defer termination
+    // until the matching OP_ENDIF closes the last open conditional. Until
+    // then, only IF/NOTIF/ELSE/ENDIF execute; all other opcodes are skipped.
+    // Mirrors `returningFromConditional` in ts-sdk Spend.ts and
+    // `earlyReturnAfterGenesis` in go-sdk operations.go.
+    pub(crate) returning_from_conditional: bool,
+
     // Memory management
     pub(crate) memory_limit: usize,
     pub(crate) stack_mem: usize,
@@ -100,6 +107,7 @@ impl Spend {
             context: ScriptContext::Unlocking,
             program_counter: 0,
             last_code_separator: None,
+            returning_from_conditional: false,
             memory_limit: DEFAULT_MEMORY_LIMIT,
             stack_mem: 0,
             alt_stack_mem: 0,
@@ -131,6 +139,9 @@ impl Spend {
         self.context = ScriptContext::Locking;
         self.program_counter = 0;
         self.last_code_separator = None;
+        // Reset deferred-termination flag at script-context boundary (matches
+        // ts-sdk Spend.ts:618 and go-sdk runScript reset semantics).
+        self.returning_from_conditional = false;
         loop {
             let done = self.step()?;
             if done {
@@ -186,11 +197,16 @@ impl Spend {
         let chunk = chunks[self.program_counter].clone();
         let op = chunk.op;
 
-        // Check if we are in a false branch of an IF
-        let in_exec = self.if_stack.iter().all(|&v| v);
+        // Script execution is suspended when either (a) we're in a FALSE
+        // branch of an open IF, or (b) an OP_RETURN inside an open IF set
+        // the `returning_from_conditional` flag. In both cases, only the
+        // structural ops (IF/NOTIF/ELSE/ENDIF/VERIF/VERNOTIF) execute; all
+        // other opcodes are skipped. Mirrors ts-sdk Spend.ts:641
+        // `isScriptExecuting = !returningFromConditional && !ifStack.includes(false)`.
+        let in_exec = self.if_stack.iter().all(|&v| v) && !self.returning_from_conditional;
 
         if !in_exec {
-            // In a FALSE branch: only process IF/NOTIF/ELSE/ENDIF/VERIF/VERNOTIF
+            // In a FALSE branch or post-OP_RETURN: only process structural ops.
             match op {
                 Op::OpIf | Op::OpNotIf | Op::OpVerIf | Op::OpVerNotIf => {
                     // Nested IF inside false branch: push false to if_stack
@@ -215,6 +231,12 @@ impl Spend {
                 }
             }
             self.program_counter += 1;
+            // Once OP_ENDIF has closed the last open IF after a deferred
+            // OP_RETURN, jump to end-of-script (TS Spend.ts:1435-1436).
+            if self.returning_from_conditional && self.if_stack.is_empty() {
+                self.program_counter = chunks.len();
+                self.returning_from_conditional = false;
+            }
             return Ok(false);
         }
 
@@ -375,14 +397,71 @@ mod tests {
 
     #[test]
     fn test_op_return_terminates_successfully() {
-        // Post-Genesis BSV semantics (matching bsv-blockchain/ts-sdk
-        // Spend.ts:571-578 and bsv-blockchain/go-sdk
-        // script/interpreter/operations.go:583-598): top-level OP_RETURN is a
-        // successful early termination. The script's stack at that moment
-        // determines validity — here the unlocking pushed OP_1 (truthy), so
-        // validate returns Ok(true). Required by covenant scripts (e.g.
-        // STAS-3) that end with OP_RETURN as a success marker.
+        // Post-Genesis BSV semantics (matching ts-sdk Spend.ts:902-913 and
+        // go-sdk operations.go:585-598): top-level OP_RETURN is a successful
+        // early termination. The script's stack at that moment determines
+        // validity — here the unlocking pushed OP_1 (truthy), so validate
+        // returns Ok(true). Required by covenant scripts (e.g. STAS-3)
+        // that end with OP_RETURN as a success marker.
         let mut spend = make_spend("OP_1", "OP_RETURN");
+        let result = spend.validate();
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[test]
+    fn test_op_return_with_falsy_stack_returns_false() {
+        // Top-level OP_RETURN is a *successful early termination*: the script
+        // exits cleanly, but validity is still decided by what's on the stack
+        // at that moment. Empty/zero top-of-stack means validate returns
+        // Ok(false), not Err. Mirrors ts-sdk Spend.ts:902-913.
+        let mut spend = make_relaxed_spend("OP_0", "OP_RETURN");
+        let result = spend.validate();
+        assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
+    fn test_op_return_data_carrier_idiom() {
+        // The canonical BSV NullData pattern is a locking script of
+        // `OP_FALSE OP_RETURN <data>`. The parser absorbs the trailing data
+        // into the OP_RETURN chunk so only two chunks execute. Stack-top is
+        // OP_FALSE (falsy) at OP_RETURN time, so validate returns Ok(false).
+        let mut spend = make_relaxed_spend("", "OP_FALSE OP_RETURN 6c6f6c");
+        let result = spend.validate();
+        assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
+    fn test_op_return_in_unexecuted_branch_does_not_terminate() {
+        // OP_RETURN inside the FALSE branch of an OP_IF must not fire — the
+        // existing `in_exec` gate skips it. Script continues past ENDIF and
+        // the trailing OP_1 leaves a truthy top. Mirrors ts-sdk
+        // Spend.ts:641 isScriptExecuting gate.
+        let mut spend = make_spend("OP_0", "OP_IF OP_RETURN OP_ENDIF OP_1");
+        let result = spend.validate();
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[test]
+    fn test_op_return_in_executing_if_branch_defers_termination() {
+        // OP_RETURN inside an *executing* OP_IF branch sets
+        // returningFromConditional and defers termination to the matching
+        // OP_ENDIF. Without this, the script returns ErrUnbalancedConditional
+        // because the unconditional jump to chunks_len skips the ENDIF.
+        // After ENDIF closes the IF, the script jumps to end with the
+        // current stack — `OP_1` was pushed before the IF, so Ok(true).
+        // Mirrors ts-sdk Spend.ts:902-913 + 1435-1436.
+        let mut spend = make_spend("OP_1", "OP_1 OP_IF OP_RETURN OP_ENDIF");
+        let result = spend.validate();
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[test]
+    fn test_op_return_in_nested_if_defers_until_outermost_endif() {
+        // Deferred termination must wait for the LAST open IF to close —
+        // not just the innermost. Sets returningFromConditional inside the
+        // inner IF; only after both ENDIFs is the if_stack empty and the
+        // jump-to-end fires. Stack at OP_RETURN time is [OP_1] (truthy).
+        let mut spend = make_spend("OP_1", "OP_1 OP_IF OP_1 OP_IF OP_RETURN OP_ENDIF OP_ENDIF");
         let result = spend.validate();
         assert!(matches!(result, Ok(true)));
     }
@@ -1301,11 +1380,16 @@ mod tests {
         // funding input we are signing. Outpoints + sequences from the
         // `transfer_regular_valid` conformance vector.
         let txid_be = "5b91184e6a2ff5d124c4d2fcd10b685497151f55cb70a2cd17b0e912dbbb129e";
+        // Sequences are intentionally distinct so a regression in
+        // hashSequence input ordering would change the hash output. With
+        // identical sequences the order swap is a no-op.
+        let other_input_0_sequence: u32 = 0xfffffffe;
+        let current_sequence: u32 = 0xfffffffd;
         let other_input_0 = TransactionInput {
             source_txid: Some(txid_be.to_string()),
             source_output_index: 0,
             unlocking_script: None,
-            sequence: 0xffffffff,
+            sequence: other_input_0_sequence,
             source_transaction: None,
         };
 
@@ -1317,7 +1401,7 @@ mod tests {
             source_satoshis: 1438,
             transaction_version: 1,
             transaction_lock_time: 0,
-            transaction_sequence: 0xffffffff,
+            transaction_sequence: current_sequence,
             other_inputs: vec![other_input_0],
             other_outputs: vec![
                 crate::transaction::transaction_output::TransactionOutput {
@@ -1362,6 +1446,18 @@ mod tests {
             &preimage[4..36],
             &expected_hash_prevouts[..],
             "hashPrevouts must serialize inputs in original tx order, regardless of input_index"
+        );
+
+        // Same ordering invariant must apply to hashSequence (bytes 36..68):
+        // [input0_sequence, input1_sequence] in original tx order.
+        let mut expected_sequences = Vec::new();
+        expected_sequences.extend_from_slice(&other_input_0_sequence.to_le_bytes());
+        expected_sequences.extend_from_slice(&current_sequence.to_le_bytes());
+        let expected_hash_sequence = hash256(&expected_sequences);
+        assert_eq!(
+            &preimage[36..68],
+            &expected_hash_sequence[..],
+            "hashSequence must serialize inputs in original tx order, regardless of input_index"
         );
     }
 }
