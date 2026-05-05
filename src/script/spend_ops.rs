@@ -128,6 +128,14 @@ impl Spend {
                 //
                 // Matches ts-sdk Spend.ts:902-913 and go-sdk
                 // operations.go:583-598.
+                //
+                // TODO(divergence vs ts-sdk Spend.ts:903-905): TS errors with
+                // "OP_RETURN is invalid before Genesis" when
+                // `hasExplicitFlags() && !isAfterGenesis()`. Rust matches
+                // go-sdk's post-Genesis-only behavior and assumes Genesis is
+                // active (true for all live BSV networks since 2020-02-04).
+                // Add explicit_flags / is_after_genesis plumbing if pre-Genesis
+                // conformance vectors are ever needed.
                 if !self.if_stack.is_empty() {
                     self.returning_from_conditional = true;
                     return Ok(());
@@ -1065,9 +1073,12 @@ impl Spend {
         // Precondition: `input_index` must address one of the N inputs (the
         // signed input or one of `other_inputs`). Out-of-range silently drops
         // the current input from the splice loops below, producing a hash
-        // that disagrees with TS/Go canonical. All in-tree callers validate
-        // `input_index` upstream; this guard catches API misuse in tests.
-        debug_assert!(
+        // that disagrees with TS/Go canonical and yields a syntactically-
+        // valid but invalid signature.
+        //
+        // `assert!` (not `debug_assert!`) so release builds enforce the
+        // invariant — this is signing-correctness, not a dev-only guard.
+        assert!(
             self.input_index <= self.other_inputs.len(),
             "input_index {} exceeds total inputs {}",
             self.input_index,
