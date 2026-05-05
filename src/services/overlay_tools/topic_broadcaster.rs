@@ -281,17 +281,28 @@ impl TopicBroadcaster {
             });
         }
 
+        // Concurrent host fan-out (matches canonical TS SHIPBroadcaster.ts:213
+        // `Promise.all(hosts.map(...))`). Each send is independent: serial
+        // execution made the wall-clock cost N× the slowest host.
+        let host_results =
+            futures_util::future::join_all(interested_hosts.iter().map(|(host, topics)| {
+                let tagged_beef = TaggedBEEF {
+                    beef: beef.clone(),
+                    topics: topics.iter().cloned().collect(),
+                };
+                async move {
+                    let result = self.send_to_host(host, &tagged_beef).await;
+                    (host.clone(), result)
+                }
+            }))
+            .await;
+
         let mut host_acks: HashMap<String, HashSet<String>> = HashMap::new();
         let mut success_count = 0u32;
         let mut host_errors: Vec<(String, String)> = Vec::new();
 
-        for (host, topics) in &interested_hosts {
-            let tagged_beef = TaggedBEEF {
-                beef: beef.clone(),
-                topics: topics.iter().cloned().collect(),
-            };
-
-            match self.send_to_host(host, &tagged_beef).await {
+        for (host, result) in host_results {
+            match result {
                 Ok(steak) => {
                     let mut acked_topics = HashSet::new();
                     for (topic, instructions) in &steak {
@@ -306,12 +317,11 @@ impl TopicBroadcaster {
                             acked_topics.insert(topic.clone());
                         }
                     }
-                    host_acks.insert(host.clone(), acked_topics);
+                    host_acks.insert(host, acked_topics);
                     success_count += 1;
                 }
                 Err(e) => {
-                    host_errors.push((host.clone(), e.to_string()));
-                    continue;
+                    host_errors.push((host, e.to_string()));
                 }
             }
         }
@@ -345,14 +355,36 @@ impl TopicBroadcaster {
             });
         }
 
-        Ok(BroadcastResponse {
-            status: "success".to_string(),
-            txid,
-            message: format!(
+        // On partial success (some hosts up, some down), append the per-host
+        // failure summary so operators can distinguish "9/10 succeeded" from
+        // "1/10 succeeded" — both report `status: success`, but the latter
+        // is a quiet degradation worth surfacing in monitoring.
+        let total_hosts = success_count as usize + host_errors.len();
+        let message = if host_errors.is_empty() {
+            format!(
                 "Sent to {} Overlay Services {}",
                 success_count,
                 if success_count == 1 { "host" } else { "hosts" }
-            ),
+            )
+        } else {
+            let details = host_errors
+                .iter()
+                .map(|(h, e)| format!("{}: {}", h, e))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!(
+                "Sent to {}/{} Overlay Services hosts; {} failed: {}",
+                success_count,
+                total_hosts,
+                host_errors.len(),
+                details
+            )
+        };
+
+        Ok(BroadcastResponse {
+            status: "success".to_string(),
+            txid,
+            message,
         })
     }
 }
@@ -679,5 +711,166 @@ mod tests {
 
         // Confirm wiremock saw exactly one /submit POST with the matchers above.
         mock_server.verify().await;
+    }
+
+    /// `broadcast_beef` must surface a typed `ERR_BEEF_PARSE` failure when
+    /// handed garbage bytes — without this, callers couldn't distinguish a
+    /// malformed BEEF from a host-discovery failure.
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn test_broadcast_beef_invalid_bytes_returns_err_beef_parse() {
+        let resolver = LookupResolver::for_network(Network::Local);
+        let broadcaster = TopicBroadcaster::new(
+            vec!["tm_test".to_string()],
+            TopicBroadcasterConfig {
+                network: Network::Local,
+                acknowledgment_mode: AcknowledgmentMode::DoNotRequire,
+                ..Default::default()
+            },
+            resolver,
+        )
+        .unwrap();
+
+        let err = broadcaster
+            .broadcast_beef(vec![0xde, 0xad, 0xbe, 0xef])
+            .await
+            .expect_err("malformed BEEF must surface as failure");
+        assert_eq!(err.code, "ERR_BEEF_PARSE");
+        assert_eq!(err.status, 0);
+    }
+
+    /// Two manually-injected hosts: one returns a STEAK acknowledgment, one
+    /// returns 500. The broadcast still succeeds (one host accepted the tx)
+    /// but the success message surfaces the per-host failure so partial
+    /// degradation isn't silently swept under the rug.
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn test_topic_broadcaster_partial_success_surfaces_failures() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let ok_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/submit"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tm_test": { "outputsToAdmit": [0], "coinsToRetain": [] }
+            })))
+            .mount(&ok_server)
+            .await;
+
+        let bad_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/submit"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&bad_server)
+            .await;
+
+        let mut hosts: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut topics_for_host = HashSet::new();
+        topics_for_host.insert("tm_test".to_string());
+        hosts.insert(ok_server.uri(), topics_for_host.clone());
+        hosts.insert(bad_server.uri(), topics_for_host);
+
+        let resolver = LookupResolver::for_network(Network::Local);
+        let broadcaster = TopicBroadcaster::new_with_manual_hosts(
+            vec!["tm_test".to_string()],
+            TopicBroadcasterConfig {
+                network: Network::Local,
+                acknowledgment_mode: AcknowledgmentMode::RequireFromAny,
+                ..Default::default()
+            },
+            resolver,
+            hosts,
+        )
+        .unwrap();
+
+        let vectors_json =
+            std::fs::read_to_string("test-vectors/beef_valid.json").expect("read vectors");
+        let vectors: Vec<serde_json::Value> =
+            serde_json::from_str(&vectors_json).expect("parse vectors");
+        let beef_hex: &str = vectors[0]["hex"].as_str().expect("hex string");
+        let beef_bytes: Vec<u8> = (0..beef_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&beef_hex[i..i + 2], 16).expect("hex byte"))
+            .collect();
+
+        let resp = broadcaster
+            .broadcast_beef(beef_bytes)
+            .await
+            .expect("partial success path should still report success");
+        assert_eq!(resp.status, "success");
+        assert!(
+            resp.message.contains("1/2") && resp.message.contains("1 failed"),
+            "expected partial-success message with 1/2 + 1 failed, got: {}",
+            resp.message
+        );
+        assert!(
+            resp.message.contains(&bad_server.uri()),
+            "expected failure detail to name the failing host, got: {}",
+            resp.message
+        );
+    }
+
+    /// Both manual hosts return 500 → the broadcast must fail with
+    /// `ERR_ALL_HOSTS_REJECTED` and the per-host failure detail in the
+    /// description.
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn test_topic_broadcaster_all_hosts_fail_returns_err_all_hosts_rejected() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let bad_a = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/submit"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&bad_a)
+            .await;
+        let bad_b = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/submit"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&bad_b)
+            .await;
+
+        let mut hosts: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut topics_for_host = HashSet::new();
+        topics_for_host.insert("tm_test".to_string());
+        hosts.insert(bad_a.uri(), topics_for_host.clone());
+        hosts.insert(bad_b.uri(), topics_for_host);
+
+        let resolver = LookupResolver::for_network(Network::Local);
+        let broadcaster = TopicBroadcaster::new_with_manual_hosts(
+            vec!["tm_test".to_string()],
+            TopicBroadcasterConfig {
+                network: Network::Local,
+                acknowledgment_mode: AcknowledgmentMode::RequireFromAny,
+                ..Default::default()
+            },
+            resolver,
+            hosts,
+        )
+        .unwrap();
+
+        let vectors_json =
+            std::fs::read_to_string("test-vectors/beef_valid.json").expect("read vectors");
+        let vectors: Vec<serde_json::Value> =
+            serde_json::from_str(&vectors_json).expect("parse vectors");
+        let beef_hex: &str = vectors[0]["hex"].as_str().expect("hex string");
+        let beef_bytes: Vec<u8> = (0..beef_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&beef_hex[i..i + 2], 16).expect("hex byte"))
+            .collect();
+
+        let err = broadcaster
+            .broadcast_beef(beef_bytes)
+            .await
+            .expect_err("all-hosts-fail must surface ERR_ALL_HOSTS_REJECTED");
+        assert_eq!(err.code, "ERR_ALL_HOSTS_REJECTED");
+        assert!(
+            err.description.contains("Details:"),
+            "expected per-host details in description, got: {}",
+            err.description
+        );
     }
 }

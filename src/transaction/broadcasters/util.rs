@@ -11,7 +11,7 @@ use crate::transaction::broadcaster::BroadcastFailure;
 /// (UTF-8-codepoint-safe), so the unit is chars, not bytes — a body of
 /// 4-byte codepoints could legally exceed 4 KiB after the truncation.
 /// Larger bodies are truncated to keep error messages bounded.
-pub(super) const MAX_BODY_PREVIEW_CHARS: usize = 4096;
+pub(crate) const MAX_BODY_PREVIEW_CHARS: usize = 4096;
 
 /// Parse a JSON broadcaster response body, returning the HTTP status and the
 /// parsed JSON. On read failure or non-JSON body, returns a

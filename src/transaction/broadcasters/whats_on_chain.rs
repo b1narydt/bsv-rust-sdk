@@ -47,124 +47,89 @@ impl WhatsOnChainBroadcasterWithUrl {
     }
 }
 
+/// Shared broadcast implementation for both `WhatsOnChainBroadcaster` and
+/// `WhatsOnChainBroadcasterWithUrl` — guarantees both wrappers stay in sync
+/// (e.g. error-code parity, header set, response parsing).
+///
+/// Failure codes mirror canonical TS `WhatsOnChainBroadcaster.ts:67-69`:
+/// non-2xx responses surface the upstream HTTP status as `code` (rather
+/// than a generic `BROADCAST_FAILED`) so callers can branch on retryable
+/// vs permanent classes (429 vs 4xx) without re-parsing description text.
+async fn broadcast_to_woc_url(
+    client: &Client,
+    url: &str,
+    network: &str,
+    tx: &Transaction,
+) -> Result<BroadcastResponse, BroadcastFailure> {
+    let raw_hex = tx.to_hex().map_err(|e| BroadcastFailure {
+        status: 0,
+        code: "SERIALIZE_ERROR".to_string(),
+        description: format!("failed to serialize transaction: {}", e),
+    })?;
+
+    let response = client
+        .post(url)
+        .header("Accept", "text/plain")
+        .json(&serde_json::json!({ "txhex": raw_hex }))
+        .send()
+        .await
+        .map_err(|e| BroadcastFailure {
+            status: 0,
+            code: "NETWORK_ERROR".to_string(),
+            description: format!("network error: {}", e),
+        })?;
+
+    let status = response.status().as_u16() as u32;
+    let body_text = response.text().await.map_err(|e| BroadcastFailure {
+        status,
+        code: "READ_ERROR".to_string(),
+        description: format!("failed to read WoC response body: {}", e),
+    })?;
+
+    if status == 200 || status == 201 {
+        // WoC returns the txid as plain text (quoted string)
+        let txid = body_text.trim().trim_matches('"').to_string();
+
+        if txid.is_empty() {
+            return Err(BroadcastFailure {
+                status,
+                code: "MALFORMED_SUCCESS_BODY".to_string(),
+                description: format!(
+                    "WhatsOnChain ({} {}) returned 2xx but no txid in body: {}",
+                    network,
+                    status,
+                    truncate_for_preview(&body_text)
+                ),
+            });
+        }
+
+        Ok(BroadcastResponse {
+            status: "success".to_string(),
+            txid,
+            message: String::new(),
+        })
+    } else {
+        Err(BroadcastFailure {
+            status,
+            code: status.to_string(),
+            description: truncate_for_preview(&body_text),
+        })
+    }
+}
+
 #[async_trait]
 impl Broadcaster for WhatsOnChainBroadcaster {
     async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
-        let raw_hex = tx.to_hex().map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "SERIALIZE_ERROR".to_string(),
-            description: format!("failed to serialize transaction: {}", e),
-        })?;
-
         let url = format!("{}/tx/raw", self.base_url());
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Accept", "text/plain")
-            .json(&serde_json::json!({ "txhex": raw_hex }))
-            .send()
-            .await
-            .map_err(|e| BroadcastFailure {
-                status: 0,
-                code: "NETWORK_ERROR".to_string(),
-                description: format!("network error: {}", e),
-            })?;
-
-        let status = response.status().as_u16() as u32;
-        let body_text = response.text().await.map_err(|e| BroadcastFailure {
-            status,
-            code: "READ_ERROR".to_string(),
-            description: format!("failed to read WoC response body: {}", e),
-        })?;
-
-        if status == 200 || status == 201 {
-            // WoC returns the txid as plain text (quoted string)
-            let txid = body_text.trim().trim_matches('"').to_string();
-
-            if txid.is_empty() {
-                return Err(BroadcastFailure {
-                    status,
-                    code: "MALFORMED_SUCCESS_BODY".to_string(),
-                    description: format!(
-                        "WhatsOnChain ({}) returned 2xx but no txid in body: {}",
-                        status,
-                        truncate_for_preview(&body_text)
-                    ),
-                });
-            }
-
-            Ok(BroadcastResponse {
-                status: "success".to_string(),
-                txid,
-                message: String::new(),
-            })
-        } else {
-            Err(BroadcastFailure {
-                status,
-                code: "BROADCAST_FAILED".to_string(),
-                description: truncate_for_preview(&body_text),
-            })
-        }
+        broadcast_to_woc_url(&self.client, &url, &self.network, tx).await
     }
 }
 
 #[async_trait]
 impl Broadcaster for WhatsOnChainBroadcasterWithUrl {
     async fn broadcast(&self, tx: &Transaction) -> Result<BroadcastResponse, BroadcastFailure> {
-        let raw_hex = tx.to_hex().map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "SERIALIZE_ERROR".to_string(),
-            description: format!("failed to serialize transaction: {}", e),
-        })?;
-
         let url = format!("{}/v1/bsv/{}/tx/raw", self.base_url, self.network);
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Accept", "text/plain")
-            .json(&serde_json::json!({ "txhex": raw_hex }))
-            .send()
-            .await
-            .map_err(|e| BroadcastFailure {
-                status: 0,
-                code: "NETWORK_ERROR".to_string(),
-                description: format!("network error: {}", e),
-            })?;
-
-        let status = response.status().as_u16() as u32;
-        let body_text = response.text().await.map_err(|e| BroadcastFailure {
-            status,
-            code: "READ_ERROR".to_string(),
-            description: format!("failed to read WoC response body: {}", e),
-        })?;
-
-        if status == 200 || status == 201 {
-            let txid = body_text.trim().trim_matches('"').to_string();
-            if txid.is_empty() {
-                return Err(BroadcastFailure {
-                    status,
-                    code: "MALFORMED_SUCCESS_BODY".to_string(),
-                    description: format!(
-                        "WhatsOnChain ({}) returned 2xx but no txid in body: {}",
-                        status,
-                        truncate_for_preview(&body_text)
-                    ),
-                });
-            }
-            Ok(BroadcastResponse {
-                status: "success".to_string(),
-                txid,
-                message: String::new(),
-            })
-        } else {
-            Err(BroadcastFailure {
-                status,
-                code: "BROADCAST_FAILED".to_string(),
-                description: truncate_for_preview(&body_text),
-            })
-        }
+        broadcast_to_woc_url(&self.client, &url, &self.network, tx).await
     }
 }
 
@@ -358,6 +323,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, 400);
+        // Failure `code` carries the upstream HTTP status (matches canonical
+        // ts-sdk WhatsOnChainBroadcaster.ts:67-69), not a generic literal.
+        assert_eq!(err.code, "400");
         assert_eq!(err.description, "Invalid transaction format");
     }
 

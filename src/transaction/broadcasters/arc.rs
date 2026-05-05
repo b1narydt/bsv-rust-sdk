@@ -35,7 +35,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
-use super::util::parse_broadcast_body;
+use super::util::{parse_broadcast_body, MAX_BODY_PREVIEW_CHARS};
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -84,8 +84,15 @@ fn default_deployment_id() -> String {
     // `rand` or `uuid` for what is just a 16-byte non-cryptographic telemetry
     // ID. The `rand` dep was removed in commit 41ff58c — please don't bring
     // it back without checking the dep graph first.
+    //
+    // Do NOT panic on entropy failure: `XDeployment-ID` is a telemetry
+    // header. ARC servers ignore non-conforming values, so degrading to a
+    // non-unique literal is strictly preferable to crashing the constructor
+    // in sandboxed / no-entropy environments (seccomp, embedded targets).
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).expect("getrandom failed");
+    if getrandom::getrandom(&mut bytes).is_err() {
+        return "rust-sdk-no-entropy".to_string();
+    }
     let hex = bytes.iter().fold(String::with_capacity(32), |mut acc, b| {
         use std::fmt::Write;
         let _ = write!(acc, "{:02x}", b);
@@ -149,6 +156,24 @@ impl Broadcaster for ARC {
                 "MINED_IN_STALE_BLOCK",
             ];
 
+            // Distinguish "field absent" (Null — acceptable, treat as empty
+            // string) from "field present but not a string" (Number, Object,
+            // …) — the latter is a malformed ARC response that must surface
+            // as MALFORMED_SUCCESS_BODY rather than be silently coerced to
+            // "" and treated as "no error". Real ARC servers always return
+            // string txStatus per the bitcoin-sv/arc OpenAPI spec.
+            for key in ["txStatus", "extraInfo"] {
+                let v = &body[key];
+                if !v.is_null() && !v.is_string() {
+                    return Err(BroadcastFailure {
+                        status,
+                        code: "MALFORMED_SUCCESS_BODY".to_string(),
+                        description: format!(
+                            "ARC ({status}) returned 2xx with non-string `{key}`: {body}"
+                        ),
+                    });
+                }
+            }
             let tx_status_raw = body["txStatus"].as_str().unwrap_or("");
             let extra_info_raw = body["extraInfo"].as_str().unwrap_or("");
             let tx_status_upper = tx_status_raw.to_ascii_uppercase();
@@ -207,20 +232,47 @@ impl Broadcaster for ARC {
                     ),
                 });
             }
+            // Surface txStatus + extraInfo together (matches canonical TS
+            // ARC.ts:182 `message: \`${txStatus} ${extraInfo}\``). With only
+            // txStatus, callers lose ARC's human-readable detail (e.g. the
+            // mempool reason for a SEEN_ON_NETWORK retry).
+            let message = if extra_info_raw.is_empty() {
+                tx_status_raw.to_string()
+            } else if tx_status_raw.is_empty() {
+                extra_info_raw.to_string()
+            } else {
+                format!("{tx_status_raw} {extra_info_raw}")
+            };
             Ok(BroadcastResponse {
                 status: "success".to_string(),
                 txid,
-                message: body["txStatus"].as_str().unwrap_or("").to_string(),
+                message,
             })
         } else {
+            // Non-2xx with valid JSON body. Prefer structured ARC error keys
+            // (`code`, `description`, `message`); when none are present,
+            // append the (truncated) body itself so operators can debug
+            // out-of-spec ARC servers / gateway HTML / `{"errors":[...]}`
+            // shapes that don't match the canonical envelope.
+            let code = body["code"]
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| status.to_string());
+            let mut description = body["description"]
+                .as_str()
+                .or_else(|| body["message"].as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if description.is_empty() {
+                let raw = body.to_string();
+                let preview: String = raw.chars().take(MAX_BODY_PREVIEW_CHARS).collect();
+                description =
+                    format!("ARC ({status}) returned no `description`/`message`; body: {preview}");
+            }
             Err(BroadcastFailure {
                 status,
-                code: body["code"].as_str().unwrap_or("UNKNOWN").to_string(),
-                description: body["description"]
-                    .as_str()
-                    .or_else(|| body["message"].as_str())
-                    .unwrap_or("unknown error")
-                    .to_string(),
+                code,
+                description,
             })
         }
     }
