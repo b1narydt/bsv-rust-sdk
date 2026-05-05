@@ -762,7 +762,7 @@ fn strip_codeseparator(script: &[u8]) -> Vec<u8> {
 }
 
 /// Write a Bitcoin-style varint directly to a Vec<u8> (no io::Write needed).
-fn write_varint_to_vec(buf: &mut Vec<u8>, val: u64) {
+pub(crate) fn write_varint_to_vec(buf: &mut Vec<u8>, val: u64) {
     if val < 0xfd {
         buf.push(val as u8);
     } else if val <= 0xffff {

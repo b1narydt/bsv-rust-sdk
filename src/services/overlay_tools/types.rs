@@ -78,6 +78,14 @@ pub struct TaggedBEEF {
     pub beef: Vec<u8>,
     /// Overlay topics for this transaction.
     pub topics: Vec<String>,
+    /// Optional off-chain payload appended to the request body after a
+    /// `varint(beef.len())` length prefix when present, and signaled by the
+    /// `x-includes-off-chain-values: true` header. Mirrors TS
+    /// `TaggedBEEF.offChainValues` (`SHIPBroadcaster.ts:17-21,100-110`).
+    /// `Some(vec![])` is distinct from `None`: an empty `Vec` still emits
+    /// the header + length prefix (matches TS `Array.isArray` truthiness).
+    #[serde(rename = "offChainValues", skip_serializing_if = "Option::is_none")]
+    pub off_chain_values: Option<Vec<u8>>,
 }
 
 /// Admittance instructions from a topic manager.
@@ -99,8 +107,78 @@ pub struct AdmittanceInstructions {
 /// Maps topic names to admittance instructions.
 pub type STEAK = HashMap<String, AdmittanceInstructions>;
 
+/// Topic-set selector for an [`AckPolicy`] field. Mirrors the TS shape
+/// `'all' | 'any' | string[]` used by all three SHIPBroadcaster ack fields.
+///
+/// - [`AckTopics::All`] resolves to "every configured topic"; the caller's
+///   `mode` (All / Any) further decides whether each evaluated host must
+///   ack every topic or just one.
+/// - [`AckTopics::Any`] resolves to "every configured topic" with mode
+///   forced to `Any` (host needs ≥1 ack out of all).
+/// - [`AckTopics::List`] resolves to the named topics with mode forced to
+///   `All` — matches TS `SHIPBroadcaster.ts:264-266,302-304,334-336` which
+///   never honor `'any'` semantics for an explicit list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AckTopics {
+    /// All configured topics; mode-dependent (All or Any).
+    All,
+    /// All configured topics with mode = Any.
+    Any,
+    /// Exactly the listed topics; mode forced to All.
+    List(Vec<String>),
+}
+
+/// Compound acknowledgment policy. Mirrors the three independent fields on
+/// the TS `SHIPBroadcasterConfig` (`SHIPBroadcaster.ts:67-71`).
+///
+/// Checks are evaluated in order (AllHosts → AnyHost → SpecificHosts);
+/// any failure short-circuits with that field's distinct error code.
+/// All three may be set simultaneously — the most restrictive wins.
+#[derive(Debug, Clone, Default)]
+pub struct AckPolicy {
+    /// Every responding host must ack the chosen topic set under the
+    /// chosen mode. Failure surfaces as `ERR_REQUIRE_ACK_FROM_ALL_HOSTS_FAILED`.
+    pub require_from_all_hosts: Option<AckTopics>,
+    /// At least one responding host must ack the chosen topic set under
+    /// the chosen mode. TS default is `Some(AckTopics::All)` — see
+    /// [`AckPolicy::default_any_host_all_topics`]. Failure surfaces as
+    /// `ERR_REQUIRE_ACK_FROM_ANY_HOST_FAILED`.
+    pub require_from_any_host: Option<AckTopics>,
+    /// Per-host requirements: each named host must ack the per-host
+    /// selector — and any named host that did not respond at all is
+    /// itself a failure. Empty map = check skipped. Failure surfaces as
+    /// `ERR_REQUIRE_ACK_FROM_SPECIFIC_HOSTS_FAILED`.
+    pub require_from_specific_hosts: HashMap<String, AckTopics>,
+}
+
+impl AckPolicy {
+    /// All policy slots empty — caller fires-and-forgets and never inspects
+    /// host acks. Equivalent to TS setting all three fields to `[]`/`{}`.
+    pub fn fire_and_forget() -> Self {
+        Self::default()
+    }
+
+    /// TS canonical default (`SHIPBroadcaster.ts:160-161`): "at least one
+    /// host must acknowledge every configured topic." Used by
+    /// [`TopicBroadcasterConfig::default`].
+    pub fn default_any_host_all_topics() -> Self {
+        Self {
+            require_from_all_hosts: None,
+            require_from_any_host: Some(AckTopics::All),
+            require_from_specific_hosts: HashMap::new(),
+        }
+    }
+}
+
 /// Acknowledgment mode for topic broadcasting.
+///
+/// Retained for backwards compatibility; new code should use [`AckPolicy`]
+/// directly. Convertible via `From<AcknowledgmentMode> for AckPolicy`.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[deprecated(
+    since = "0.2.83",
+    note = "Use AckPolicy for full TS parity (per-topic-subset and per-host variants)."
+)]
 pub enum AcknowledgmentMode {
     /// All hosts must acknowledge all topics.
     RequireFromAllHosts,
@@ -109,6 +187,21 @@ pub enum AcknowledgmentMode {
     RequireFromAny,
     /// Fire-and-forget; do not check acknowledgments.
     DoNotRequire,
+}
+
+#[allow(deprecated)]
+impl From<AcknowledgmentMode> for AckPolicy {
+    fn from(mode: AcknowledgmentMode) -> Self {
+        match mode {
+            AcknowledgmentMode::DoNotRequire => AckPolicy::fire_and_forget(),
+            AcknowledgmentMode::RequireFromAny => AckPolicy::default_any_host_all_topics(),
+            AcknowledgmentMode::RequireFromAllHosts => AckPolicy {
+                require_from_all_hosts: Some(AckTopics::All),
+                require_from_any_host: None,
+                require_from_specific_hosts: HashMap::new(),
+            },
+        }
+    }
 }
 
 /// Configuration for the LookupResolver.
@@ -142,19 +235,28 @@ impl Default for LookupResolverConfig {
 }
 
 /// Configuration for the TopicBroadcaster.
+///
+/// `ack_policy` is the canonical TS-parity surface (three independent fields
+/// each accepting all/any/list). The legacy [`AcknowledgmentMode`] enum is
+/// `#[deprecated]` but convertible into [`AckPolicy`] via `.into()` for
+/// callers migrating from the old shape.
 #[derive(Debug, Clone)]
 pub struct TopicBroadcasterConfig {
     /// Network preset to use.
     pub network: Network,
-    /// Acknowledgment mode for broadcasts.
-    pub acknowledgment_mode: AcknowledgmentMode,
+    /// Compound acknowledgment policy (canonical surface).
+    pub ack_policy: AckPolicy,
+    /// Cache TTL for SHIP host discovery results. Mirrors TS
+    /// `SHIPBroadcaster.ts:164` (5 minutes).
+    pub interested_hosts_ttl_ms: u64,
 }
 
 impl Default for TopicBroadcasterConfig {
     fn default() -> Self {
         TopicBroadcasterConfig {
             network: Network::Mainnet,
-            acknowledgment_mode: AcknowledgmentMode::RequireFromAny,
+            ack_policy: AckPolicy::default_any_host_all_topics(),
+            interested_hosts_ttl_ms: 5 * 60 * 1000,
         }
     }
 }
@@ -200,10 +302,38 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_default_acknowledgment_mode() {
         assert_eq!(
             AcknowledgmentMode::default(),
             AcknowledgmentMode::RequireFromAny
         );
+    }
+
+    #[test]
+    fn test_default_topic_broadcaster_config_matches_ts_default() {
+        // TS SHIPBroadcaster.ts:160-161 default: any-host acks all topics.
+        let cfg = TopicBroadcasterConfig::default();
+        assert!(cfg.ack_policy.require_from_all_hosts.is_none());
+        assert_eq!(cfg.ack_policy.require_from_any_host, Some(AckTopics::All));
+        assert!(cfg.ack_policy.require_from_specific_hosts.is_empty());
+        assert_eq!(cfg.interested_hosts_ttl_ms, 5 * 60 * 1000);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_acknowledgment_mode_to_ack_policy_conversion() {
+        // Backwards-compat shim preserves old enum semantics.
+        let any: AckPolicy = AcknowledgmentMode::RequireFromAny.into();
+        assert_eq!(any.require_from_any_host, Some(AckTopics::All));
+        assert!(any.require_from_all_hosts.is_none());
+
+        let all: AckPolicy = AcknowledgmentMode::RequireFromAllHosts.into();
+        assert_eq!(all.require_from_all_hosts, Some(AckTopics::All));
+        assert!(all.require_from_any_host.is_none());
+
+        let none: AckPolicy = AcknowledgmentMode::DoNotRequire.into();
+        assert!(none.require_from_all_hosts.is_none());
+        assert!(none.require_from_any_host.is_none());
     }
 }
