@@ -19,7 +19,9 @@ pub use host_reputation::{HostReputationEntry, HostReputationTracker, RankedHost
 pub use lookup_resolver::LookupResolver;
 pub use retry::with_double_spend_retry;
 pub use topic_broadcaster::TopicBroadcaster;
+#[allow(deprecated)]
+pub use types::AcknowledgmentMode;
 pub use types::{
-    AcknowledgmentMode, AdmittanceInstructions, LookupAnswer, LookupOutputEntry, LookupQuestion,
+    AckPolicy, AckTopics, AdmittanceInstructions, LookupAnswer, LookupOutputEntry, LookupQuestion,
     LookupResolverConfig, Network, TaggedBEEF, TopicBroadcasterConfig, STEAK,
 };

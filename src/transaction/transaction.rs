@@ -339,6 +339,14 @@ impl Transaction {
         Ok(bytes_to_hex(&buf))
     }
 
+    /// Serialize a transaction to EF format raw bytes. Equivalent to
+    /// `hex_to_bytes(self.to_hex_ef()?)` but avoids the hex round-trip.
+    pub fn to_bytes_ef(&self) -> Result<Vec<u8>, TransactionError> {
+        let mut buf = Vec::new();
+        self.to_ef(&mut buf)?;
+        Ok(buf)
+    }
+
     // -- Sighash preimage computation -----------------------------------------
 
     /// Resolve the txid bytes (internal/LE byte order) for the input at `input_index`.
@@ -754,7 +762,7 @@ fn strip_codeseparator(script: &[u8]) -> Vec<u8> {
 }
 
 /// Write a Bitcoin-style varint directly to a Vec<u8> (no io::Write needed).
-fn write_varint_to_vec(buf: &mut Vec<u8>, val: u64) {
+pub(crate) fn write_varint_to_vec(buf: &mut Vec<u8>, val: u64) {
     if val < 0xfd {
         buf.push(val as u8);
     } else if val <= 0xffff {
@@ -890,6 +898,21 @@ mod tests {
 
         tx.add_output(TransactionOutput::default());
         assert_eq!(tx.outputs.len(), 1);
+    }
+
+    fn make_test_tx_with_source_for_ef() -> Transaction {
+        // Re-use the same EF vector as test_ef_round_trip to build a tx with
+        // source_transaction populated (required for to_hex_ef / to_bytes_ef).
+        let ef_hex = "010000000000000000ef01ac4e164f5bc16746bb0868404292ac8318bbac3800e4aad13a014da427adce3e000000006a47304402203a61a2e931612b4bda08d541cfb980885173b8dcf64a3471238ae7abcd368d6402204cbf24f04b9aa2256d8901f0ed97866603d2be8324c2bfb7a37bf8fc90edd5b441210263e2dee22b1ddc5e11f6fab8bcd2378bdd19580d640501ea956ec0e786f93e76ffffffff3e660000000000001976a9146bfd5c7fbe21529d45803dbcf0c87dd3c71efbc288ac013c660000000000001976a9146bfd5c7fbe21529d45803dbcf0c87dd3c71efbc288ac00000000";
+        Transaction::from_hex_ef(ef_hex).expect("make_test_tx_with_source_for_ef: parse failed")
+    }
+
+    #[test]
+    fn test_to_bytes_ef_round_trips_with_to_hex_ef() {
+        let tx = make_test_tx_with_source_for_ef();
+        let bytes = tx.to_bytes_ef().expect("to_bytes_ef");
+        let hex_form = tx.to_hex_ef().expect("to_hex_ef");
+        assert_eq!(hex_form, hex::encode(&bytes));
     }
 
     #[test]

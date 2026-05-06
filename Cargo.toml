@@ -1,6 +1,6 @@
 [package]
 name = "bsv-sdk"
-version = "0.2.82"
+version = "0.2.83"
 edition = "2021"
 rust-version = "1.87"
 description = "Pure Rust implementation of the BSV Blockchain SDK"
@@ -23,7 +23,10 @@ reqwest = { version = "0.12", features = ["json"], optional = true }
 tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+# serde_json is a hard dep (not feature-gated) because the public
+# `BroadcastFailure.more: Option<serde_json::Value>` field needs it.
+# Cost is negligible (pure-Rust, ~100KB compiled).
+serde_json = "1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -95,4 +98,4 @@ required-features = ["network"]
 
 [features]
 default = []
-network = ["dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util", "dep:serde", "dep:serde_json"]
+network = ["dep:tokio", "dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util", "dep:serde"]

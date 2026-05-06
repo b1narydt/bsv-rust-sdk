@@ -189,6 +189,7 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
             status: "success".to_string(),
             txid: "pending".to_string(),
             message: format!("Registered {} definition", def_type_str(&def_type)),
+            ..Default::default()
         })
     }
 
@@ -373,6 +374,7 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
             status: "success".to_string(),
             txid: "pending".to_string(),
             message: format!("Updated {} definition", def_type_str(&def_type)),
+            ..Default::default()
         })
     }
 
@@ -437,6 +439,7 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
             status: "success".to_string(),
             txid: "pending".to_string(),
             message: format!("Removed {} definition", def_type_str(&def_type)),
+            ..Default::default()
         })
     }
 
