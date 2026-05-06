@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.84] - 2026-05-06
+
+### Fixed
+
+- **Top-level `OP_RETURN` is a successful early termination, not a hard failure** (#30) — pre-Genesis BSV treated `OP_RETURN` as `ErrInvalidScript`; post-Genesis it cleanly exits the script with validity decided by the current stack. The interpreter now matches `ts-sdk Spend.ts:902-913` and `go-sdk operations.go:585-598`. Required by every BSV covenant pattern (STAS-3, sCrypt-emitted contracts) that ends with `OP_RETURN` as a success marker.
+- **`OP_RETURN` inside an open `OP_IF` defers termination until matching `OP_ENDIF`** (#30) — the previous unconditional jump to end-of-script left `if_stack` non-empty and triggered the post-loop balance check, returning `ErrUnbalancedConditional` on scripts that TS/Go canonical accept. Adds `Spend::returning_from_conditional` mirroring TS field; `step()` gate is now `in_exec = !returning_from_conditional && all_true(if_stack)` (matches `Spend.ts:641 isScriptExecuting`); `OP_ENDIF` in the skip path jumps to end when `if_stack` becomes empty (matches `Spend.ts:1435-1436`).
+- **BIP-143 `hashPrevouts` / `hashSequence` input ordering for `input_index > 0`** (#30) — previously placed the current input's outpoint/sequence at position 0 in the preimage regardless of `input_index`, only correct for `input_index == 0`. Multi-input spends signing input >0 (STAS-3 covenant + funding-input pattern, BRC-29 batch payments) produced invalid signatures. Splice the current input back in at `input_index` to match `ts-sdk TransactionSignature.ts:142-183` and `go-sdk transaction/txinput.go:52-78`. Surfaced by 6-of-12 P2PKH conformance vectors failing at input 1.
+- **`Spend::sighash_preimage` `input_index` bounds enforcement** (#30) — the precondition guard at function entry was `debug_assert!`, stripped in release. Out-of-range `input_index` would silently drop the current input from the splice loops, producing a syntactically-valid but invalid signature. Promoted to `assert!` so release builds enforce the signing-correctness invariant. (Quaakee F30-3 review fix.)
+
+### Added
+
+- TODO note in `OP_RETURN` handler documenting the deliberate post-Genesis-only divergence from `ts-sdk Spend.ts:903-905` (TS errors when `hasExplicitFlags() && !isAfterGenesis()`; Rust matches go-sdk and assumes Genesis is active — true for all live BSV networks since 2020-02-04). (Quaakee F30-8 review fix.)
+
+### Tests
+
+- 5 new `OP_RETURN` behavioral tests: falsy-stack → `Ok(false)`, `OP_FALSE OP_RETURN <data>` data-carrier idiom, `OP_RETURN` inside an unexecuted `OP_IF` branch, `OP_RETURN` inside an executing `OP_IF` (deferred termination), `OP_RETURN` nested inside two `OP_IFs`.
+- Strengthened `sighash_preimage_orders_by_input_index` — both sequences were `0xffffffff` so the hashSequence ordering swap was a no-op. Distinct sequences (`fffffffe`, `fffffffd`) plus a new assertion on `preimage[36..68]` now lock down the hashSequence section in addition to hashPrevouts.
+
 ## [0.2.83] - 2026-05-05
 
 ### Added

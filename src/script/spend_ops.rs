@@ -119,9 +119,37 @@ impl Spend {
             }
 
             Op::OpReturn => {
-                return Err(ScriptError::InvalidScript(
-                    "OP_RETURN encountered".to_string(),
-                ));
+                // Post-Genesis BSV semantics. With no open OP_IF, OP_RETURN
+                // is a successful early termination — jump to end-of-script
+                // and let the caller inspect the stack. With an open OP_IF,
+                // termination is deferred until the matching OP_ENDIF: until
+                // then, only structural ops execute (the
+                // `returning_from_conditional` gate in `step()` handles this).
+                //
+                // Matches ts-sdk Spend.ts:902-913 and go-sdk
+                // operations.go:583-598.
+                //
+                // TODO(divergence vs ts-sdk Spend.ts:903-905): TS errors with
+                // "OP_RETURN is invalid before Genesis" when
+                // `hasExplicitFlags() && !isAfterGenesis()`. Rust matches
+                // go-sdk's post-Genesis-only behavior and assumes Genesis is
+                // active (true for all live BSV networks since 2020-02-04).
+                // Add explicit_flags / is_after_genesis plumbing if pre-Genesis
+                // conformance vectors are ever needed.
+                if !self.if_stack.is_empty() {
+                    self.returning_from_conditional = true;
+                    return Ok(());
+                }
+                let chunks_len = match self.context {
+                    crate::script::spend::ScriptContext::Unlocking => {
+                        self.unlocking_script.chunks().len()
+                    }
+                    crate::script::spend::ScriptContext::Locking => {
+                        self.locking_script.chunks().len()
+                    }
+                };
+                self.program_counter = chunks_len;
+                return Ok(());
             }
 
             Op::OpVer => {
@@ -1042,6 +1070,21 @@ impl Spend {
     ) -> Vec<u8> {
         use crate::primitives::hash::hash256;
 
+        // Precondition: `input_index` must address one of the N inputs (the
+        // signed input or one of `other_inputs`). Out-of-range silently drops
+        // the current input from the splice loops below, producing a hash
+        // that disagrees with TS/Go canonical and yields a syntactically-
+        // valid but invalid signature.
+        //
+        // `assert!` (not `debug_assert!`) so release builds enforce the
+        // invariant — this is signing-correctness, not a dev-only guard.
+        assert!(
+            self.input_index <= self.other_inputs.len(),
+            "input_index {} exceeds total inputs {}",
+            self.input_index,
+            self.other_inputs.len() + 1
+        );
+
         // Sighash type flags
         let sighash_forkid: u32 = 0x40;
         let sighash_anyonecanpay: u32 = 0x80;
@@ -1059,29 +1102,51 @@ impl Spend {
         preimage.extend_from_slice(&self.transaction_version.to_le_bytes());
 
         // 2. hashPrevouts
+        //
+        // BIP-143 hashPrevouts is the double-SHA256 of the serialized outpoints
+        // of ALL inputs, in their original transaction order. `other_inputs`
+        // holds the OTHER N-1 inputs (excluding the current one) in tx order;
+        // splice the current input back in at position `input_index`.
+        //
+        // Pre-fix this concatenated [current_input, ...others] which is only
+        // correct for input_index == 0. Multi-input spends signing input >0
+        // (e.g. STAS-3 covenant + funding input pattern) produced invalid
+        // signatures.
+        //
+        // Matches bsv-blockchain/ts-sdk src/primitives/TransactionSignature.ts:150
+        // (filter+splice) and bsv-blockchain/go-sdk transaction/txinput.go:52-78
+        // (iterate-all-in-order).
         if !anyone_can_pay {
             let mut prevouts = Vec::new();
-            // Current input's outpoint
-            prevouts.extend_from_slice(&txid_to_bytes(&self.source_txid));
-            prevouts.extend_from_slice(&(self.source_output_index as u32).to_le_bytes());
-            // Other inputs' outpoints
-            for input in &self.other_inputs {
-                let default_txid = "00".repeat(32);
-                let txid = input.source_txid.as_deref().unwrap_or(&default_txid);
-                prevouts.extend_from_slice(&txid_to_bytes(txid));
-                prevouts.extend_from_slice(&input.source_output_index.to_le_bytes());
+            let total_inputs = self.other_inputs.len() + 1;
+            let mut others = self.other_inputs.iter();
+            for i in 0..total_inputs {
+                if i == self.input_index {
+                    prevouts.extend_from_slice(&txid_to_bytes(&self.source_txid));
+                    prevouts.extend_from_slice(&(self.source_output_index as u32).to_le_bytes());
+                } else if let Some(input) = others.next() {
+                    let default_txid = "00".repeat(32);
+                    let txid = input.source_txid.as_deref().unwrap_or(&default_txid);
+                    prevouts.extend_from_slice(&txid_to_bytes(txid));
+                    prevouts.extend_from_slice(&input.source_output_index.to_le_bytes());
+                }
             }
             preimage.extend_from_slice(&hash256(&prevouts));
         } else {
             preimage.extend_from_slice(&[0u8; 32]);
         }
 
-        // 3. hashSequence
+        // 3. hashSequence — same ordering rule as hashPrevouts.
         if !anyone_can_pay && base_type != sighash_none && base_type != sighash_single {
             let mut sequences = Vec::new();
-            sequences.extend_from_slice(&self.transaction_sequence.to_le_bytes());
-            for input in &self.other_inputs {
-                sequences.extend_from_slice(&input.sequence.to_le_bytes());
+            let total_inputs = self.other_inputs.len() + 1;
+            let mut others = self.other_inputs.iter();
+            for i in 0..total_inputs {
+                if i == self.input_index {
+                    sequences.extend_from_slice(&self.transaction_sequence.to_le_bytes());
+                } else if let Some(input) = others.next() {
+                    sequences.extend_from_slice(&input.sequence.to_le_bytes());
+                }
             }
             preimage.extend_from_slice(&hash256(&sequences));
         } else {
