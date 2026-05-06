@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.83] - 2026-05-05
+
+### Added
+
+- **Arcade broadcaster** (#32, EXPERIMENTAL) — POST `/tx` (no `/v1/` prefix), `Content-Type: application/octet-stream`, no auth. Asserts `{"status":"submitted"}` on a 202 and returns the locally-computed canonical txid (`Transaction::id()`). Module doc carries an EXPERIMENTAL warning + pinned full-SHA upstream reference (no `@bsv/sdk` parity reference exists yet).
+- **Full TS `SHIPBroadcaster.ts` parity for `TopicBroadcaster`** (#32):
+  - **Three-field `AckPolicy`** mirroring TS lines 67-71 — `require_from_all_hosts`, `require_from_any_host`, `require_from_specific_hosts`, each accepting an `AckTopics` selector (`All` / `Any` / `List(Vec<String>)`). Compound checks evaluate in canonical order (AllHosts → AnyHost → SpecificHosts) with three distinct error codes (`ERR_REQUIRE_ACK_FROM_{ALL_HOSTS,ANY_HOST,SPECIFIC_HOSTS}_FAILED`).
+  - **5-min `interestedHostsCache` + in-flight dedup** — `Arc<Mutex<InterestedHostsCache>>` with leader/follower pattern via `tokio::sync::broadcast`. Concurrent broadcasts share one SHIP query rather than firing duplicates. Cache untouched on leader error (matches TS finally-block at lines 487-488).
+  - **`offChainValues` body framing** — `TaggedBEEF.off_chain_values: Option<Vec<u8>>`. When set, the request body is `varint(beef.len()) || beef || off_chain_values` and the `x-includes-off-chain-values: true` header is added (matches TS lines 100-110). New public method `broadcast_beef_with_off_chain` since the Rust SDK has no `Transaction.metadata` facility.
+  - **Concurrent host fan-out** via `futures::future::join_all` (matches TS line 213 `Promise.all`); wall-clock is now max(host_latency) instead of sum.
+  - **Partial-success message** appends per-host failure details so 1/10 vs 9/10 success is visible to operators.
+- **Typed structured fields on `BroadcastResponse` / `BroadcastFailure`** (#32, Quaakee F32-2 review fix) — `competing_txs: Option<Vec<String>>`, `txid: Option<String>` (failure path), `more: Option<serde_json::Value>` (raw upstream JSON). Mirrors TS `Broadcaster.ts:11-34`. Programmatic callers can now recover ARC's `competingTxs`, failure-path `txid`, and RFC-7807 problem-details fields structurally rather than regex-parsing description text. Both structs derive `Default`.
+- **`broadcast_beef_with_off_chain` public API** on `TopicBroadcaster` (#32) — explicit off-chain-payload submit; the SDK's `Transaction` has no `metadata` bag, so callers pass off-chain bytes directly.
+- **`Transaction::to_bytes_ef`** (#32) — sibling of `to_hex_ef` returning `Vec<u8>`. Used by ARC for canonical octet-stream wire form.
+- **`WhatsOnChainBroadcaster::wait_for_visibility`** (#32) — bounded exponential backoff (≈ `0, 2s, 6s, 14s, 30s, 60s`) waiting for a tx to appear via WoC GET. Bails fast on 400/401/403 (caller-side errors no amount of waiting will fix).
+- **Network error classification helper `classify_reqwest_err`** (#32, Quaakee F32-13 review fix) — distinguishes `NETWORK_TIMEOUT` / `NETWORK_CONNECT` / `NETWORK_REQUEST` / `NETWORK_ERROR` via `reqwest::Error::is_*()` predicates with `source()` chaining preserved in the description. Applied at all 4 broadcaster send-error sites + WoC body-read site. Retry policies can now branch on transient (timeout/connect) vs permanent (request-build) class.
+
+### Fixed
+
+- **ARC: canonical octet-stream + binary EF body** (#32) — Content-Type now pairs with raw binary bytes (was hex-string body). `X-Api-Key` replaced with `Authorization: Bearer` per spec. Adds `XDeployment-ID: rust-sdk-{16-hex}` per canonical convention. Falls back to literal `rust-sdk-no-entropy` instead of panicking on `getrandom` failure (sandboxed/no-entropy environments).
+- **ARC: 200 OK with error `txStatus` is a broadcast failure** (#32) — surfaces `DOUBLE_SPEND_ATTEMPTED`, `REJECTED`, `INVALID`, `MALFORMED`, `MINED_IN_STALE_BLOCK` plus any `ORPHAN` substring (case-insensitive in `txStatus` or `extraInfo`) as `BroadcastFailure`. Previously the Rust port reported these as success with txid set, which is dangerous in mint-and-merge flows where a `DOUBLE_SPEND_ATTEMPTED` would be persisted as confirmed.
+- **ARC error description: prefer RFC-7807 `body.detail`** (#32, Quaakee F32-3 review fix) — canonical TS `ARC.ts:213-215` reads `body.detail`, the field real ARC servers actually emit. Rust now uses fallback chain `detail → description → title → message`.
+- **ARC failure code = HTTP status** (#32, Quaakee F32-4 review fix) — canonical TS `ARC.ts:189-195` uses `response.status.toString()`. Structured `body.code` (when present) is now preserved on `more`. Cross-SDK retry policies keying on `code` now match.
+- **ARC `MALFORMED_SUCCESS_BODY` extended to validate `competingTxs`** (#32, Quaakee F32-17 review fix) — must be a JSON array of strings per OpenAPI; non-array (or non-string elements) now surfaces as `MALFORMED_SUCCESS_BODY` rather than being silently coerced.
+- **ARC success message includes `extraInfo`** (#32) — matches TS `ARC.ts:182` `message: \`${txStatus} ${extraInfo}\``.
+- **WhatsOnChain: failure code = upstream HTTP status** (#32) — was hardcoded `"BROADCAST_FAILED"`. Matches TS `WhatsOnChainBroadcaster.ts:67-69`. Test updated.
+- **WhatsOnChain: 64-char hex txid validation** (#32, Quaakee F32-18 review fix) — `trim_matches('"')` strips multiple quote layers; previously a 200 body of `"error: invalid"` would slip through as a "success" txid, poisoning STAS3's `wait_for_visibility` path. Tightens to `len() == 64 && all-ascii-hexdigit`.
+- **WhatsOnChain: collapsed duplicate `Broadcaster` impls** (#32) — `WhatsOnChainBroadcaster` and `WhatsOnChainBroadcasterWithUrl` now share `broadcast_to_woc_url` so any future error-handling fix applies once.
+- **WhatsOnChain: `Accept: text/plain` header** (#32) — matches canonical TS request shape.
+- **`TopicBroadcaster` non-2xx response body now read** (#32, Quaakee F32-14 review fix) — overlay hosts emit `{"error": …, "code": …}` on failure; previously the body was dropped. Now read + truncated to `MAX_BODY_PREVIEW_CHARS` and embedded in the error string.
+- **`TopicBroadcaster` follower path receives leader's actual error** (#32, Quaakee F32-20 review fix) — in-flight broadcast channel type changed from `HashMap<…>` to `Result<HashMap<…>, String>`. Concurrent followers now see the leader's real error (timeout / lookup-server 5xx / BEEF decode failure) rather than collapsing to `RecvError::Closed` and a generic "leader errored" string.
+- **`TopicBroadcaster` BEEF decode-failure visibility** (#32) — when SHIP discovery returns adverts but every BEEF fails to decode, `ERR_NO_HOSTS_INTERESTED` description includes "(N SHIP advert(s) failed to decode — possible BEEF corruption)" so silent corruption is distinguishable from no-hosts.
+- **Arcade callback headers gated on `callback_url`** (#32, Quaakee F32-11 review fix) — `X-CallbackToken` and `X-FullStatusUpdates` are now nested inside the `if let Some(callback_url)` branch. Without an URL the server has nowhere to deliver notifications.
+- **`Spend::write_varint_to_vec` promoted to `pub(crate)`** (#32) — needed by `TopicBroadcaster` for off-chain body framing.
+
+### Changed
+
+- **`TopicBroadcasterConfig.acknowledgment_mode` → `ack_policy`** (#32) — type changed from `AcknowledgmentMode` enum to `AckPolicy` struct (three independent fields). The legacy `AcknowledgmentMode` enum is now `#[deprecated]`; convertible to `AckPolicy` via `From`/`.into()`. **Breaking** for callers using struct-literal init with the old field.
+- **`serde_json` is now a non-optional dependency** — required by `BroadcastFailure.more: Option<serde_json::Value>` which is unconditionally available on the public type. Negligible binary-size cost (pure Rust, ~100KB).
+
+### Tests
+
+- **31 new tests across broadcasters** (#32):
+  - 13 ARC tests including `MALFORMED_SUCCESS_BODY` for non-string txStatus / non-array competingTxs / non-array elements, `body.detail` (RFC-7807) preference, `body.code` routed to `more`, custom-headers passthrough, deployment-ID uniqueness per call, auth-bearer presence/absence.
+  - 7 WhatsOnChain tests including hex-txid validation, network-error classification, body-read failure, `wait_for_visibility` schedule (success / 404-exhaustion / mid-budget / fast-bail-on-401 / network-error).
+  - 7 Arcade tests including callback gate (assert headers absent without URL), 4xx/5xx body parsing, status-not-submitted MALFORMED.
+  - 13 TopicBroadcaster tests including 6 ack-policy variants (list-named-only, any-host-any-topic, specific-host-missing, specific-host-passes, two compound-policy ordering tests), 3 cache tests (TTL hit, expired-not-returned, not-poisoned-on-leader-error), 5 off-chain framing tests (framed-body-and-header, no-framing-without, empty-vec-still-frames, varint-3-byte-boundary at BEEF len 253, end-to-end via public API), partial-success message format, all-hosts-fail surfaces `ERR_ALL_HOSTS_REJECTED`, `ERR_BEEF_PARSE` typed error.
+- **2 new util tests** (#32) — `MAX_BODY_PREVIEW_CHARS` truncation lower/upper bounds.
+
 ## [0.2.82] - 2026-04-15
 
 ### Added
