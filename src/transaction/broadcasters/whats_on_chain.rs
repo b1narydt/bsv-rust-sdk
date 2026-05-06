@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
+use super::util::classify_reqwest_err;
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -65,6 +66,7 @@ async fn broadcast_to_woc_url(
         status: 0,
         code: "SERIALIZE_ERROR".to_string(),
         description: format!("failed to serialize transaction: {}", e),
+        ..Default::default()
     })?;
 
     let response = client
@@ -73,33 +75,49 @@ async fn broadcast_to_woc_url(
         .json(&serde_json::json!({ "txhex": raw_hex }))
         .send()
         .await
-        .map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "NETWORK_ERROR".to_string(),
-            description: format!("network error: {}", e),
+        .map_err(|e| {
+            let (code, description) = classify_reqwest_err(&e);
+            BroadcastFailure {
+                status: 0,
+                code: code.to_string(),
+                description,
+                ..Default::default()
+            }
         })?;
 
     let status = response.status().as_u16() as u32;
-    let body_text = response.text().await.map_err(|e| BroadcastFailure {
-        status,
-        code: "READ_ERROR".to_string(),
-        description: format!("failed to read WoC response body: {}", e),
+    let body_text = response.text().await.map_err(|e| {
+        let (code, description) = classify_reqwest_err(&e);
+        BroadcastFailure {
+            status,
+            // Body-read failures are mid-stream — usually mid-body timeout or
+            // peer reset. Carry the upstream HTTP status (we got a header) and
+            // the classified error code.
+            code: code.to_string(),
+            description: format!("failed to read WoC response body: {description}"),
+            ..Default::default()
+        }
     })?;
 
     if status == 200 || status == 201 {
         // WoC returns the txid as plain text (quoted string)
         let txid = body_text.trim().trim_matches('"').to_string();
 
-        if txid.is_empty() {
+        // F32-18 (Quaakee): tighten validation. `trim_matches('"')` strips
+        // any number of quotes, so a 200 body of `"error: invalid"` would
+        // previously slip through as a "success" txid. Real WoC mainnet
+        // success bodies are always 64-char hex. STAS3's `wait_for_visibility`
+        // path consumes this txid, so a malformed value is poisonous.
+        let is_valid_txid = txid.len() == 64 && txid.chars().all(|c| c.is_ascii_hexdigit());
+        if !is_valid_txid {
             return Err(BroadcastFailure {
                 status,
                 code: "MALFORMED_SUCCESS_BODY".to_string(),
                 description: format!(
-                    "WhatsOnChain ({} {}) returned 2xx but no txid in body: {}",
-                    network,
-                    status,
+                    "WhatsOnChain ({network} {status}) 2xx body not a 64-char hex txid: {}",
                     truncate_for_preview(&body_text)
                 ),
+                ..Default::default()
             });
         }
 
@@ -107,12 +125,14 @@ async fn broadcast_to_woc_url(
             status: "success".to_string(),
             txid,
             message: String::new(),
+            ..Default::default()
         })
     } else {
         Err(BroadcastFailure {
             status,
             code: status.to_string(),
             description: truncate_for_preview(&body_text),
+            ..Default::default()
         })
     }
 }
@@ -224,6 +244,7 @@ pub async fn wait_for_visibility_against(
                             "wait_for_visibility {}: HTTP {} after {} attempt(s); not retrying — caller-side errors aren't recoverable by waiting",
                             url, s, attempts
                         ),
+                        ..Default::default()
                     });
                 }
                 // 404 / 429 / 5xx fall through to retry.
@@ -256,6 +277,7 @@ pub async fn wait_for_visibility_against(
             "tx {} not visible on WoC after {} attempts within {}s; {}",
             txid, attempts, max_wait_secs, last_desc
         ),
+        ..Default::default()
     })
 }
 
@@ -275,7 +297,9 @@ mod tests {
 
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/v1/bsv/main/tx/raw"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("\"abc123def456\""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "\"a3f7d2e1b8c4506f9d2e3a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e9\"",
+            ))
             .mount(&mock_server)
             .await;
 
@@ -285,7 +309,10 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.txid, "abc123def456");
+        assert_eq!(
+            resp.txid,
+            "a3f7d2e1b8c4506f9d2e3a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e9"
+        );
         assert_eq!(resp.status, "success");
     }
 
@@ -296,14 +323,41 @@ mod tests {
             .and(matchers::path("/v1/bsv/main/tx/raw"))
             .and(matchers::header("Accept", "text/plain"))
             .and(matchers::header("Content-Type", "application/json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("\"deadbeef\""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "\"a3f7d2e1b8c4506f9d2e3a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e9\"",
+            ))
             .mount(&mock_server)
             .await;
 
         let woc = WhatsOnChainBroadcasterWithUrl::new("main", &mock_server.uri());
         let tx = make_test_tx();
         let resp = woc.broadcast(&tx).await.expect("broadcast ok");
-        assert_eq!(resp.txid, "deadbeef");
+        assert_eq!(
+            resp.txid,
+            "a3f7d2e1b8c4506f9d2e3a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e9"
+        );
+    }
+
+    /// F32-18 (Quaakee): WoC `trim_matches('"')` strips multiple quote
+    /// layers; previously a 200 body of `"error: invalid"` would be
+    /// accepted as a "success" txid. Tighten validation: only 64-char
+    /// lowercase-hex passes.
+    #[tokio::test]
+    async fn test_woc_2xx_with_non_hex_body_returns_malformed() {
+        let mock_server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/bsv/main/tx/raw"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("\"error: invalid\""))
+            .mount(&mock_server)
+            .await;
+        let woc = WhatsOnChainBroadcasterWithUrl::new("main", &mock_server.uri());
+        let err = woc.broadcast(&make_test_tx()).await.unwrap_err();
+        assert_eq!(err.code, "MALFORMED_SUCCESS_BODY");
+        assert!(
+            err.description.contains("not a 64-char hex txid"),
+            "unexpected description: {}",
+            err.description
+        );
     }
 
     #[tokio::test]

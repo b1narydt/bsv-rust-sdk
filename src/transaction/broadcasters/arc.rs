@@ -35,7 +35,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
-use super::util::{parse_broadcast_body, MAX_BODY_PREVIEW_CHARS};
+use super::util::{classify_reqwest_err, parse_broadcast_body, MAX_BODY_PREVIEW_CHARS};
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -108,6 +108,7 @@ impl Broadcaster for ARC {
             status: 0,
             code: "SERIALIZE_ERROR".to_string(),
             description: format!("failed to serialize transaction to EF: {}", e),
+            ..Default::default()
         })?;
 
         let mut request = self
@@ -132,10 +133,14 @@ impl Broadcaster for ARC {
             }
         }
 
-        let response = request.send().await.map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "NETWORK_ERROR".to_string(),
-            description: format!("network error: {}", e),
+        let response = request.send().await.map_err(|e| {
+            let (code, description) = classify_reqwest_err(&e);
+            BroadcastFailure {
+                status: 0,
+                code: code.to_string(),
+                description,
+                ..Default::default()
+            }
         })?;
 
         let (status, body) = parse_broadcast_body(response).await?;
@@ -156,12 +161,11 @@ impl Broadcaster for ARC {
                 "MINED_IN_STALE_BLOCK",
             ];
 
-            // Distinguish "field absent" (Null — acceptable, treat as empty
-            // string) from "field present but not a string" (Number, Object,
-            // …) — the latter is a malformed ARC response that must surface
-            // as MALFORMED_SUCCESS_BODY rather than be silently coerced to
-            // "" and treated as "no error". Real ARC servers always return
-            // string txStatus per the bitcoin-sv/arc OpenAPI spec.
+            // Distinguish "field absent" (Null — acceptable) from "field
+            // present but not a string" (Number, Object, …) — the latter is
+            // a malformed ARC response that must surface as
+            // MALFORMED_SUCCESS_BODY. Real ARC servers always return string
+            // txStatus per the bitcoin-sv/arc OpenAPI spec.
             for key in ["txStatus", "extraInfo"] {
                 let v = &body[key];
                 if !v.is_null() && !v.is_string() {
@@ -171,9 +175,42 @@ impl Broadcaster for ARC {
                         description: format!(
                             "ARC ({status}) returned 2xx with non-string `{key}`: {body}"
                         ),
+                        ..Default::default()
                     });
                 }
             }
+            // `competingTxs` must be an array of strings per OpenAPI;
+            // anything else (number / object / non-string element) is a
+            // malformed body. Validate before extracting.
+            let competing = &body["competingTxs"];
+            if !competing.is_null() && !competing.is_array() {
+                return Err(BroadcastFailure {
+                    status,
+                    code: "MALFORMED_SUCCESS_BODY".to_string(),
+                    description: format!(
+                        "ARC ({status}) returned 2xx with non-array `competingTxs`: {body}"
+                    ),
+                    ..Default::default()
+                });
+            }
+            if let Some(arr) = competing.as_array() {
+                if arr.iter().any(|v| !v.is_string()) {
+                    return Err(BroadcastFailure {
+                        status,
+                        code: "MALFORMED_SUCCESS_BODY".to_string(),
+                        description: format!(
+                            "ARC ({status}) `competingTxs` array element is not a string: {body}"
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+            let competing_txs: Option<Vec<String>> = competing.as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+
             let tx_status_raw = body["txStatus"].as_str().unwrap_or("");
             let extra_info_raw = body["extraInfo"].as_str().unwrap_or("");
             let tx_status_upper = tx_status_raw.to_ascii_uppercase();
@@ -183,41 +220,25 @@ impl Broadcaster for ARC {
                 tx_status_upper.contains("ORPHAN") || extra_info_upper.contains("ORPHAN");
 
             if is_error_status || is_orphan {
-                let body_txid = body["txid"].as_str().unwrap_or("").to_string();
+                let body_txid = body["txid"]
+                    .as_str()
+                    .map(String::from)
+                    .filter(|s| !s.is_empty());
                 let code = if tx_status_upper.is_empty() {
                     "UNKNOWN".to_string()
                 } else {
                     tx_status_upper.clone()
                 };
-                let mut description = format!("{} {}", tx_status_raw, extra_info_raw);
-                let trimmed_desc = description.trim().to_string();
-                description = trimmed_desc;
-                // BroadcastFailure has no `more`/`competingTxs` field today
-                // (see broadcaster.rs); surface competingTxs in the
-                // description so downstream callers can still observe them.
-                if let Some(competing) = body.get("competingTxs") {
-                    if !competing.is_null() {
-                        let competing_str = competing.to_string();
-                        if !competing_str.is_empty() && competing_str != "null" {
-                            description = if description.is_empty() {
-                                format!("competingTxs={}", competing_str)
-                            } else {
-                                format!("{} competingTxs={}", description, competing_str)
-                            };
-                        }
-                    }
-                }
-                if !body_txid.is_empty() {
-                    description = if description.is_empty() {
-                        format!("txid={}", body_txid)
-                    } else {
-                        format!("{} txid={}", description, body_txid)
-                    };
-                }
+                let description = format!("{tx_status_raw} {extra_info_raw}")
+                    .trim()
+                    .to_string();
                 return Err(BroadcastFailure {
                     status,
                     code,
                     description,
+                    txid: body_txid,
+                    competing_txs,
+                    more: Some(body.clone()),
                 });
             }
 
@@ -226,10 +247,8 @@ impl Broadcaster for ARC {
                 return Err(BroadcastFailure {
                     status,
                     code: "MALFORMED_SUCCESS_BODY".to_string(),
-                    description: format!(
-                        "ARC ({}) returned 2xx but no txid in body: {}",
-                        status, body
-                    ),
+                    description: format!("ARC ({status}) returned 2xx but no txid in body: {body}"),
+                    ..Default::default()
                 });
             }
             // Surface txStatus + extraInfo together (matches canonical TS
@@ -247,32 +266,47 @@ impl Broadcaster for ARC {
                 status: "success".to_string(),
                 txid,
                 message,
+                competing_txs,
             })
         } else {
-            // Non-2xx with valid JSON body. Prefer structured ARC error keys
-            // (`code`, `description`, `message`); when none are present,
-            // append the (truncated) body itself so operators can debug
-            // out-of-spec ARC servers / gateway HTML / `{"errors":[...]}`
-            // shapes that don't match the canonical envelope.
-            let code = body["code"]
+            // Non-2xx with valid JSON body.
+            //
+            // F32-4 (Quaakee): canonical TS ARC.ts:189-195 uses
+            // `response.status.toString()` for `code` — Rust now matches.
+            // Any structured `body.code` is preserved on `more` so
+            // callers can recover it.
+            //
+            // F32-3 (Quaakee): canonical TS ARC.ts:213-215 reads
+            // `body.detail` (RFC-7807 problem-details — what real ARC
+            // servers actually emit). Fallback chain `detail → description
+            // → title → message` keeps strict canonical-ARC behavior while
+            // tolerating self-hosted variants.
+            let code = status.to_string();
+            let mut description = body["detail"]
                 .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| status.to_string());
-            let mut description = body["description"]
-                .as_str()
+                .or_else(|| body["description"].as_str())
+                .or_else(|| body["title"].as_str())
                 .or_else(|| body["message"].as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
             if description.is_empty() {
                 let raw = body.to_string();
                 let preview: String = raw.chars().take(MAX_BODY_PREVIEW_CHARS).collect();
-                description =
-                    format!("ARC ({status}) returned no `description`/`message`; body: {preview}");
+                description = format!(
+                    "ARC ({status}) returned no `detail`/`description`/`title`/`message`; body: {preview}"
+                );
             }
+            let body_txid = body["txid"]
+                .as_str()
+                .map(String::from)
+                .filter(|s| !s.is_empty());
             Err(BroadcastFailure {
                 status,
                 code,
                 description,
+                txid: body_txid,
+                more: Some(body.clone()),
+                ..Default::default()
             })
         }
     }
@@ -395,12 +429,44 @@ mod tests {
         let result = arc.broadcast(&make_test_tx_with_source()).await;
         let err = result.unwrap_err();
         assert_eq!(err.status, 400);
-        assert_eq!(err.code, "ERR_BAD_REQUEST");
+        // Canonical TS ARC.ts:189-195 uses `response.status.toString()` as
+        // the code; structured `body.code` (when present) is preserved on
+        // `more`. Cross-SDK retry policies keying on `code` now match.
+        assert_eq!(err.code, "400");
+        // Body's structured `code` is recoverable via `more`.
+        let more = err.more.as_ref().expect("more should carry raw body");
+        assert_eq!(more["code"].as_str(), Some("ERR_BAD_REQUEST"));
         assert!(
             err.description.contains("Invalid transaction"),
             "expected description to contain 'Invalid transaction', got: {}",
             err.description
         );
+    }
+
+    /// Canonical TS ARC.ts:213-215 reads `body.detail` (RFC-7807 problem-
+    /// details — what real ARC servers actually emit). PR previously fell
+    /// through to a body preview when `detail` was the only error field.
+    #[tokio::test]
+    async fn test_arc_failure_uses_rfc7807_detail_field() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "type": "https://example.com/probs/bad-request",
+                "title": "Bad Request",
+                "status": 400,
+                "detail": "transaction has invalid script"
+            })))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 400);
+        assert_eq!(err.code, "400");
+        assert_eq!(err.description, "transaction has invalid script");
     }
 
     #[tokio::test]
@@ -486,11 +552,37 @@ mod tests {
             "expected extraInfo in description, got: {}",
             err.description
         );
-        assert!(
-            err.description.contains("abc123"),
-            "expected competingTxs surfaced in description, got: {}",
-            err.description
+        // competingTxs is now exposed as a typed Option<Vec<String>> on
+        // BroadcastFailure rather than being mangled into the description.
+        assert_eq!(
+            err.competing_txs.as_deref(),
+            Some(&["abc123".to_string()][..])
         );
+        // Failure-path txid is also exposed structurally.
+        assert_eq!(err.txid.as_deref(), Some("deadbeef"));
+    }
+
+    /// `competingTxs` must be a JSON array per the OpenAPI spec; a non-
+    /// array (e.g. a stringified array, an integer) must surface as
+    /// MALFORMED_SUCCESS_BODY rather than be silently coerced.
+    #[tokio::test]
+    async fn test_arc_2xx_with_non_array_competing_txs_returns_malformed() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": "deadbeef",
+                "txStatus": "DOUBLE_SPEND_ATTEMPTED",
+                "competingTxs": 42
+            })))
+            .mount(&mock_server)
+            .await;
+        let arc = ARC::new(&mock_server.uri(), ArcConfig::default());
+        let err = arc
+            .broadcast(&make_test_tx_with_source())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "MALFORMED_SUCCESS_BODY");
     }
 
     /// ARC.ts matches ORPHAN as a substring (case-insensitive) in either
@@ -599,5 +691,36 @@ mod tests {
             "default_deployment_id returned the same value twice — \
              getrandom may be broken"
         );
+    }
+
+    /// F32-33 (Quaakee): custom headers configured via `ArcConfig.headers`
+    /// must be emitted on the wire. Previously the merge loop was
+    /// untested.
+    #[tokio::test]
+    async fn test_arc_custom_headers_passthrough() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tx"))
+            .and(header("X-Custom-A", "alpha"))
+            .and(header("X-Custom-B", "beta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": "deadbeef",
+                "txStatus": "SEEN_ON_NETWORK"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let cfg = ArcConfig {
+            headers: Some(vec![
+                ("X-Custom-A".to_string(), "alpha".to_string()),
+                ("X-Custom-B".to_string(), "beta".to_string()),
+            ]),
+            ..ArcConfig::default()
+        };
+        let arc = ARC::new(&mock_server.uri(), cfg);
+        arc.broadcast(&make_test_tx_with_source())
+            .await
+            .expect("broadcast ok");
+        mock_server.verify().await;
     }
 }

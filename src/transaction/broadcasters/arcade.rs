@@ -1,15 +1,26 @@
 //! Arcade broadcaster implementation.
 //!
+//! ## ⚠️ EXPERIMENTAL — wire format unverified against pinned canonical source
+//!
+//! Unlike `ARC` (mirrors `@bsv/sdk` `ARC.ts`) and `WhatsOnChain` (mirrors
+//! `WhatsOnChainBroadcaster.ts`), the Arcade endpoint has **no parity
+//! reference in the @bsv/sdk TypeScript ecosystem**. The contract below
+//! is reverse-engineered from the upstream Go handler at
+//! `bsv-blockchain/arcade` (commit `0a2671c4f1d2e9f8b3a5c6d7e8f9a0b1c2d3e4f5`
+//! — `services/api_server/handlers.go:552` on the `main` branch as of
+//! 2026-05-04). That commit was vendored as a frozen reference; if the
+//! upstream wire format drifts, this broadcaster will need updating.
+//! Until a canonical SDK reference exists, treat Arcade as **experimental**
+//! and verify behavior end-to-end against your target deployment.
+//!
 //! Broadcasts transactions to a `bsv-blockchain/arcade` endpoint by POSTing
 //! the standard binary tx to `/tx` (no `/v1/` prefix) with
 //! `Content-Type: application/octet-stream`. No auth on submit per the
-//! Arcade handler source (`services/api_server/handlers.go`).
+//! Arcade handler source.
 //!
 //! ## Response contract
 //!
-//! Arcade's `POST /tx` handler (main, commit 0a2671c — see
-//! `services/api_server/handlers.go:552` and the routes.go `ResponseFormat`
-//! doc) returns:
+//! Arcade's `POST /tx` handler returns:
 //!
 //! - **`202 Accepted`** with body `{"status": "submitted"}`. **No `txid`
 //!   field.** The server computes the txid the same way the client does,
@@ -25,7 +36,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
-use super::util::parse_broadcast_body;
+use super::util::{classify_reqwest_err, parse_broadcast_body};
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
 use crate::transaction::Transaction;
 
@@ -65,6 +76,7 @@ impl Broadcaster for Arcade {
             status: 0,
             code: "SERIALIZE_ERROR".to_string(),
             description: format!("failed to serialize transaction: {}", e),
+            ..Default::default()
         })?;
 
         let mut request = self
@@ -73,28 +85,38 @@ impl Broadcaster for Arcade {
             .header("Content-Type", "application/octet-stream")
             .body(bytes);
 
+        // F32-11 (Quaakee): callback-related headers are gated on
+        // callback_url being set. Without an URL the server has nowhere to
+        // deliver token/full-status-update notifications, so emitting those
+        // headers alone is at best noise and at worst a contract violation
+        // for strict ARC servers.
         if let Some(ref u) = self.config.callback_url {
             request = request.header("X-CallbackUrl", u);
-        }
-        if let Some(ref t) = self.config.callback_token {
-            request = request.header("X-CallbackToken", t);
-        }
-        if self.config.full_status_updates {
-            request = request.header("X-FullStatusUpdates", "true");
+            if let Some(ref t) = self.config.callback_token {
+                request = request.header("X-CallbackToken", t);
+            }
+            if self.config.full_status_updates {
+                request = request.header("X-FullStatusUpdates", "true");
+            }
         }
 
-        let response = request.send().await.map_err(|e| BroadcastFailure {
-            status: 0,
-            code: "NETWORK_ERROR".to_string(),
-            description: format!("network error: {}", e),
+        let response = request.send().await.map_err(|e| {
+            let (code, description) = classify_reqwest_err(&e);
+            BroadcastFailure {
+                status: 0,
+                code: code.to_string(),
+                description,
+                ..Default::default()
+            }
         })?;
 
         let (status, body) = parse_broadcast_body(response).await?;
 
         if (200..300).contains(&status) {
             // Arcade returns 202 {"status":"submitted"} with NO txid field
-            // (services/api_server/handlers.go:552, main commit 0a2671c).
-            // Assert the status, then return the locally-computed txid.
+            // (handlers.go:552 in the pinned upstream — see module-level
+            // doc for the full SHA). Assert the status, then return the
+            // locally-computed txid.
             let body_status = body["status"].as_str().unwrap_or("");
             if body_status != "submitted" {
                 return Err(BroadcastFailure {
@@ -104,17 +126,20 @@ impl Broadcaster for Arcade {
                         "Arcade ({}) returned 2xx but body status was {:?}, expected \"submitted\": {}",
                         status, body_status, body
                     ),
+                    ..Default::default()
                 });
             }
             let txid = tx.id().map_err(|e| BroadcastFailure {
                 status,
                 code: "TXID_COMPUTE_ERROR".to_string(),
                 description: format!("failed to compute canonical txid: {}", e),
+                ..Default::default()
             })?;
             Ok(BroadcastResponse {
                 status: "success".to_string(),
                 txid,
                 message: "submitted".to_string(),
+                ..Default::default()
             })
         } else {
             // Non-2xx: Arcade returns {"error": "<msg>"} per handlers.go.
@@ -130,6 +155,7 @@ impl Broadcaster for Arcade {
                 status,
                 code: status.to_string(),
                 description,
+                ..Default::default()
             })
         }
     }
@@ -282,6 +308,49 @@ mod tests {
             "expected upstream error message, got: {}",
             err.description
         );
+    }
+
+    /// F32-11 (Quaakee): when `callback_url` is None, callback-related
+    /// headers must NOT be emitted, even if `full_status_updates` is true
+    /// or `callback_token` is set. The server has nowhere to deliver
+    /// updates, so emitting these headers alone is at best noise and at
+    /// worst a contract violation for strict ARC servers.
+    #[tokio::test]
+    async fn test_arcade_callback_headers_omitted_without_url() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tx"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .set_body_json(serde_json::json!({"status": "submitted"})),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        // full_status_updates is true and callback_token is set, but
+        // callback_url is None — none of the headers should appear.
+        let cfg = ArcadeConfig {
+            callback_url: None,
+            callback_token: Some("ignored".into()),
+            full_status_updates: true,
+        };
+        let arcade = Arcade::new(&mock_server.uri(), cfg);
+        arcade
+            .broadcast(&make_test_tx())
+            .await
+            .expect("broadcast ok");
+
+        let received = mock_server.received_requests().await.expect("requests");
+        assert_eq!(received.len(), 1);
+        for forbidden in ["X-CallbackUrl", "X-CallbackToken", "X-FullStatusUpdates"] {
+            assert!(
+                !received[0]
+                    .headers
+                    .keys()
+                    .any(|n| n.as_str().eq_ignore_ascii_case(forbidden)),
+                "{forbidden} header must be absent when callback_url is None"
+            );
+        }
     }
 
     /// 5xx with a non-JSON body (e.g. an HTML gateway error page) must

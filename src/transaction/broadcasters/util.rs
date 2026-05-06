@@ -6,6 +6,35 @@
 
 use crate::transaction::broadcaster::BroadcastFailure;
 
+/// Classify a `reqwest::Error` from a `.send()` or body-read into a stable
+/// failure code so retry policy can distinguish transient (timeout,
+/// connect-refused) from permanent (request-build) and truly-unknown.
+///
+/// Returns `(code, description)`:
+/// - `"NETWORK_TIMEOUT"` — `is_timeout()`; retry-friendly
+/// - `"NETWORK_CONNECT"` — `is_connect()`; DNS / TLS / refused; retry-friendly
+/// - `"NETWORK_REQUEST"` — `is_request()`; malformed request, do not retry
+/// - `"NETWORK_ERROR"`   — fallback (mid-body, decoder, unknown)
+///
+/// Mirrors canonical TS error-classification but at richer granularity than
+/// TS's "all network errors look the same" — Rust strictly improves over TS.
+pub(crate) fn classify_reqwest_err(e: &reqwest::Error) -> (&'static str, String) {
+    let code = if e.is_timeout() {
+        "NETWORK_TIMEOUT"
+    } else if e.is_connect() {
+        "NETWORK_CONNECT"
+    } else if e.is_request() {
+        "NETWORK_REQUEST"
+    } else {
+        "NETWORK_ERROR"
+    };
+    let desc = match std::error::Error::source(e) {
+        Some(s) => format!("network error ({code}): {e} (source: {s})"),
+        None => format!("network error ({code}): {e}"),
+    };
+    (code, desc)
+}
+
 /// Maximum number of body characters echoed back inside a `BroadcastFailure`
 /// description on parse failure. The bound is enforced via `chars().take(N)`
 /// (UTF-8-codepoint-safe), so the unit is chars, not bytes — a body of
@@ -39,6 +68,7 @@ pub(super) async fn parse_broadcast_body(
         status,
         code: "READ_ERROR".to_string(),
         description: format!("failed to read response body: {e}"),
+        ..Default::default()
     })?;
 
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -62,6 +92,7 @@ pub(super) async fn parse_broadcast_body(
                 status,
                 code,
                 description: format!("non-JSON body: ({e}): {preview}"),
+                ..Default::default()
             })
         }
     }

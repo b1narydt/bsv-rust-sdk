@@ -18,6 +18,7 @@ use super::types::{
 };
 use crate::services::ServicesError;
 use crate::transaction::broadcaster::{BroadcastFailure, BroadcastResponse, Broadcaster};
+use crate::transaction::broadcasters::util::{classify_reqwest_err, MAX_BODY_PREVIEW_CHARS};
 use crate::transaction::transaction::write_varint_to_vec;
 use crate::transaction::Transaction;
 
@@ -41,12 +42,21 @@ struct InterestedHostsCacheEntry {
 /// `interestedHostsCache` + `interestedHostsInFlight` (`SHIPBroadcaster.ts:137-139`).
 /// The cache is per-broadcaster-instance, valid only for the topic set the
 /// broadcaster was constructed with.
+/// Payload published by the in-flight SHIP-query leader.
+///
+/// `Err(String)` carries the leader's error message so concurrent followers
+/// receive the actual cause (timeout / lookup-server 5xx / BEEF decode
+/// failure) rather than just `RecvError::Closed`. `String` is used (not
+/// `ServicesError`) because `broadcast::Sender` requires `Clone` on the
+/// payload and `ServicesError` is not `Clone`.
+type DiscoveryResult = Result<HashMap<String, HashSet<String>>, String>;
+
 struct InterestedHostsCache {
     cached: Option<InterestedHostsCacheEntry>,
     /// Sender side of an in-flight SHIP query. While present, concurrent
     /// callers subscribe and await the leader's broadcast rather than
     /// firing duplicate queries (`SHIPBroadcaster.ts:478-489`).
-    in_flight: Option<broadcast::Sender<HashMap<String, HashSet<String>>>>,
+    in_flight: Option<broadcast::Sender<DiscoveryResult>>,
 }
 
 impl InterestedHostsCache {
@@ -156,7 +166,7 @@ impl TopicBroadcaster {
 
         // Decide our role: cache hit (return immediately), follower (await
         // leader's broadcast), or leader (fetch + publish).
-        let mut follower_rx: Option<broadcast::Receiver<HashMap<String, HashSet<String>>>> = None;
+        let mut follower_rx: Option<broadcast::Receiver<DiscoveryResult>> = None;
         {
             let mut guard = self.cache.lock().await;
 
@@ -177,13 +187,22 @@ impl TopicBroadcaster {
         }
 
         if let Some(mut rx) = follower_rx {
-            // Follower path: await the leader. RecvError::Closed means the
-            // leader errored (its sender was dropped without sending) —
-            // surface as a typed overlay error so concurrent callers don't
-            // silently retry into a sustained outage.
-            return rx.recv().await.map(|hosts| (hosts, 0)).map_err(|e| {
-                ServicesError::Overlay(format!("SHIP host discovery failed (leader errored): {e}"))
-            });
+            // Follower path: await the leader's published Result.
+            //
+            // F32-20 (Quaakee): the channel now carries `Result<_, String>`
+            // so the leader's actual error (timeout / lookup-server 5xx /
+            // BEEF decode failure) propagates rather than collapsing to
+            // `RecvError::Closed`. `Err(RecvError)` itself only fires if
+            // the leader panicked before sending (channel dropped).
+            return match rx.recv().await {
+                Ok(Ok(hosts)) => Ok((hosts, 0)),
+                Ok(Err(msg)) => Err(ServicesError::Overlay(format!(
+                    "SHIP host discovery failed (leader errored): {msg}"
+                ))),
+                Err(e) => Err(ServicesError::Overlay(format!(
+                    "SHIP host discovery channel closed unexpectedly: {e}"
+                ))),
+            };
         }
 
         // Leader path: do the SHIP query OUTSIDE the cache lock so followers
@@ -195,21 +214,24 @@ impl TopicBroadcaster {
         // SHIPBroadcaster.ts:487-488).
         let mut guard = self.cache.lock().await;
         let tx_opt = guard.in_flight.take();
-        if let Ok((hosts, _decode_failures)) = &result {
-            guard.cached = Some(InterestedHostsCacheEntry {
-                hosts: hosts.clone(),
-                expires_at: Instant::now() + self.interested_hosts_ttl,
-            });
-            if let Some(tx) = &tx_opt {
-                // Best-effort wake of followers; if no followers subscribed
-                // (capacity not consumed) `send` returns Err which we
-                // discard — leader's own return path is unaffected.
-                let _ = tx.send(hosts.clone());
+        match &result {
+            Ok((hosts, _decode_failures)) => {
+                guard.cached = Some(InterestedHostsCacheEntry {
+                    hosts: hosts.clone(),
+                    expires_at: Instant::now() + self.interested_hosts_ttl,
+                });
+                if let Some(tx) = &tx_opt {
+                    let _ = tx.send(Ok(hosts.clone()));
+                }
+            }
+            Err(e) => {
+                // Send the error string so followers don't await forever
+                // and don't silently retry past a sustained outage.
+                if let Some(tx) = &tx_opt {
+                    let _ = tx.send(Err(e.to_string()));
+                }
             }
         }
-        // Drop tx_opt (and the channel) after the lock is released. If the
-        // SHIP query errored, dropping the sender closes the channel and
-        // any followers see RecvError::Closed.
         drop(guard);
         drop(tx_opt);
 
@@ -319,11 +341,13 @@ impl TopicBroadcaster {
             tagged_beef.beef.clone()
         };
 
-        let response = request
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| ServicesError::Http(e.to_string()))?;
+        let response = request.body(body).send().await.map_err(|e| {
+            // Classified network code embedded in the message string so
+            // host-reputation and retry layers grepping these errors can
+            // distinguish timeout / connect-refused / request-build.
+            let (code, description) = classify_reqwest_err(&e);
+            ServicesError::Http(format!("[{code}] {description}"))
+        })?;
 
         if response.status().is_success() {
             response
@@ -331,9 +355,15 @@ impl TopicBroadcaster {
                 .await
                 .map_err(|e| ServicesError::Serialization(e.to_string()))
         } else {
+            // F32-14 (Quaakee): read non-2xx body for diagnostic. Overlay
+            // hosts emit `{"error": ..., "code": ...}` on failure;
+            // previously the body was dropped. Bounded preview keeps memory
+            // safe and parity-preserves TS at the diagnostic level.
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            let preview: String = body_text.chars().take(MAX_BODY_PREVIEW_CHARS).collect();
             Err(ServicesError::Http(format!(
-                "Broadcast failed: HTTP {}",
-                response.status()
+                "Broadcast failed: HTTP {status}: {preview}"
             )))
         }
     }
@@ -490,6 +520,7 @@ impl TopicBroadcaster {
                     status: 0,
                     code: "ERR_HOST_DISCOVERY".to_string(),
                     description: e.to_string(),
+                    ..Default::default()
                 })?;
 
         if interested_hosts.is_empty() {
@@ -511,6 +542,7 @@ impl TopicBroadcaster {
                     "No {:?} hosts are interested in receiving this transaction{}",
                     self.network, decode_suffix
                 ),
+                ..Default::default()
             });
         }
 
@@ -577,6 +609,7 @@ impl TopicBroadcaster {
                         details
                     )
                 },
+                ..Default::default()
             });
         }
 
@@ -588,6 +621,7 @@ impl TopicBroadcaster {
                 status: 0,
                 code: code.to_string(),
                 description: reason,
+                ..Default::default()
             });
         }
 
@@ -621,6 +655,7 @@ impl TopicBroadcaster {
             status: "success".to_string(),
             txid,
             message,
+            ..Default::default()
         })
     }
 }
@@ -633,12 +668,14 @@ impl Broadcaster for TopicBroadcaster {
             status: 0,
             code: "ERR_BEEF_SERIALIZE".to_string(),
             description: format!("Transaction must be serializable to BEEF: {}", e),
+            ..Default::default()
         })?;
 
         let txid = tx.id().map_err(|e| BroadcastFailure {
             status: 0,
             code: "ERR_TXID_COMPUTE".to_string(),
             description: format!("Failed to compute txid: {}", e),
+            ..Default::default()
         })?;
 
         self.broadcast_beef_inner(beef, None, txid).await
@@ -655,11 +692,13 @@ fn parse_beef_for_txid(beef: &[u8]) -> Result<String, BroadcastFailure> {
         status: 0,
         code: "ERR_BEEF_PARSE".to_string(),
         description: format!("Failed to parse BEEF: {e}"),
+        ..Default::default()
     })?;
     tx.id().map_err(|e| BroadcastFailure {
         status: 0,
         code: "ERR_TXID_COMPUTE".to_string(),
         description: format!("Failed to compute txid from BEEF: {e}"),
+        ..Default::default()
     })
 }
 
