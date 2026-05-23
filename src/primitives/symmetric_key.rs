@@ -243,19 +243,21 @@ mod tests {
 
     #[test]
     fn test_encrypt_with_iv_deterministic() {
-        // Self-byte-lock: fixed (key, iv, plaintext) → fixed ciphertext hex.
-        // Acts as a regression fence on the seam.
+        // Hard byte-lock: fixed (key, iv, plaintext) → fixed ciphertext hex.
+        // Acts as a regression fence on the seam — any future change to the
+        // IV-derivation, key-derivation, or AEAD args will fail this exact match.
         let key = SymmetricKey::from_bytes(&[0x42u8; 32]).unwrap();
         let iv = [0x07u8; 32];
         let plaintext = b"deterministic test";
-        let ct1 = key.encrypt_with_iv(plaintext, &iv).unwrap();
-        let ct2 = key.encrypt_with_iv(plaintext, &iv).unwrap();
-        // Same inputs → identical bytes (proves no internal randomness).
-        assert_eq!(ct1, ct2);
-        // Layout: IV(32) || ciphertext(plaintext_len) || tag(16)
-        assert_eq!(ct1.len(), 32 + plaintext.len() + 16);
-        // IV is prepended verbatim
-        assert_eq!(&ct1[..32], &iv);
+        let ct = key.encrypt_with_iv(plaintext, &iv).unwrap();
+
+        // Hard-coded expected output (captured from a known-good reference run).
+        const EXPECTED_HEX: &str = "070707070707070707070707070707070707070707070707070707070707070767d8ad1a0389e26b420c948718d57def0d4fc1293a77d8ecb542aed22b87d6942025";
+        assert_eq!(hex::encode(&ct), EXPECTED_HEX);
+
+        // Layout sanity: IV(32) || ciphertext(plaintext_len) || tag(16)
+        assert_eq!(ct.len(), 32 + plaintext.len() + 16);
+        assert_eq!(&ct[..32], &iv);
     }
 
     #[test]
