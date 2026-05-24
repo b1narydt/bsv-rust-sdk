@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.85] - 2026-05-24
+
+### Added
+
+- **`SymmetricKey::encrypt_with_iv(plaintext, iv: &[u8; 32])`** (#33) — test-only deterministic AES-256-GCM encryption with a caller-supplied 32-byte IV. **Production code MUST continue to use `encrypt()`** — IV reuse with the same key breaks AES-GCM authenticity. Required for cross-implementation conformance byte-locks (MPC-Spec §06.16 / ADR-0030, tracking issue B1nary-Calhoun-Partnership/MPC-Spec#9). Same key derivation, same AAD framing, same output layout `IV(32) || ciphertext || authTag(16)` — only the IV source differs. Mirrors the established bsv-mpc precedent `wrap_round_message_deterministic`.
+- **`ProtoWallet::encrypt_with_iv_sync(plaintext, protocol, key_id, counterparty, iv: &[u8; 32])`** (#33) — wallet-layer analog of `SymmetricKey::encrypt_with_iv`. Routes through the same `KeyDeriver::derive_symmetric_key` path as the production `encrypt_sync` so the byte-locked output matches end-to-end. Same security caveat applies — test-only.
+
+### Tests
+
+- `test_encrypt_with_iv_deterministic` + `test_encrypt_with_iv_decrypts_via_encrypt` on `SymmetricKey`. Hard-coded `EXPECTED_HEX` regression fence on the deterministic path.
+- `test_encrypt_with_iv_sync_byte_locks_under_fixed_inputs` on `ProtoWallet`. Hard-coded `EXPECTED_HEX` byte-lock proving the wallet-layer key derivation is byte-identical between `encrypt_sync` and `encrypt_with_iv_sync`.
+
 ## [0.2.84] - 2026-05-06
 
 ### Fixed
