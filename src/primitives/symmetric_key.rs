@@ -67,6 +67,27 @@ impl SymmetricKey {
         Ok(result)
     }
 
+    /// Test-only deterministic encryption with a caller-supplied 32-byte IV.
+    ///
+    /// **Production code MUST use [`encrypt`] instead.** Reusing an IV with the
+    /// same key irrecoverably breaks AES-GCM authenticity (forgery becomes
+    /// trivial). This entry point exists so cross-impl conformance vectors can
+    /// byte-lock the canonical wire format. See MPC-Spec §06.16 and ADR-0030.
+    ///
+    /// Returns IV(32) || ciphertext || authTag(16) — identical layout to [`encrypt`].
+    pub fn encrypt_with_iv(
+        &self,
+        plaintext: &[u8],
+        iv: &[u8; 32],
+    ) -> Result<Vec<u8>, PrimitivesError> {
+        let key_bytes = self.key.to_array(Endian::Big, Some(32));
+        let ct_and_tag = aes_gcm_encrypt_ts_compat(&key_bytes, iv, plaintext)?;
+        let mut result = Vec::with_capacity(iv.len() + ct_and_tag.len());
+        result.extend_from_slice(iv);
+        result.extend_from_slice(&ct_and_tag);
+        Ok(result)
+    }
+
     /// Decrypt data encrypted with `encrypt`.
     ///
     /// Expects format: IV(32) || ciphertext || authTag(16).
@@ -218,5 +239,36 @@ mod tests {
         let key = SymmetricKey::from_random();
         let hex = key.to_hex();
         assert_eq!(hex.len(), 64);
+    }
+
+    #[test]
+    fn test_encrypt_with_iv_deterministic() {
+        // Hard byte-lock: fixed (key, iv, plaintext) → fixed ciphertext hex.
+        // Acts as a regression fence on the seam — any future change to the
+        // IV-derivation, key-derivation, or AEAD args will fail this exact match.
+        let key = SymmetricKey::from_bytes(&[0x42u8; 32]).unwrap();
+        let iv = [0x07u8; 32];
+        let plaintext = b"deterministic test";
+        let ct = key.encrypt_with_iv(plaintext, &iv).unwrap();
+
+        // Hard-coded expected output (captured from a known-good reference run).
+        const EXPECTED_HEX: &str = "070707070707070707070707070707070707070707070707070707070707070767d8ad1a0389e26b420c948718d57def0d4fc1293a77d8ecb542aed22b87d6942025";
+        assert_eq!(hex::encode(&ct), EXPECTED_HEX);
+
+        // Layout sanity: IV(32) || ciphertext(plaintext_len) || tag(16)
+        assert_eq!(ct.len(), 32 + plaintext.len() + 16);
+        assert_eq!(&ct[..32], &iv);
+    }
+
+    #[test]
+    fn test_encrypt_with_iv_decrypts_via_encrypt() {
+        // Output of encrypt_with_iv must decrypt successfully via the standard `decrypt` path.
+        // Proves seam emits the same on-the-wire format as `encrypt`.
+        let key = SymmetricKey::from_random();
+        let iv = [0x11u8; 32];
+        let plaintext = b"round trip via decrypt";
+        let ct = key.encrypt_with_iv(plaintext, &iv).unwrap();
+        let pt = key.decrypt(&ct).unwrap();
+        assert_eq!(pt, plaintext);
     }
 }

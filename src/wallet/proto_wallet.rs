@@ -222,6 +222,31 @@ impl ProtoWallet {
         Ok(sym_key.encrypt(plaintext)?)
     }
 
+    /// Test-only deterministic encryption with a caller-supplied 32-byte IV.
+    ///
+    /// **Production code MUST use [`encrypt_sync`] (or the async [`encrypt`]
+    /// trait method).** Reusing an IV with the same key breaks AES-GCM
+    /// authenticity. This entry point exists so cross-impl conformance vectors
+    /// can byte-lock the canonical wire format. See MPC-Spec §06.16 / ADR-0030.
+    ///
+    /// Returns IV(32) || ciphertext || auth tag(16) — identical layout to
+    /// [`encrypt_sync`]. Key derivation path is identical; only the IV source
+    /// differs.
+    pub fn encrypt_with_iv_sync(
+        &self,
+        plaintext: &[u8],
+        protocol: &Protocol,
+        key_id: &str,
+        counterparty: &Counterparty,
+        iv: &[u8; 32],
+    ) -> Result<Vec<u8>, WalletError> {
+        let effective = self.default_counterparty(counterparty, CounterpartyType::Self_);
+        let sym_key = self
+            .key_deriver
+            .derive_symmetric_key(protocol, key_id, &effective)?;
+        Ok(sym_key.encrypt_with_iv(plaintext, iv)?)
+    }
+
     /// Decrypt ciphertext using a derived symmetric key (AES-GCM).
     ///
     /// Derives the same symmetric key used for encryption and decrypts.
@@ -1539,5 +1564,55 @@ mod tests {
             .unwrap();
         assert_eq!(pt1, plaintext);
         assert_eq!(pt2, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_with_iv_sync_byte_locks_under_fixed_inputs() {
+        // Proves the wallet-layer key-derivation path is byte-identical between
+        // encrypt_sync and encrypt_with_iv_sync — only the IV source differs.
+        let identity = PrivateKey::from_bytes(&[0x01u8; 32]).unwrap();
+        let wallet = ProtoWallet::new(identity);
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "mpcpresig".to_string(),
+        };
+        let key_id = "byte-lock-test-001";
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Self_,
+            public_key: None,
+        };
+        let plaintext = b"presig spare plaintext 32 bytesx";
+        let iv = [0x0au8; 32];
+
+        let ct1 = wallet
+            .encrypt_with_iv_sync(plaintext, &protocol, key_id, &counterparty, &iv)
+            .unwrap();
+        let ct2 = wallet
+            .encrypt_with_iv_sync(plaintext, &protocol, key_id, &counterparty, &iv)
+            .unwrap();
+
+        // Determinism
+        assert_eq!(ct1, ct2);
+        // Layout: IV(32) || ciphertext(plaintext.len()) || tag(16)
+        assert_eq!(ct1.len(), 32 + plaintext.len() + 16);
+        // IV is prepended verbatim
+        assert_eq!(&ct1[..32], &iv);
+        // Decrypts via the production sync path (same key derivation)
+        let pt = wallet
+            .decrypt_sync(&ct1, &protocol, key_id, &counterparty)
+            .unwrap();
+        assert_eq!(pt.as_slice(), plaintext.as_slice());
+
+        // Hard-coded byte-lock: captures the canonical wire format so any
+        // regression in key derivation or AES-GCM output is caught immediately.
+        // Format: IV(32 bytes = 0x0a*32) || ciphertext(32 bytes) || tag(16 bytes).
+        // Any change to key derivation (BRC-42 ECDH-self, HMAC offset, child-key
+        // x-coord) or AES-GCM will break this assertion. See MPC-Spec §06.16.
+        const EXPECTED_HEX: &str = "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a5ecbac1cba9e03ccd3599f6e862677d0e4b2bc96b6a58f9d82b04cee442dfe61bbaab30e7674c83b7139e447f7c30c94";
+        assert_eq!(
+            hex::encode(&ct1),
+            EXPECTED_HEX,
+            "byte-lock failed: key derivation or AES-GCM output has changed"
+        );
     }
 }
