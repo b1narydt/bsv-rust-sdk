@@ -282,15 +282,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // (a) Read-lock the peers map, clone the Arc<AuthPeer>, release.
         let auth_peer = {
             let peers = self.peers.read().await;
-            peers
-                .get(&base_url)
-                .cloned()
-                .ok_or_else(|| {
-                    AuthError::TransportNotConnected(format!(
-                        "no peer for base URL: {}",
-                        base_url
-                    ))
-                })?
+            peers.get(&base_url).cloned().ok_or_else(|| {
+                AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
+            })?
         };
 
         // (b) Run the BRC-31 handshake exactly once across concurrent first
@@ -345,7 +339,12 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body);
         let request_nonce_b64 = b64_encode(&request_nonce);
 
-        let identity_key = auth_peer.identity_key.read().await.clone().unwrap_or_default();
+        let identity_key = auth_peer
+            .identity_key
+            .read()
+            .await
+            .clone()
+            .unwrap_or_default();
 
         let (response_tx, response_rx) = oneshot::channel::<Vec<u8>>();
         auth_peer
@@ -859,9 +858,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // ensure_peer didn't beat us to it (last-writer-wins would otherwise
         // orphan a peer + its dispatcher task).
         let mut peers = self.peers.write().await;
-        peers
-            .entry(base_url.to_string())
-            .or_insert(auth_peer);
+        peers.entry(base_url.to_string()).or_insert(auth_peer);
         Ok(())
     }
 }

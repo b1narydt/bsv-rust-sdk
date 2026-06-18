@@ -637,15 +637,12 @@ impl<W: WalletInterface> Peer<W> {
         let session_nonce = create_nonce(&self.wallet).await?;
 
         // Create initial session (not yet authenticated). Write lock.
-        self.session_manager
-            .write()
-            .await
-            .add_session(PeerSession {
-                session_nonce: session_nonce.clone(),
-                peer_identity_key: identity_key.to_string(),
-                peer_nonce: String::new(),
-                is_authenticated: false,
-            });
+        self.session_manager.write().await.add_session(PeerSession {
+            session_nonce: session_nonce.clone(),
+            peer_identity_key: identity_key.to_string(),
+            peer_nonce: String::new(),
+            is_authenticated: false,
+        });
 
         let identity_key_str = self.get_identity_public_key().await?;
 
@@ -999,15 +996,12 @@ impl<W: WalletInterface> Peer<W> {
 
         // Add session (authenticated -- responder trusts after signature
         // verification). Write lock.
-        self.session_manager
-            .write()
-            .await
-            .add_session(PeerSession {
-                session_nonce: session_nonce.clone(),
-                peer_identity_key: msg.identity_key.clone(),
-                peer_nonce: peer_initial_nonce.to_string(),
-                is_authenticated: true,
-            });
+        self.session_manager.write().await.add_session(PeerSession {
+            session_nonce: session_nonce.clone(),
+            peer_identity_key: msg.identity_key.clone(),
+            peer_nonce: peer_initial_nonce.to_string(),
+            is_authenticated: true,
+        });
 
         // If the peer requested certificates in their initialRequest, resolve
         // them here so we can embed the response in the single-round-trip
@@ -1212,9 +1206,7 @@ impl<W: WalletInterface> Peer<W> {
         // Push to general message channel (non-blocking). The bounded-1024
         // channel and single-consumer dispatcher make drops practically
         // impossible under normal concurrency.
-        let _ = self
-            .general_message_tx
-            .try_send((identity_key, payload));
+        let _ = self.general_message_tx.try_send((identity_key, payload));
 
         Ok(())
     }
@@ -2130,9 +2122,9 @@ mod tests {
         let mut handles = Vec::with_capacity(n);
         for msg in messages {
             let pb = peer_b_arc.clone();
-            handles.push(tokio::spawn(async move {
-                pb.verify_general_message(msg).await
-            }));
+            handles.push(tokio::spawn(
+                async move { pb.verify_general_message(msg).await },
+            ));
         }
 
         for h in handles {
