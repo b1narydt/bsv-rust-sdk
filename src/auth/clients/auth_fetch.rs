@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{oneshot, OnceCell, RwLock};
 
 use crate::auth::certificates::master::MasterCertificate;
 use crate::auth::error::AuthError;
@@ -120,12 +120,40 @@ pub struct AuthFetchResponse {
 // AuthPeer (internal)
 // ---------------------------------------------------------------------------
 
+/// Router map: base64(request_nonce) -> oneshot sender awaiting the response.
+///
+/// Every in-flight general message registers its 32-byte request nonce here
+/// before sending; the single per-peer dispatcher task (which owns
+/// `general_rx`) routes each decoded response back to the matching waiter by
+/// `key = base64(payload[..32])`. This is what lets N concurrent general
+/// messages share ONE authenticated session without stealing each other's
+/// replies.
+type ResponseRouter = Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
+
 /// Internal tracking struct for a peer associated with a base URL.
+///
+/// Shared as `Arc<AuthPeer<W>>`: every method on `AuthFetch` is `&self`, and a
+/// single `AuthPeer` may have many concurrent in-flight general messages.
 struct AuthPeer<W: WalletInterface> {
-    peer: Arc<Mutex<Peer<W>>>,
-    identity_key: Option<String>,
-    #[allow(clippy::type_complexity)]
-    general_rx: Arc<Mutex<mpsc::Receiver<(String, Vec<u8>)>>>,
+    /// The shared peer. Every `Peer` method is now `&self` (interior
+    /// mutability), so no outer `Mutex` is needed — concurrent
+    /// `create_general_message` / `verify_general_message` run lock-free
+    /// against the handshake mutex, and the handshake path serializes
+    /// internally on the peer's own `handshake` mutex.
+    peer: Arc<Peer<W>>,
+    /// Server identity key learned at handshake completion. `RwLock` so the
+    /// hot path reads it concurrently; written once when the handshake runs.
+    identity_key: RwLock<Option<String>>,
+    /// Nonce-keyed router; the dispatcher task is the single consumer of
+    /// `general_rx` and fans responses out through these oneshot senders.
+    router: ResponseRouter,
+    /// Guarantees the BRC-31 handshake runs exactly once across concurrent
+    /// first requests to this peer.
+    handshake_once: OnceCell<()>,
+    /// Transport handle (same `Arc` the Peer holds). General-message sends go
+    /// through this directly — `Transport::send` is `&self`, so network I/O
+    /// happens OUTSIDE the per-peer mutex.
+    transport: Arc<dyn Transport>,
     /// Tracks in-flight certificate exchanges for this peer. Each inbound
     /// `certificateRequest` (or handshake-embedded cert request) pushes an
     /// entry; the listener task shifts it 500ms after sending the response.
@@ -156,7 +184,11 @@ pub struct AuthFetch<W: WalletInterface + Clone + 'static> {
     wallet: W,
     certificates_to_include: Vec<MasterCertificate>,
     certificates_to_request: Option<RequestedCertificateSet>,
-    peers: HashMap<String, AuthPeer<W>>,
+    /// Per-base-URL peers, each behind an `Arc` so the hot path can clone the
+    /// handle out from under a brief read lock and operate lock-free
+    /// thereafter. The outer `RwLock` only guards the map structure (insert on
+    /// first request to a new URL), not per-request work.
+    peers: RwLock<HashMap<String, Arc<AuthPeer<W>>>>,
 }
 
 impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
@@ -166,7 +198,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             wallet,
             certificates_to_include: Vec::new(),
             certificates_to_request: None,
-            peers: HashMap::new(),
+            peers: RwLock::new(HashMap::new()),
         }
     }
 
@@ -186,7 +218,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     /// Automatically handles 402 Payment Required by creating and attaching a BSV payment
     /// transaction, then retrying up to [`DEFAULT_PAYMENT_RETRY_ATTEMPTS`] times.
     pub async fn fetch(
-        &mut self,
+        &self,
         url: &str,
         method: &str,
         body: Option<Vec<u8>>,
@@ -203,7 +235,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     /// responds with 402 Payment Required, enters the payment retry loop
     /// governed by `options.payment_retry_attempts`.
     pub async fn fetch_with_options(
-        &mut self,
+        &self,
         url: &str,
         method: &str,
         body: Option<Vec<u8>>,
@@ -233,7 +265,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     /// wait for cert exchanges, serialize and send the request, then await
     /// and deserialize the response.
     async fn do_fetch_once(
-        &mut self,
+        &self,
         url: &str,
         method: &str,
         body: Option<Vec<u8>>,
@@ -244,28 +276,44 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         let query = extract_query(url);
         let headers = headers.unwrap_or_default();
 
-        // Get or create peer for this base URL
+        // Get or create peer for this base URL.
         self.ensure_peer(&base_url).await?;
 
-        // Trigger handshake first (if not already authenticated).
-        {
-            let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
+        // (a) Read-lock the peers map, clone the Arc<AuthPeer>, release.
+        let auth_peer = {
+            let peers = self.peers.read().await;
+            peers.get(&base_url).cloned().ok_or_else(|| {
                 AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
-            })?;
-            let cached_identity = auth_peer.identity_key.as_deref().unwrap_or("").to_string();
-            let mut peer = auth_peer.peer.lock().await;
-            let session = peer.get_authenticated_session(&cached_identity).await?;
-            drop(peer);
-            if let Some(ap) = self.peers.get_mut(&base_url) {
-                ap.identity_key = Some(session.peer_identity_key.clone());
-            }
-        }
+            })?
+        };
 
-        // Block until any in-flight certificate exchanges complete.
+        // (b) Run the BRC-31 handshake exactly once across concurrent first
+        //     requests. `get_or_try_init` serializes contenders; only the
+        //     first actually performs the handshake and learns identity_key.
+        let auth_peer_for_init = auth_peer.clone();
+        auth_peer
+            .handshake_once
+            .get_or_try_init(|| async {
+                // Lock the peer briefly for the (mutable) handshake path.
+                let cached_identity = auth_peer_for_init
+                    .identity_key
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap_or_default();
+                let session = auth_peer_for_init
+                    .peer
+                    .get_authenticated_session(&cached_identity)
+                    .await?;
+                // Learn the server identity key from the completed handshake.
+                *auth_peer_for_init.identity_key.write().await =
+                    Some(session.peer_identity_key.clone());
+                Ok::<(), AuthError>(())
+            })
+            .await?;
+
+        // (c) Block until any in-flight certificate exchanges complete.
         {
-            let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
-                AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
-            })?;
             let pending = auth_peer.pending_certificate_requests.clone();
             let start = tokio::time::Instant::now();
             loop {
@@ -285,70 +333,101 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             }
         }
 
-        // Serialize the request payload
+        // (d) Serialize the request and register a router entry BEFORE sending
+        //     so the dispatcher cannot route a fast response before we wait.
         let request_nonce = crate::primitives::random::random_bytes(32);
         let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body);
         let request_nonce_b64 = b64_encode(&request_nonce);
 
-        // Send the general message via the peer
-        let auth_peer = self.peers.get(&base_url).ok_or_else(|| {
-            AuthError::TransportNotConnected(format!("no peer for base URL: {}", base_url))
-        })?;
+        let identity_key = auth_peer
+            .identity_key
+            .read()
+            .await
+            .clone()
+            .unwrap_or_default();
 
-        let identity_key = auth_peer.identity_key.clone().unwrap_or_default();
-        let general_rx = auth_peer.general_rx.clone();
+        let (response_tx, response_rx) = oneshot::channel::<Vec<u8>>();
+        auth_peer
+            .router
+            .lock()
+            .expect("router mutex poisoned")
+            .insert(request_nonce_b64.clone(), response_tx);
 
-        {
-            let mut peer = auth_peer.peer.lock().await;
-            peer.send_message(&identity_key, payload).await?;
+        // (e) SIGN via the lock-free `&self` hot path (create_general_message
+        //     only reads the SessionManager), then send over the transport.
+        //     No peer mutex is involved — N concurrent sends share one session.
+        let signed_msg = auth_peer
+            .peer
+            .create_general_message(&identity_key, payload)
+            .await;
+        let signed_msg = match signed_msg {
+            Ok(m) => m,
+            Err(e) => {
+                // Clean up the router entry we registered.
+                auth_peer
+                    .router
+                    .lock()
+                    .expect("router mutex poisoned")
+                    .remove(&request_nonce_b64);
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = auth_peer.transport.send(signed_msg).await {
+            auth_peer
+                .router
+                .lock()
+                .expect("router mutex poisoned")
+                .remove(&request_nonce_b64);
+            return Err(e);
         }
 
-        // Process any pending incoming messages
-        {
-            let mut peer = auth_peer.peer.lock().await;
-            peer.process_pending().await?;
+        // Drain the synchronous reqwest response (the HTTP transport enqueues
+        // the reply into general_rx as part of send()). `process_pending` is
+        // `&self` and serializes internally on the peer's handshake mutex; the
+        // dispatcher task routes the decoded reply.
+        if let Err(e) = auth_peer.peer.process_pending().await {
+            auth_peer
+                .router
+                .lock()
+                .expect("router mutex poisoned")
+                .remove(&request_nonce_b64);
+            return Err(e);
         }
 
-        // Wait for the response matching our nonce
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err(AuthError::Timeout(
+        // (f) Await our specific response via the oneshot, with a timeout.
+        match tokio::time::timeout(Duration::from_secs(30), response_rx).await {
+            Ok(Ok(response_payload)) => {
+                if response_payload.len() < 32 {
+                    return Err(AuthError::InvalidMessage(
+                        "general message response shorter than 32-byte nonce prefix".to_string(),
+                    ));
+                }
+                deserialize_response(&response_payload[32..])
+            }
+            Ok(Err(_)) => {
+                // Sender dropped without sending (dispatcher gone / channel
+                // closed). Ensure no stale router entry remains.
+                auth_peer
+                    .router
+                    .lock()
+                    .expect("router mutex poisoned")
+                    .remove(&request_nonce_b64);
+                Err(AuthError::TransportNotConnected(
+                    "peer general message dispatcher closed before responding".to_string(),
+                ))
+            }
+            Err(_) => {
+                // Timed out: remove our router entry so it doesn't leak.
+                auth_peer
+                    .router
+                    .lock()
+                    .expect("router mutex poisoned")
+                    .remove(&request_nonce_b64);
+                Err(AuthError::Timeout(
                     "auth fetch response timeout".to_string(),
-                ));
+                ))
             }
-
-            let msg = {
-                let mut rx = general_rx.lock().await;
-                match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
-                    Ok(Some(msg)) => msg,
-                    Ok(None) => {
-                        return Err(AuthError::TransportNotConnected(
-                            "peer general message channel closed".to_string(),
-                        ))
-                    }
-                    Err(_) => continue,
-                }
-            };
-
-            let (sender_key, response_payload) = msg;
-
-            if !sender_key.is_empty() {
-                if let Some(auth_peer) = self.peers.get_mut(&base_url) {
-                    auth_peer.identity_key = Some(sender_key);
-                }
-            }
-
-            if response_payload.len() < 32 {
-                continue;
-            }
-
-            let response_nonce_b64 = b64_encode(&response_payload[..32]);
-            if response_nonce_b64 != request_nonce_b64 {
-                continue;
-            }
-
-            return deserialize_response(&response_payload[32..]);
         }
     }
 
@@ -368,7 +447,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     /// **always calls `create_payment_context` afresh on every loop iteration**,
     /// ensuring a fresh transaction and derivation suffix each time.
     async fn handle_402_and_retry(
-        &mut self,
+        &self,
         url: &str,
         method: &str,
         body: Option<Vec<u8>>,
@@ -383,13 +462,16 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             .max(1);
 
         // The server identity key is cached from the handshake.
-        let server_identity_key = self
-            .peers
-            .get(&base_url)
-            .and_then(|p| p.identity_key.clone())
-            .ok_or_else(|| {
-                AuthError::Payment("no server identity key cached for base URL".to_string())
-            })?;
+        let server_identity_key = {
+            let peers = self.peers.read().await;
+            match peers.get(&base_url) {
+                Some(p) => p.identity_key.read().await.clone(),
+                None => None,
+            }
+        }
+        .ok_or_else(|| {
+            AuthError::Payment("no server identity key cached for base URL".to_string())
+        })?;
 
         let mut errors: Vec<PaymentErrorLogEntry> = Vec::new();
         // The 402 response we will parse payment headers from on each loop iteration.
@@ -483,7 +565,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     ///
     /// Mirrors `createPaymentContext` in TS SDK AuthFetch.ts:638-681.
     async fn create_payment_context(
-        &mut self,
+        &self,
         url: &str,
         satoshis_required: u64,
         server_identity_key: &str,
@@ -637,16 +719,20 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     /// TS SDK `AuthFetch` behaviour: pushes a marker onto the pending queue,
     /// fetches verifiable certificates from the wallet, sends the response,
     /// sleeps 500ms, then shifts the queue to release the gate on `fetch`.
-    async fn ensure_peer(&mut self, base_url: &str) -> Result<(), AuthError> {
-        if self.peers.contains_key(base_url) {
+    async fn ensure_peer(&self, base_url: &str) -> Result<(), AuthError> {
+        // Fast path: already present (read lock only).
+        if self.peers.read().await.contains_key(base_url) {
             return Ok(());
         }
 
-        // Create a new SimplifiedHTTPTransport for this base URL
+        // Create a new SimplifiedHTTPTransport for this base URL. Keep a clone
+        // of the `Arc<dyn Transport>` so AuthPeer can send general messages
+        // directly (outside the peer mutex).
         let transport = create_http_transport(base_url)?;
+        let transport_for_peer = transport.clone();
 
         // Create a new Peer
-        let mut peer = Peer::new(self.wallet.clone(), transport);
+        let peer = Peer::new(self.wallet.clone(), transport_for_peer);
 
         // Configure certificates
         if !self.certificates_to_include.is_empty() {
@@ -656,13 +742,46 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             peer.set_certificates_to_request(requested.clone());
         }
 
-        // Take the general message receiver before wrapping in Arc<Mutex>
+        // Take the general message receiver before wrapping in Arc<Mutex>.
+        // This receiver is moved into the single dispatcher task below — it is
+        // the ONLY consumer of general_rx (preserving mpsc single-consumer
+        // correctness).
         let general_rx = peer.on_general_message().ok_or_else(|| {
             AuthError::InvalidMessage("general message receiver already taken".to_string())
         })?;
 
-        let peer_arc = Arc::new(Mutex::new(peer));
+        let peer_arc = Arc::new(peer);
         let pending = Arc::new(StdMutex::new(Vec::<bool>::new()));
+        let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
+
+        // Spawn ONE dispatcher task per peer that owns general_rx for life.
+        // It routes each decoded (sender_key, payload) by
+        // key = base64(payload[..32]) to the matching oneshot waiter; drops
+        // unmatched messages. This is what makes N concurrent in-flight
+        // general messages on one session safe — each request awaits its own
+        // oneshot rather than racing to drain a shared receiver.
+        {
+            let router_dispatch = router.clone();
+            let mut general_rx = general_rx;
+            tokio::spawn(async move {
+                while let Some((_sender_key, payload)) = general_rx.recv().await {
+                    if payload.len() < 32 {
+                        continue;
+                    }
+                    let key = b64_encode(&payload[..32]);
+                    let waiter = router_dispatch
+                        .lock()
+                        .expect("router mutex poisoned")
+                        .remove(&key);
+                    if let Some(tx) = waiter {
+                        // Receiver may have already timed out and dropped; the
+                        // send error is benign in that case.
+                        let _ = tx.send(payload);
+                    }
+                    // Unmatched (no waiter) responses are dropped.
+                }
+            });
+        }
 
         // Register the cert-request listener. Captures Arc<Peer>, wallet,
         // and the pending queue. Fires synchronously inside dispatch, then
@@ -702,8 +821,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                             if !verifiable.is_empty() {
                                 let certs: Vec<Certificate> =
                                     verifiable.into_iter().map(|vc| vc.certificate).collect();
-                                let mut peer = peer_arc.lock().await;
-                                peer.send_certificate_response(&verifier_key, certs).await?;
+                                peer_arc
+                                    .send_certificate_response(&verifier_key, certs)
+                                    .await?;
                             }
                             Ok(())
                         }
@@ -722,20 +842,23 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                 },
             );
 
-            peer_arc
-                .lock()
-                .await
-                .listen_for_certificates_requested(listener);
+            peer_arc.listen_for_certificates_requested(listener);
         }
 
-        let auth_peer = AuthPeer {
+        let auth_peer = Arc::new(AuthPeer {
             peer: peer_arc,
-            identity_key: None,
-            general_rx: Arc::new(Mutex::new(general_rx)),
+            identity_key: RwLock::new(None),
+            router,
+            handshake_once: OnceCell::new(),
+            transport,
             pending_certificate_requests: pending,
-        };
+        });
 
-        self.peers.insert(base_url.to_string(), auth_peer);
+        // Insert under a write lock, but only if another concurrent
+        // ensure_peer didn't beat us to it (last-writer-wins would otherwise
+        // orphan a peer + its dispatcher task).
+        let mut peers = self.peers.write().await;
+        peers.entry(base_url.to_string()).or_insert(auth_peer);
         Ok(())
     }
 }
