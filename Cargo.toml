@@ -1,6 +1,6 @@
 [package]
 name = "bsv-sdk"
-version = "0.2.86"
+version = "0.2.87"
 edition = "2021"
 rust-version = "1.87"
 description = "Pure Rust implementation of the BSV Blockchain SDK"
@@ -87,6 +87,11 @@ harness = false
 [[bench]]
 name = "dispatch_bench"
 harness = false
+
+[[bench]]
+name = "auth_message_bench"
+harness = false
+required-features = ["network"]
 
 [[example]]
 name = "wallet_client_action"

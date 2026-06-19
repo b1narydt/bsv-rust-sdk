@@ -155,6 +155,23 @@ impl PublicKey {
         invoice_number: &str,
     ) -> Result<PublicKey, PrimitivesError> {
         let shared_secret = private_key.derive_shared_secret(self)?;
+        self.derive_child_with_secret(&shared_secret, invoice_number)
+    }
+
+    /// Derive a child public key from a *precomputed* ECDH shared secret.
+    ///
+    /// The per-counterparty ECDH point-multiply (`private_key * self`) is the
+    /// caller's responsibility and is passed in as `shared_secret`; it does NOT
+    /// depend on `invoice_number`, so it can be cached and reused across
+    /// messages. Note this method still performs ONE per-message point-multiply
+    /// (`hmac * G`) and a point-add, which are NOT cacheable because the HMAC
+    /// embeds the per-message nonce via `invoice_number`. Output is
+    /// bit-identical to [`derive_child`] for the same inputs.
+    pub fn derive_child_with_secret(
+        &self,
+        shared_secret: &Point,
+        invoice_number: &str,
+    ) -> Result<PublicKey, PrimitivesError> {
         let shared_secret_bytes = shared_secret.to_der(true); // 33-byte compressed
         let hmac_result = sha256_hmac(&shared_secret_bytes, invoice_number.as_bytes());
         let hmac_bn = BigNumber::from_bytes(&hmac_result, Endian::Big);
