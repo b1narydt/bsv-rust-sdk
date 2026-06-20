@@ -422,8 +422,7 @@ fn auth_benchmarks(c: &mut Criterion) {
     {
         // A creates messages addressed to B; the session identifier is B's
         // identity key (the session A holds for its counterparty B).
-        let (peer_a, peer_b, _identity_a, identity_b) =
-            local.block_on(&rt, establish_session());
+        let (peer_a, peer_b, _identity_a, identity_b) = local.block_on(&rt, establish_session());
         let session_id = identity_b;
 
         // B verifies by `your_nonce`; let A create a message and confirm B
@@ -551,14 +550,8 @@ fn auth_benchmarks(c: &mut Criterion) {
         group.bench_function("wallet_create_signature", |b| {
             b.iter(|| {
                 criterion::black_box(
-                    w_a.create_signature_sync(
-                        Some(&payload),
-                        None,
-                        &proto,
-                        &key_id,
-                        &cp_to_b,
-                    )
-                    .unwrap(),
+                    w_a.create_signature_sync(Some(&payload), None, &proto, &key_id, &cp_to_b)
+                        .unwrap(),
                 );
             });
         });

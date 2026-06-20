@@ -72,10 +72,7 @@ impl KeyDeriver {
     /// the per-counterparty cache. The shared secret does not depend on the
     /// protocol, key ID, or invoice number, so it is safe to memoize per
     /// counterparty and reuse across every message.
-    fn cached_shared_secret(
-        &self,
-        counterparty_pubkey: &PublicKey,
-    ) -> Result<Point, WalletError> {
+    fn cached_shared_secret(&self, counterparty_pubkey: &PublicKey) -> Result<Point, WalletError> {
         let cache_key = counterparty_pubkey.to_der_hex();
 
         // Fast path: read lock, return a clone if present.
@@ -627,11 +624,16 @@ mod tests {
 
             // Raw, uncached reference derivations.
             let raw_priv = root.derive_child(&cp_pub, &invoice).unwrap();
-            let raw_pub_for_self = root.derive_child(&cp_pub, &invoice).unwrap().to_public_key();
+            let raw_pub_for_self = root
+                .derive_child(&cp_pub, &invoice)
+                .unwrap()
+                .to_public_key();
             let raw_pub_other = cp_pub.derive_child(&root, &invoice).unwrap();
 
             // Cached KeyDeriver derivations.
-            let cached_priv = kd.derive_private_key(&protocol, nonce, &counterparty).unwrap();
+            let cached_priv = kd
+                .derive_private_key(&protocol, nonce, &counterparty)
+                .unwrap();
             let cached_pub_for_self = kd
                 .derive_public_key(&protocol, nonce, &counterparty, true)
                 .unwrap();
@@ -640,7 +642,10 @@ mod tests {
                 .unwrap();
 
             assert_eq!(raw_priv.to_hex(), cached_priv.to_hex());
-            assert_eq!(raw_pub_for_self.to_der_hex(), cached_pub_for_self.to_der_hex());
+            assert_eq!(
+                raw_pub_for_self.to_der_hex(),
+                cached_pub_for_self.to_der_hex()
+            );
             assert_eq!(raw_pub_other.to_der_hex(), cached_pub_other.to_der_hex());
         }
 
@@ -743,12 +748,16 @@ mod tests {
 
         // Warm cache: one KeyDeriver reused across all calls.
         let kd = KeyDeriver::new(root.clone());
-        let _ = kd.derive_private_key(&protocol, "warmup", &counterparty).unwrap();
+        let _ = kd
+            .derive_private_key(&protocol, "warmup", &counterparty)
+            .unwrap();
         let t_cached = {
             let start = Instant::now();
             for i in 0..N {
                 let kid = format!("nonce {i:08}");
-                let _ = kd.derive_public_key(&protocol, &kid, &counterparty, false).unwrap();
+                let _ = kd
+                    .derive_public_key(&protocol, &kid, &counterparty, false)
+                    .unwrap();
             }
             start.elapsed()
         };
@@ -780,12 +789,16 @@ mod tests {
 
         // --- derive_private_key: cold = 1 ECDH; cached = 0 point-mults ---
         let kd2 = KeyDeriver::new(root.clone());
-        let _ = kd2.derive_private_key(&protocol, "warmup", &counterparty).unwrap();
+        let _ = kd2
+            .derive_private_key(&protocol, "warmup", &counterparty)
+            .unwrap();
         let t_cached_priv = {
             let start = Instant::now();
             for i in 0..N {
                 let kid = format!("nonce {i:08}");
-                let _ = kd2.derive_private_key(&protocol, &kid, &counterparty).unwrap();
+                let _ = kd2
+                    .derive_private_key(&protocol, &kid, &counterparty)
+                    .unwrap();
             }
             start.elapsed()
         };
@@ -794,7 +807,9 @@ mod tests {
             for i in 0..N {
                 let kid = format!("nonce {i:08}");
                 let kd_fresh = KeyDeriver::new(root.clone());
-                let _ = kd_fresh.derive_private_key(&protocol, &kid, &counterparty).unwrap();
+                let _ = kd_fresh
+                    .derive_private_key(&protocol, &kid, &counterparty)
+                    .unwrap();
             }
             start.elapsed()
         };
@@ -807,12 +822,16 @@ mod tests {
 
         // --- derive_symmetric_key: cold = 3 ECDH; cached = 1 ---
         let kd3 = KeyDeriver::new(root.clone());
-        let _ = kd3.derive_symmetric_key(&protocol, "warmup", &counterparty).unwrap();
+        let _ = kd3
+            .derive_symmetric_key(&protocol, "warmup", &counterparty)
+            .unwrap();
         let t_cached_sym = {
             let start = Instant::now();
             for i in 0..N {
                 let kid = format!("nonce {i:08}");
-                let _ = kd3.derive_symmetric_key(&protocol, &kid, &counterparty).unwrap();
+                let _ = kd3
+                    .derive_symmetric_key(&protocol, &kid, &counterparty)
+                    .unwrap();
             }
             start.elapsed()
         };
@@ -821,7 +840,9 @@ mod tests {
             for i in 0..N {
                 let kid = format!("nonce {i:08}");
                 let kd_fresh = KeyDeriver::new(root.clone());
-                let _ = kd_fresh.derive_symmetric_key(&protocol, &kid, &counterparty).unwrap();
+                let _ = kd_fresh
+                    .derive_symmetric_key(&protocol, &kid, &counterparty)
+                    .unwrap();
             }
             start.elapsed()
         };
@@ -847,8 +868,12 @@ mod tests {
             counterparty_type: CounterpartyType::Other,
             public_key: Some(PrivateKey::from_hex("bb").unwrap().to_public_key()),
         };
-        let k1 = kd.derive_symmetric_key(&protocol, "1", &counterparty).unwrap();
-        let k2 = kd.derive_symmetric_key(&protocol, "1", &counterparty).unwrap();
+        let k1 = kd
+            .derive_symmetric_key(&protocol, "1", &counterparty)
+            .unwrap();
+        let k2 = kd
+            .derive_symmetric_key(&protocol, "1", &counterparty)
+            .unwrap();
         assert_eq!(k1.to_hex(), k2.to_hex());
     }
 
