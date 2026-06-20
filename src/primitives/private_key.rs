@@ -162,8 +162,27 @@ impl PrivateKey {
         counterparty: &PublicKey,
         invoice_number: &str,
     ) -> Result<PrivateKey, PrimitivesError> {
-        let curve = Curve::secp256k1();
         let shared_secret = self.derive_shared_secret(counterparty)?;
+        self.derive_child_with_secret(&shared_secret, invoice_number)
+    }
+
+    /// Derive a child private key from a *precomputed* ECDH shared secret.
+    ///
+    /// This is the per-message cheap half of [`derive_child`]: the expensive
+    /// ECDH point-multiply (`self * counterparty`) is the caller's
+    /// responsibility, and its result is passed in as `shared_secret`. The
+    /// shared secret depends ONLY on `(self, counterparty)` — NOT on
+    /// `invoice_number` — so it can be cached per counterparty and reused
+    /// across every message. The `invoice_number` (which embeds the per-message
+    /// nonce) only flows through the HMAC and the scalar add below, both of
+    /// which are recomputed every call. Output is bit-identical to
+    /// [`derive_child`] for the same `shared_secret`/`invoice_number`.
+    pub fn derive_child_with_secret(
+        &self,
+        shared_secret: &Point,
+        invoice_number: &str,
+    ) -> Result<PrivateKey, PrimitivesError> {
+        let curve = Curve::secp256k1();
         let shared_secret_bytes = shared_secret.to_der(true); // 33-byte compressed
         let hmac_result = sha256_hmac(&shared_secret_bytes, invoice_number.as_bytes());
         let hmac_bn = BigNumber::from_bytes(&hmac_result, Endian::Big);

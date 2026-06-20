@@ -4,19 +4,51 @@
 //! supporting derivation of private keys, public keys, symmetric keys,
 //! and key linkage revelation.
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use crate::primitives::hash::sha256_hmac;
+use crate::primitives::point::Point;
 use crate::primitives::private_key::PrivateKey;
 use crate::primitives::public_key::PublicKey;
 use crate::primitives::symmetric_key::SymmetricKey;
 use crate::wallet::error::WalletError;
 use crate::wallet::types::{anyone_pubkey, Counterparty, CounterpartyType, Protocol};
 
+/// Upper bound on the number of distinct counterparty shared secrets cached.
+///
+/// Each entry is a single secp256k1 point (~64 bytes of coordinate data plus
+/// map overhead), keyed by the counterparty's compressed-DER hex (66 chars).
+/// A long-lived relay talking to many peers could otherwise grow this
+/// unbounded; when the bound is hit the cache is cleared wholesale (the same
+/// coarse eviction strategy `CachedKeyDeriver` uses). 4096 distinct
+/// counterparties is generous for a single session/process while keeping the
+/// footprint trivially small.
+const MAX_SHARED_SECRET_CACHE_SIZE: usize = 4096;
+
 /// KeyDeriver derives various types of keys using a root private key.
 ///
 /// Supports deriving public and private keys, symmetric keys, and
 /// revealing key linkages, all using BRC-42 Type-42 derivation.
+///
+/// ## Per-counterparty shared-secret cache
+///
+/// Type-42 derivation factors into an expensive ECDH point-multiply
+/// (`root_key * counterparty_pubkey`) that depends ONLY on the counterparty,
+/// plus cheap per-message HMAC/scalar steps keyed by the invoice number (which
+/// embeds the per-message auth nonce). The ECDH result — the *shared secret* —
+/// is therefore identical for every message to the same counterparty, so it is
+/// memoized here keyed by the counterparty's compressed-DER hex. The cache is a
+/// pure compute optimization: every derived key, signature, and HMAC is
+/// bit-identical to the uncached path because the per-message invoice number
+/// still flows through `derive_child_with_secret` on every call. The cache is
+/// guarded by an `RwLock` so derive methods take `&self` and the deriver is
+/// `Send + Sync`, safe to share via `Arc` under concurrent access.
 pub struct KeyDeriver {
     root_key: PrivateKey,
+    /// Cache of `root_key * counterparty_pubkey` ECDH points, keyed by the
+    /// counterparty public key's compressed-DER hex.
+    shared_secret_cache: RwLock<HashMap<String, Point>>,
 }
 
 impl KeyDeriver {
@@ -24,6 +56,7 @@ impl KeyDeriver {
     pub fn new(private_key: PrivateKey) -> Self {
         KeyDeriver {
             root_key: private_key,
+            shared_secret_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -31,7 +64,42 @@ impl KeyDeriver {
     pub fn new_anyone() -> Self {
         KeyDeriver {
             root_key: crate::wallet::types::anyone_private_key(),
+            shared_secret_cache: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Compute the ECDH shared secret `root_key * counterparty_pubkey`, using
+    /// the per-counterparty cache. The shared secret does not depend on the
+    /// protocol, key ID, or invoice number, so it is safe to memoize per
+    /// counterparty and reuse across every message.
+    fn cached_shared_secret(&self, counterparty_pubkey: &PublicKey) -> Result<Point, WalletError> {
+        let cache_key = counterparty_pubkey.to_der_hex();
+
+        // Fast path: read lock, return a clone if present.
+        {
+            let cache = self.shared_secret_cache.read().unwrap();
+            if let Some(secret) = cache.get(&cache_key) {
+                return Ok(secret.clone());
+            }
+        }
+
+        // Slow path: compute the ECDH point-multiply, then insert.
+        let secret = self.root_key.derive_shared_secret(counterparty_pubkey)?;
+
+        let mut cache = self.shared_secret_cache.write().unwrap();
+        // Coarse eviction: if at capacity, clear all and start fresh. Bounds
+        // growth for long-lived relays with many distinct peers.
+        if cache.len() >= MAX_SHARED_SECRET_CACHE_SIZE && !cache.contains_key(&cache_key) {
+            cache.clear();
+        }
+        cache.insert(cache_key, secret.clone());
+        Ok(secret)
+    }
+
+    /// Returns the number of cached counterparty shared secrets (test-only).
+    #[cfg(test)]
+    fn shared_secret_cache_len(&self) -> usize {
+        self.shared_secret_cache.read().unwrap().len()
     }
 
     /// Returns a reference to the root private key.
@@ -58,9 +126,14 @@ impl KeyDeriver {
     ) -> Result<PrivateKey, WalletError> {
         let counterparty_pubkey = self.normalize_counterparty(counterparty)?;
         let invoice_number = Self::compute_invoice_number(protocol, key_id)?;
+        // The ECDH shared secret (root_key * counterparty) is counterparty-only
+        // and cached; the invoice number (per-message nonce) still flows through
+        // the HMAC + scalar-add in derive_child_with_secret, so the output is
+        // identical to root_key.derive_child(...).
+        let shared_secret = self.cached_shared_secret(&counterparty_pubkey)?;
         let child = self
             .root_key
-            .derive_child(&counterparty_pubkey, &invoice_number)?;
+            .derive_child_with_secret(&shared_secret, &invoice_number)?;
         Ok(child)
     }
 
@@ -78,13 +151,18 @@ impl KeyDeriver {
         let counterparty_pubkey = self.normalize_counterparty(counterparty)?;
         let invoice_number = Self::compute_invoice_number(protocol, key_id)?;
 
+        // Both branches' ECDH is root_key * counterparty_pubkey — the same
+        // counterparty-only shared secret, so it is computed once and cached.
+        let shared_secret = self.cached_shared_secret(&counterparty_pubkey)?;
+
         if for_self {
             let priv_child = self
                 .root_key
-                .derive_child(&counterparty_pubkey, &invoice_number)?;
+                .derive_child_with_secret(&shared_secret, &invoice_number)?;
             Ok(priv_child.to_public_key())
         } else {
-            let pub_child = counterparty_pubkey.derive_child(&self.root_key, &invoice_number)?;
+            let pub_child =
+                counterparty_pubkey.derive_child_with_secret(&shared_secret, &invoice_number)?;
             Ok(pub_child)
         }
     }
@@ -508,6 +586,295 @@ mod tests {
             .derive_symmetric_key(&protocol, "1", &counterparty)
             .unwrap();
         assert_eq!(key1.to_hex(), key2.to_hex());
+    }
+
+    // -----------------------------------------------------------------------
+    // Shared-secret cache regression tests
+    //
+    // These guard the per-counterparty ECDH shared-secret cache: it must be a
+    // pure compute optimization (outputs bit-identical to the uncached path),
+    // and it must only memoize the counterparty-invariant secret — never the
+    // per-message derived keys, signatures, or HMACs.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_shared_secret_cache_matches_raw_derivation_across_messages() {
+        // The cached KeyDeriver output must equal the raw primitive
+        // `derive_child` (which recomputes the ECDH every call) for *every*
+        // distinct per-message invoice number. This proves the cache does not
+        // alter outputs and that the per-message nonce (carried in key_id ->
+        // invoice number) still flows through on every call.
+        let root = PrivateKey::from_hex("abcdef1234567890").unwrap();
+        let cp_key = PrivateKey::from_hex("bb").unwrap();
+        let cp_pub = cp_key.to_public_key();
+
+        let kd = KeyDeriver::new(root.clone());
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "auth message signature".to_string(),
+        };
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(cp_pub.clone()),
+        };
+
+        // Three distinct "nonces" (key IDs) to the same counterparty.
+        for nonce in ["nonce one aaa", "nonce two bbb", "nonce three cc"] {
+            let invoice = KeyDeriver::compute_invoice_number(&protocol, nonce).unwrap();
+
+            // Raw, uncached reference derivations.
+            let raw_priv = root.derive_child(&cp_pub, &invoice).unwrap();
+            let raw_pub_for_self = root
+                .derive_child(&cp_pub, &invoice)
+                .unwrap()
+                .to_public_key();
+            let raw_pub_other = cp_pub.derive_child(&root, &invoice).unwrap();
+
+            // Cached KeyDeriver derivations.
+            let cached_priv = kd
+                .derive_private_key(&protocol, nonce, &counterparty)
+                .unwrap();
+            let cached_pub_for_self = kd
+                .derive_public_key(&protocol, nonce, &counterparty, true)
+                .unwrap();
+            let cached_pub_other = kd
+                .derive_public_key(&protocol, nonce, &counterparty, false)
+                .unwrap();
+
+            assert_eq!(raw_priv.to_hex(), cached_priv.to_hex());
+            assert_eq!(
+                raw_pub_for_self.to_der_hex(),
+                cached_pub_for_self.to_der_hex()
+            );
+            assert_eq!(raw_pub_other.to_der_hex(), cached_pub_other.to_der_hex());
+        }
+
+        // Exactly one counterparty was used, so exactly one shared secret is
+        // cached — proving we cache the counterparty-invariant secret, not the
+        // per-message derived keys.
+        assert_eq!(kd.shared_secret_cache_len(), 1);
+    }
+
+    #[test]
+    fn test_shared_secret_cache_separates_counterparties() {
+        let root = PrivateKey::from_hex("abcd").unwrap();
+        let kd = KeyDeriver::new(root);
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "test caching".to_string(),
+        };
+
+        for hex in ["bb", "cc", "dd"] {
+            let cp = Counterparty {
+                counterparty_type: CounterpartyType::Other,
+                public_key: Some(PrivateKey::from_hex(hex).unwrap().to_public_key()),
+            };
+            let _ = kd.derive_private_key(&protocol, "k1", &cp).unwrap();
+            // Repeat to the same counterparty must NOT add a cache entry.
+            let _ = kd.derive_private_key(&protocol, "k2", &cp).unwrap();
+        }
+        assert_eq!(kd.shared_secret_cache_len(), 3);
+    }
+
+    #[test]
+    fn test_signature_roundtrips_with_warm_cache() {
+        use crate::primitives::ecdsa::{ecdsa_sign, ecdsa_verify};
+        use crate::primitives::hash::sha256;
+
+        // A signs to B, B verifies. The shared secret is warmed by the first
+        // call on each side; the second message reuses the cache and must still
+        // verify — proving correctness is preserved across the cache hit.
+        let sk_a = PrivateKey::from_hex("a1a1a1a1a1a1a1a1").unwrap();
+        let sk_b = PrivateKey::from_hex("b2b2b2b2b2b2b2b2").unwrap();
+        let kd_a = KeyDeriver::new(sk_a.clone());
+        let kd_b = KeyDeriver::new(sk_b.clone());
+
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "auth message signature".to_string(),
+        };
+        let cp_b = Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(sk_b.to_public_key()),
+        };
+        let cp_a = Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(sk_a.to_public_key()),
+        };
+
+        for nonce in ["msg one xxxx", "msg two yyyy"] {
+            let data = sha256(nonce.as_bytes());
+            // A signs with its derived child private key.
+            let child_priv = kd_a.derive_private_key(&protocol, nonce, &cp_b).unwrap();
+            let sig = ecdsa_sign(&data, child_priv.bn(), true).unwrap();
+            // B derives A's corresponding child public key and verifies.
+            let child_pub = kd_b
+                .derive_public_key(&protocol, nonce, &cp_a, false)
+                .unwrap();
+            assert!(
+                ecdsa_verify(&data, &sig, child_pub.point()),
+                "signature must verify with warm cache for nonce {nonce}"
+            );
+        }
+        // One counterparty each side -> one cached secret each.
+        assert_eq!(kd_a.shared_secret_cache_len(), 1);
+        assert_eq!(kd_b.shared_secret_cache_len(), 1);
+    }
+
+    /// Load-invariant relative perf probe: times N warm-cache derivations
+    /// (shared secret reused) against N cold derivations (fresh KeyDeriver per
+    /// call, forcing the ECDH point-multiply every time), back-to-back in the
+    /// same process so machine load cancels out of the ratio. Ignored by
+    /// default; run with:
+    ///   cargo test --features network --lib -- --ignored --nocapture \
+    ///     wallet::key_deriver::tests::perf_probe_shared_secret_cache
+    #[test]
+    #[ignore]
+    fn perf_probe_shared_secret_cache() {
+        use std::time::Instant;
+
+        let root = PrivateKey::from_hex("abcdef1234567890abcdef1234567890").unwrap();
+        let cp_pub = PrivateKey::from_hex("bbccddee").unwrap().to_public_key();
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "auth message signature".to_string(),
+        };
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(cp_pub),
+        };
+
+        const N: u32 = 2000;
+
+        // Warm cache: one KeyDeriver reused across all calls.
+        let kd = KeyDeriver::new(root.clone());
+        let _ = kd
+            .derive_private_key(&protocol, "warmup", &counterparty)
+            .unwrap();
+        let t_cached = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let _ = kd
+                    .derive_public_key(&protocol, &kid, &counterparty, false)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+
+        // Cold: fresh KeyDeriver each call -> ECDH recomputed every derivation.
+        let t_cold = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let kd_fresh = KeyDeriver::new(root.clone());
+                let _ = kd_fresh
+                    .derive_public_key(&protocol, &kid, &counterparty, false)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+
+        let per_cached = t_cached.as_nanos() as f64 / N as f64 / 1000.0;
+        let per_cold = t_cold.as_nanos() as f64 / N as f64 / 1000.0;
+        println!(
+            "perf_probe derive_public_key(for_self=false): cold {per_cold:.1}us/op, \
+             cached {per_cached:.1}us/op, speedup {:.2}x",
+            per_cold / per_cached
+        );
+        assert!(
+            t_cached < t_cold,
+            "warm-cache derivation must be faster than cold (ECDH recomputed)"
+        );
+
+        // --- derive_private_key: cold = 1 ECDH; cached = 0 point-mults ---
+        let kd2 = KeyDeriver::new(root.clone());
+        let _ = kd2
+            .derive_private_key(&protocol, "warmup", &counterparty)
+            .unwrap();
+        let t_cached_priv = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let _ = kd2
+                    .derive_private_key(&protocol, &kid, &counterparty)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+        let t_cold_priv = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let kd_fresh = KeyDeriver::new(root.clone());
+                let _ = kd_fresh
+                    .derive_private_key(&protocol, &kid, &counterparty)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+        println!(
+            "perf_probe derive_private_key: cold {:.1}us/op, cached {:.1}us/op, speedup {:.2}x",
+            t_cold_priv.as_nanos() as f64 / N as f64 / 1000.0,
+            t_cached_priv.as_nanos() as f64 / N as f64 / 1000.0,
+            t_cold_priv.as_nanos() as f64 / t_cached_priv.as_nanos() as f64
+        );
+
+        // --- derive_symmetric_key: cold = 3 ECDH; cached = 1 ---
+        let kd3 = KeyDeriver::new(root.clone());
+        let _ = kd3
+            .derive_symmetric_key(&protocol, "warmup", &counterparty)
+            .unwrap();
+        let t_cached_sym = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let _ = kd3
+                    .derive_symmetric_key(&protocol, &kid, &counterparty)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+        let t_cold_sym = {
+            let start = Instant::now();
+            for i in 0..N {
+                let kid = format!("nonce {i:08}");
+                let kd_fresh = KeyDeriver::new(root.clone());
+                let _ = kd_fresh
+                    .derive_symmetric_key(&protocol, &kid, &counterparty)
+                    .unwrap();
+            }
+            start.elapsed()
+        };
+        println!(
+            "perf_probe derive_symmetric_key (HMAC path): cold {:.1}us/op, cached {:.1}us/op, speedup {:.2}x",
+            t_cold_sym.as_nanos() as f64 / N as f64 / 1000.0,
+            t_cached_sym.as_nanos() as f64 / N as f64 / 1000.0,
+            t_cold_sym.as_nanos() as f64 / t_cached_sym.as_nanos() as f64
+        );
+    }
+
+    #[test]
+    fn test_symmetric_key_stable_with_cache() {
+        // derive_symmetric_key uses the cache for two of its three point-mults;
+        // it must remain deterministic and self-consistent across cache states.
+        let root = PrivateKey::from_hex("abcd").unwrap();
+        let kd = KeyDeriver::new(root);
+        let protocol = Protocol {
+            security_level: 2,
+            protocol: "test symmetric".to_string(),
+        };
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(PrivateKey::from_hex("bb").unwrap().to_public_key()),
+        };
+        let k1 = kd
+            .derive_symmetric_key(&protocol, "1", &counterparty)
+            .unwrap();
+        let k2 = kd
+            .derive_symmetric_key(&protocol, "1", &counterparty)
+            .unwrap();
+        assert_eq!(k1.to_hex(), k2.to_hex());
     }
 
     #[test]
