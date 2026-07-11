@@ -37,6 +37,11 @@ pub enum AuthError {
     #[error("invalid nonce: {0}")]
     InvalidNonce(String),
 
+    /// A message replay was detected: this exact `(session, message-nonce)`
+    /// pair has already been accepted. Receiver-side anti-replay guard.
+    #[error("replay detected: {0}")]
+    ReplayDetected(String),
+
     /// Required certificate is missing.
     #[error("missing certificate: {0}")]
     MissingCertificate(String),

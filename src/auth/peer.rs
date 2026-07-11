@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
 
 use super::certificates::master::MasterCertificate;
 use super::error::AuthError;
-use super::session_manager::SessionManager;
+use super::session_manager::{MarkSeen, SessionManager};
 use super::transports::Transport;
 use super::types::{
     AuthMessage, MessageType, PeerSession, RequestedCertificateSet, AUTH_PROTOCOL_ID, AUTH_VERSION,
@@ -143,6 +143,21 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, AuthError> {
 
 fn parse_public_key(hex: &str) -> Result<crate::primitives::public_key::PublicKey, AuthError> {
     crate::primitives::public_key::PublicKey::from_string(hex).map_err(AuthError::from)
+}
+
+/// Current wall-clock time in milliseconds since the Unix epoch.
+///
+/// The clock lives here (in the `network`-gated `Peer`) rather than inside the
+/// pure `SessionManager`, so the session module stays wasm/no_std-friendly (the
+/// timestamp is injected). `Peer` is only compiled with the `network` feature,
+/// which already pulls `std` + tokio, so `SystemTime` is always available here —
+/// matching the existing `iso_now()` pattern in `clients::auth_fetch`.
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -636,13 +651,21 @@ impl<W: WalletInterface> Peer<W> {
     async fn initiate_handshake(&self, identity_key: &str) -> Result<PeerSession, AuthError> {
         let session_nonce = create_nonce(&self.wallet).await?;
 
-        // Create initial session (not yet authenticated). Write lock.
-        self.session_manager.write().await.add_session(PeerSession {
-            session_nonce: session_nonce.clone(),
-            peer_identity_key: identity_key.to_string(),
-            peer_nonce: String::new(),
-            is_authenticated: false,
-        });
+        // Create initial session (not yet authenticated). Write lock. Touch it
+        // so idle reaping has a baseline, and opportunistically reap on this
+        // low-frequency handshake path (keeps the hot verify path reap-free).
+        {
+            let mut mgr = self.session_manager.write().await;
+            mgr.add_session(PeerSession {
+                session_nonce: session_nonce.clone(),
+                peer_identity_key: identity_key.to_string(),
+                peer_nonce: String::new(),
+                is_authenticated: false,
+            });
+            let now = now_ms();
+            mgr.touch(&session_nonce, now);
+            mgr.reap_idle(now);
+        }
 
         let identity_key_str = self.get_identity_public_key().await?;
 
@@ -774,11 +797,15 @@ impl<W: WalletInterface> Peer<W> {
             is_authenticated: true,
         };
 
-        // Write lock: promote the session to authenticated.
-        self.session_manager
-            .write()
-            .await
-            .update_session(session_nonce, session.clone());
+        // Write lock: promote the session to authenticated, refresh its activity
+        // timestamp, and opportunistically reap idle sessions.
+        {
+            let mut mgr = self.session_manager.write().await;
+            mgr.update_session(session_nonce, session.clone());
+            let now = now_ms();
+            mgr.touch(session_nonce, now);
+            mgr.reap_idle(now);
+        }
 
         // Push certificates to channel if any
         if let Some(certs) = response.certificates {
@@ -888,12 +915,24 @@ impl<W: WalletInterface> Peer<W> {
             )));
         }
 
-        // 2. Look up session (brief read lock; clone out before crypto await)
+        // A signed, session-bound certificateRequest is replay-protected just
+        // like a general message: require a per-message nonce.
+        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
+        if msg_nonce.is_empty() {
+            return Err(AuthError::InvalidMessage(format!(
+                "missing per-message nonce in certificateRequest from: {}",
+                msg.identity_key
+            )));
+        }
+
+        // 2. Look up session (brief read lock; clone out before crypto await).
+        //    TTL-honoring so a stale/captured `yourNonce` stops resolving.
+        let now = now_ms();
         let session = self
             .session_manager
             .read()
             .await
-            .get_session_by_identifier(your_nonce)
+            .get_active_session(your_nonce, now)
             .cloned()
             .ok_or_else(|| {
                 AuthError::SessionNotFound(format!("session not found for nonce: {}", your_nonce))
@@ -910,7 +949,6 @@ impl<W: WalletInterface> Peer<W> {
                 e
             ))
         })?;
-        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
         let key_id = format!("{} {}", msg_nonce, session.session_nonce);
         let peer_pubkey = parse_public_key(&session.peer_identity_key)?;
 
@@ -944,6 +982,29 @@ impl<W: WalletInterface> Peer<W> {
                 "invalid signature in certificateRequest from {}",
                 session.peer_identity_key
             )));
+        }
+
+        // Anti-replay gate (after signature verification, before dispatch).
+        // Shares the per-session seen-set with general messages, keyed on the
+        // fresh per-message nonce. Brief synchronous write lock, no `.await` held.
+        match self.session_manager.write().await.mark_message_seen(
+            &session.session_nonce,
+            msg_nonce,
+            now,
+        ) {
+            MarkSeen::Fresh => {}
+            MarkSeen::Replay => {
+                return Err(AuthError::ReplayDetected(format!(
+                    "duplicate certificateRequest nonce on session from {}",
+                    msg.identity_key
+                )));
+            }
+            MarkSeen::SessionGone => {
+                return Err(AuthError::SessionNotFound(format!(
+                    "session evicted during verify for nonce: {}",
+                    your_nonce
+                )));
+            }
         }
 
         // Observer channel: non-blocking. Separate from handler listeners;
@@ -995,13 +1056,20 @@ impl<W: WalletInterface> Peer<W> {
         let session_nonce = create_nonce(&self.wallet).await?;
 
         // Add session (authenticated -- responder trusts after signature
-        // verification). Write lock.
-        self.session_manager.write().await.add_session(PeerSession {
-            session_nonce: session_nonce.clone(),
-            peer_identity_key: msg.identity_key.clone(),
-            peer_nonce: peer_initial_nonce.to_string(),
-            is_authenticated: true,
-        });
+        // verification). Write lock. Touch for the idle-reaping baseline and
+        // opportunistically reap idle sessions on this handshake path.
+        {
+            let mut mgr = self.session_manager.write().await;
+            mgr.add_session(PeerSession {
+                session_nonce: session_nonce.clone(),
+                peer_identity_key: msg.identity_key.clone(),
+                peer_nonce: peer_initial_nonce.to_string(),
+                is_authenticated: true,
+            });
+            let now = now_ms();
+            mgr.touch(&session_nonce, now);
+            mgr.reap_idle(now);
+        }
 
         // If the peer requested certificates in their initialRequest, resolve
         // them here so we can embed the response in the single-round-trip
@@ -1136,12 +1204,26 @@ impl<W: WalletInterface> Peer<W> {
             )));
         }
 
-        // Verify session exists. Brief read lock — clone out before crypto.
+        // Every honest sender mints a fresh 32-byte per-message nonce; a message
+        // without one cannot be replay-protected, so reject it outright (stricter
+        // than the TS reference, wire-compatible since TS always sets it).
+        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
+        if msg_nonce.is_empty() {
+            return Err(AuthError::InvalidMessage(format!(
+                "missing per-message nonce in general message from: {}",
+                msg.identity_key
+            )));
+        }
+
+        // Verify session exists AND is not idle-expired. Brief read lock — clone
+        // out before crypto. Honoring the TTL here means a stale/captured
+        // `yourNonce` stops resolving a live session once the idle window lapses.
+        let now = now_ms();
         let session = self
             .session_manager
             .read()
             .await
-            .get_session_by_identifier(your_nonce)
+            .get_active_session(your_nonce, now)
             .cloned()
             .ok_or_else(|| {
                 AuthError::SessionNotFound(format!("session not found for nonce: {}", your_nonce))
@@ -1149,7 +1231,6 @@ impl<W: WalletInterface> Peer<W> {
 
         // Verify signature
         let payload = msg.payload.clone().unwrap_or_default();
-        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
         let key_id = format!("{} {}", msg_nonce, session.session_nonce);
 
         let peer_pubkey = parse_public_key(&msg.identity_key)?;
@@ -1184,6 +1265,32 @@ impl<W: WalletInterface> Peer<W> {
                 "invalid signature in general message from {}",
                 msg.identity_key
             )));
+        }
+
+        // Anti-replay gate (AFTER signature verification, so the seen-set is
+        // never poisoned by unauthenticated input; BEFORE dispatch). Brief
+        // synchronous write lock — no `.await` is held while it is taken, so the
+        // lock-free hot path is not serialized across crypto. The check-and-
+        // insert is atomic, so concurrent verifies of the SAME captured message
+        // resolve to exactly one acceptance and the rest are rejected.
+        match self.session_manager.write().await.mark_message_seen(
+            &session.session_nonce,
+            msg_nonce,
+            now,
+        ) {
+            MarkSeen::Fresh => {}
+            MarkSeen::Replay => {
+                return Err(AuthError::ReplayDetected(format!(
+                    "duplicate general message nonce on session from {}",
+                    msg.identity_key
+                )));
+            }
+            MarkSeen::SessionGone => {
+                return Err(AuthError::SessionNotFound(format!(
+                    "session evicted during verify for nonce: {}",
+                    your_nonce
+                )));
+            }
         }
 
         Ok(())
@@ -2259,5 +2366,131 @@ mod tests {
             session.map(|s| s.is_authenticated).unwrap_or(false),
             "A must still hold an authenticated session to B after interleaving"
         );
+    }
+
+    /// Drive an A -> B handshake and return `(peer_a, Arc<peer_b>, identity_b)`
+    /// with B holding an authenticated session for A. Shared setup for the
+    /// anti-replay tests.
+    async fn authenticated_pair() -> (Peer<TestWallet>, Arc<Peer<TestWallet>>, String) {
+        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+
+        let identity_b = wallet_b
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .public_key
+            .to_der_hex();
+
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(wallet_a, transport_a);
+        let peer_b = Peer::new(wallet_b, transport_b);
+
+        let identity_b_clone = identity_b.clone();
+        let send_handle = tokio::spawn(async move {
+            peer_a
+                .send_message(&identity_b_clone, b"handshake".to_vec())
+                .await
+                .unwrap();
+            peer_a
+        });
+
+        let peer_a = loop {
+            peer_b.process_pending().await.unwrap();
+            if send_handle.is_finished() {
+                break send_handle.await.unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        // Absorb the trailing general message from the handshake send.
+        peer_b.process_pending().await.unwrap();
+
+        (peer_a, Arc::new(peer_b), identity_b)
+    }
+
+    /// Item 1: a captured authenticated message replays are REJECTED (the
+    /// verified defect at 0.2.87), while a genuinely fresh message still passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_general_message_replay_is_rejected() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+
+        // Capture ONE signed general message (fixed per-message nonce).
+        let captured = peer_a
+            .create_general_message(&identity_b, b"transfer 100".to_vec())
+            .await
+            .expect("create_general_message");
+
+        // First delivery: accepted.
+        peer_b
+            .verify_general_message(captured.clone())
+            .await
+            .expect("first (fresh) delivery must be accepted");
+
+        // Replay of the identical captured bytes: rejected as a replay.
+        let replay = peer_b.verify_general_message(captured.clone()).await;
+        assert!(
+            matches!(replay, Err(AuthError::ReplayDetected(_))),
+            "captured message replay must be rejected, got: {:?}",
+            replay
+        );
+
+        // A genuinely fresh message (new per-message nonce) still passes — the
+        // happy path is preserved.
+        let fresh = peer_a
+            .create_general_message(&identity_b, b"transfer 100".to_vec())
+            .await
+            .expect("create_general_message");
+        peer_b
+            .verify_general_message(fresh)
+            .await
+            .expect("a fresh-nonce message must still be accepted");
+    }
+
+    /// Item 4: N concurrent verifies of the SAME captured message must not
+    /// deadlock or serialize, and the atomic check-and-insert must admit exactly
+    /// ONE and reject the other N-1 as replays.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_identical_replays_admit_exactly_one() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+
+        let captured = peer_a
+            .create_general_message(&identity_b, b"double-spend me".to_vec())
+            .await
+            .expect("create_general_message");
+
+        let n = 16usize;
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let pb = peer_b.clone();
+            let msg = captured.clone();
+            handles.push(tokio::spawn(
+                async move { pb.verify_general_message(msg).await },
+            ));
+        }
+
+        let mut accepted = 0usize;
+        let mut replayed = 0usize;
+        for h in handles {
+            match h.await.expect("verify task must not panic/deadlock") {
+                Ok(()) => accepted += 1,
+                Err(AuthError::ReplayDetected(_)) => replayed += 1,
+                Err(other) => panic!("unexpected error under concurrent replay: {:?}", other),
+            }
+        }
+
+        assert_eq!(accepted, 1, "exactly one concurrent delivery must be accepted");
+        assert_eq!(replayed, n - 1, "all other concurrent deliveries must be replays");
     }
 }
