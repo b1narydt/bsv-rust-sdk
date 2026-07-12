@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.89] - 2026-07-12
+
+### Added
+
+- **`serde` feature split out of `network`** — a new `serde = ["dep:serde"]` feature provides the type-level `Serialize`/`Deserialize` derives on the wallet/certificate/remittance/kvstore data types **without** pulling the async network stack (`tokio`/`reqwest`/`tokio-tungstenite`). `network` now depends on `serde`, so existing `--features network` consumers are unchanged. Enables `wasm32-unknown-unknown` builds that need cert/wallet (de)serialization but not the network clients.
+- **`wasm-js` feature** (`= ["getrandom/js"]`) — explicit, opt-in selection of the `getrandom` browser/Node backend for `wasm32-unknown-unknown`. The SDK no longer *forces* the `js` backend; wasm consumers choose their entropy source (browser/Node via `wasm-js`, or a custom/attested backend for WASI/enclave hosts). A wasm build with no chosen backend now fails to compile rather than silently trusting the host RNG.
+- **`MasterCertificate::issue_certificate_for_subject`** now takes a `get_revocation_outpoint` callback and an optional `serial_number`, matching TS `@bsv/sdk` `issueCertificateForSubject(..., getRevocationOutpoint, serialNumber?)`. The callback receives the finalized base64 serial and returns the revocation outpoint (default reproduces the TS sentinel exactly). **Breaking**: callers must pass the callback + serial args.
+
+### Fixed
+
+- **KVStore interpreter field extraction** — `kv_store_interpreter` now uses `PushDrop::decode()` (matching TS `kvStoreInterpreter`) instead of hand-walking script chunks. The old logic assumed data pushes precede opcodes, but the default PushDrop "before" layout is `<pubkey> OP_CHECKSIG <fields…> OP_DROP…`, so it grabbed the pubkey, hit `OP_CHECKSIG`, and returned `None` for every valid token.
+- **Certificate revocation-outpoint serialization now byte-matches TS `Certificate.toBinary`** — including the default sentinel. TS serializes a no-`.vout` outpoint (`"00".repeat(32)`) as `txid(32) || varIntNum(NaN)` = `0xff` + 8 zero bytes; the Rust default now emits the identical 41-byte encoding (previously emitted a diverging 33-byte form and dropped the block for dot-less outpoints), so Rust- and TS-issued certs with default revocation share an identical signing preimage.
+
+### CI
+
+- Test/build matrix now covers every feature shape (`default` / `serde` / `network`) plus a `wasm32-unknown-unknown + serde,wasm-js` build, guarding the new shapes against regression.
+
+### Known issues
+
+- Certificate signed-field **name sort order** diverges from TS (`localeCompare` vs byte-sort) for mixed-case/non-ASCII field names — see [#37](https://github.com/b1narydt/bsv-rust-sdk/issues/37). Low real-world risk (ASCII/camelCase names agree); needs a cross-SDK spec decision.
+
 ## [0.2.85] - 2026-05-24
 
 ### Added
