@@ -4,6 +4,7 @@
 //! callback used by Historian to extract key-value data from PushDrop
 //! transaction outputs.
 
+use crate::script::templates::push_drop::PushDrop;
 use crate::transaction::Transaction;
 
 use super::types::{KvContext, KvProtocol};
@@ -28,23 +29,18 @@ pub fn kv_store_interpreter(
     }
 
     let output = &tx.outputs[output_index];
-    let chunks = output.locking_script.chunks();
 
-    // Extract PushDrop data fields: all data-push chunks before the first
-    // opcode chunk (OP_DROP, OP_2DROP, etc.). In KVStore format, data fields
-    // include the controller (33-byte pubkey), so we cannot use the pubkey
-    // heuristic here.
-    let mut fields: Vec<Vec<u8>> = Vec::new();
-    for chunk in chunks {
-        if let Some(data) = &chunk.data {
-            fields.push(data.clone());
-        } else {
-            // Hit an opcode (OP_DROP, OP_2DROP, OP_CHECKSIG), stop collecting.
-            break;
-        }
-    }
+    // Decode the KVStore PushDrop token via the SDK decoder — matches the TS
+    // `kvStoreInterpreter`, which calls `PushDrop.decode`. This correctly handles
+    // the "before" lock layout `<pubkey> OP_CHECKSIG <fields...> OP_DROP…`: the
+    // previous hand-rolled "collect data pushes before the first opcode" grabbed
+    // the leading pubkey, immediately hit OP_CHECKSIG, and bailed with one field.
+    // `decode` returns the data fields, including the trailing signature field.
+    let decoded = PushDrop::decode(&output.locking_script).ok()?;
+    let fields = &decoded.fields;
 
-    // Support both old format (5 fields) and new format with tags (6 fields).
+    // Support both old format (5 fields: [protocolID, key, value, controller,
+    // signature]) and new format with tags (6 fields: [..., tags, signature]).
     let has_tags = fields.len() == KvProtocol::FIELD_COUNT;
     let is_old_format = fields.len() == KvProtocol::OLD_FIELD_COUNT;
 
