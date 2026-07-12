@@ -676,7 +676,7 @@ fn test_call_code_round_trip_all() {
 }
 
 // ---------------------------------------------------------------------------
-// JSON round-trip tests for serde serialization (network feature)
+// JSON round-trip tests for serde serialization (serde feature)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "serde")]

@@ -1,4 +1,4 @@
-#![cfg(feature = "network")]
+#![cfg(feature = "serde")]
 //! Wire-format roundtrip tests for remittance protocol structs.
 //!
 //! Verifies that all structs serialize to JSON matching the TypeScript SDK wire format:

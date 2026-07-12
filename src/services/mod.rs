@@ -10,7 +10,7 @@ pub mod messages;
 #[cfg(feature = "network")]
 pub mod overlay_tools;
 
-#[cfg(feature = "network")]
+#[cfg(any(feature = "serde", feature = "network"))]
 pub mod kvstore;
 #[cfg(feature = "network")]
 pub mod storage;

@@ -19,12 +19,29 @@ jobs:
       - run: cargo check --verbose
 
   test:
-    name: Test
+    name: Test (${{ matrix.features == '' && 'default' || matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "--features serde"
+          - "--features network"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --no-default-features ${{ matrix.features }} --verbose
+
+  wasm-build:
+    name: WASM build (serde + wasm-js)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --verbose
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build --no-default-features --features serde,wasm-js --target wasm32-unknown-unknown --verbose
 
   clippy:
     name: Clippy

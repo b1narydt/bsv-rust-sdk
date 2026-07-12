@@ -1,4 +1,4 @@
-#![cfg(feature = "network")]
+#![cfg(feature = "serde")]
 //! Integration tests for remittance core types.
 //!
 //! Tests serialization, state transitions, and LoggerLike trait.

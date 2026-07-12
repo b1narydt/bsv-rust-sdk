@@ -18,11 +18,11 @@ use crate::wallet::types::{
 };
 
 // ---------------------------------------------------------------------------
-// Serde helper modules (only compiled with "network" feature)
+// Serde helper modules (only compiled with "serde" feature)
 // ---------------------------------------------------------------------------
 
 /// Serde helpers for custom JSON serialization of wallet types.
-/// Gated behind the "network" feature since serde is an optional dependency.
+/// Gated behind the "serde" feature since serde is an optional dependency.
 #[cfg(feature = "serde")]
 pub(crate) mod serde_helpers {
     use crate::primitives::public_key::PublicKey;

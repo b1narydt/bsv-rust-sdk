@@ -34,5 +34,5 @@ pub mod services;
 pub mod transaction;
 pub mod wallet;
 
-#[cfg(feature = "network")]
+#[cfg(any(feature = "serde", feature = "network"))]
 pub mod remittance;
