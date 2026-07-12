@@ -162,17 +162,38 @@ impl AuthCertificate {
         data.extend_from_slice(&certifier_bytes);
 
         // revocation_outpoint: txid(32 bytes) + varint(output_index)
+        //
+        // TS parity (Certificate.toBinary):
+        //   const [txid, outputIndex] = revocationOutpoint.split('.')
+        //   writer.write(Utils.toArray(txid, 'hex'))
+        //   writer.writeVarIntNum(Number(outputIndex))
+        //
+        // Two subtleties are load-bearing and mirrored exactly here:
+        //  1. `split('.')` with destructuring takes the segment BEFORE the first
+        //     dot as txid and the segment between the first and second dot as
+        //     outputIndex (any trailing segments are ignored).
+        //  2. When there is NO dot (the default sentinel `'00'.repeat(32)`),
+        //     `outputIndex` is `undefined`, so `Number(undefined)` is `NaN`, and
+        //     `writeVarIntNum(NaN)` falls through every `<` comparison into the
+        //     64-bit branch, emitting `0xff` followed by 8 zero bytes (ToInt32(NaN)
+        //     == 0 for both the low and high words). This is verified against the
+        //     TS SDK: `'00'.repeat(32)` serializes to 32 zero bytes + `ff` + 8
+        //     zero bytes (41 bytes total), NOT 32 zero bytes + `00` (33 bytes).
         if let Some(ref outpoint) = cert.revocation_outpoint {
-            if let Some(dot_idx) = outpoint.find('.') {
-                let txid_hex = &outpoint[..dot_idx];
-                let output_index_str = &outpoint[dot_idx + 1..];
-                // Decode txid hex to bytes
-                let txid_bytes = hex_decode(txid_hex);
-                data.extend_from_slice(&txid_bytes);
-                // Write output index as varint
-                let output_index: u64 = output_index_str.parse().unwrap_or(0);
-                write_varint(&mut data, output_index);
-            }
+            let mut segments = outpoint.split('.');
+            let txid_hex = segments.next().unwrap_or("");
+            let output_index_segment = segments.next();
+
+            // Decode txid hex to bytes and write.
+            let txid_bytes = hex_decode(txid_hex);
+            data.extend_from_slice(&txid_bytes);
+
+            // Number(outputIndex): `undefined` (no dot) -> NaN.
+            let output_index = match output_index_segment {
+                None => f64::NAN,
+                Some(s) => js_number(s),
+            };
+            write_var_int_num_js(&mut data, output_index);
         }
 
         // fields: sorted by name
@@ -501,5 +522,171 @@ fn write_varint(buf: &mut Vec<u8>, val: u64) {
     } else {
         buf.push(0xff);
         buf.extend_from_slice(&val.to_le_bytes());
+    }
+}
+
+/// Mirror of the TS SDK `Utils.Writer.varIntNum(n: number)` for the
+/// revocation-outpoint output index, which is a JS `number` (f64) — including
+/// the `NaN` case that arises from `Number(undefined)` when the outpoint has no
+/// `.vout` suffix (the default sentinel).
+///
+/// For all finite, non-negative integer values this is byte-for-byte identical
+/// to [`write_varint`]. The extra fidelity is the `NaN` path: because every
+/// `NaN < x` comparison in JS is `false`, `varIntNum(NaN)` falls into the 64-bit
+/// branch and, since `ToInt32(NaN) == 0`, emits `0xff` followed by 8 zero bytes.
+fn write_var_int_num_js(buf: &mut Vec<u8>, n: f64) {
+    if n < 0.0 {
+        // TS routes negatives through varIntBn(n) which adds 2^64. This is not a
+        // valid outpoint index; reproduce the wrap-around best-effort so we never
+        // silently diverge on the (unreachable-for-outpoints) negative path.
+        let wrapped = (n as i64) as u64;
+        buf.push(0xff);
+        buf.extend_from_slice(&wrapped.to_le_bytes());
+    } else if n < 253.0 {
+        buf.push(n as u8);
+    } else if n < 0x1_0000 as f64 {
+        buf.push(0xfd);
+        buf.extend_from_slice(&(n as u16).to_le_bytes());
+    } else if n < 0x1_0000_0000u64 as f64 {
+        buf.push(0xfe);
+        buf.extend_from_slice(&(n as u32).to_le_bytes());
+    } else {
+        // >= 2^32 OR NaN (all `<` comparisons above are false for NaN).
+        // Rust's `NaN as u64` saturates to 0, matching JS `ToInt32(NaN) == 0`
+        // for both the low and high 32-bit words.
+        let v = n as u64;
+        let low = (v & 0xffff_ffff) as u32;
+        let high = ((v >> 32) & 0xffff_ffff) as u32;
+        buf.push(0xff);
+        buf.extend_from_slice(&low.to_le_bytes());
+        buf.extend_from_slice(&high.to_le_bytes());
+    }
+}
+
+/// Mirror of JS `Number(s)` for the outpoint output-index segment, restricted to
+/// the inputs that occur in practice: a decimal integer string, an empty/blank
+/// string (JS `Number('') === 0`), or a non-numeric string (JS -> `NaN`).
+fn js_number(s: &str) -> f64 {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    trimmed.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::private_key::PrivateKey;
+    use crate::wallet::interfaces::{Certificate, CertificateType, SerialNumber};
+    use std::collections::HashMap;
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push_str(&format!("{:02x}", b));
+        }
+        s
+    }
+
+    /// PublicKey for secp256k1 scalar `k` (big-endian 32-byte private key).
+    fn pubkey_for_scalar(k: u8) -> PublicKey {
+        let mut buf = [0u8; 32];
+        buf[31] = k;
+        PrivateKey::from_bytes(&buf).unwrap().to_public_key()
+    }
+
+    fn sample_fields() -> HashMap<String, String> {
+        // Inserted unsorted on purpose; to_binary must sort lexicographically.
+        let mut f = HashMap::new();
+        f.insert("b".to_string(), "two".to_string());
+        f.insert("a".to_string(), "one".to_string());
+        f
+    }
+
+    /// Golden vector cross-checked against the TS SDK `@bsv/sdk`
+    /// `Certificate.toBinary(false)`. The default revocation-outpoint sentinel
+    /// (`'00'.repeat(32)`, no `.vout`) MUST serialize as 32 zero bytes followed by
+    /// `ff` + 8 zero bytes (the `writeVarIntNum(Number(undefined)) == varIntNum(NaN)`
+    /// path), NOT 32 zero bytes + `00`.
+    ///
+    /// Provenance (Node, @bsv/sdk):
+    ///   subject   = new PrivateKey(1).toPublicKey() = 0279be66...f81798
+    ///   certifier = new PrivateKey(2).toPublicKey() = 02c6047f...709ee5
+    ///   type      = base64([1;32]), serial = base64([2;32])
+    ///   revocationOutpoint = '00'.repeat(32), fields = { b: 'two', a: 'one' }
+    #[test]
+    fn to_binary_for_signing_default_sentinel_matches_ts_golden() {
+        const GOLDEN_DEFAULT: &str = "010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee50000000000000000000000000000000000000000000000000000000000000000ff0000000000000000020161036f6e6501620374776f";
+
+        let cert = Certificate {
+            cert_type: CertificateType([1u8; 32]),
+            serial_number: SerialNumber([2u8; 32]),
+            subject: pubkey_for_scalar(1),
+            certifier: pubkey_for_scalar(2),
+            // Default sentinel: 64 hex zeros, NO `.vout` suffix.
+            revocation_outpoint: Some("00".repeat(32)),
+            fields: Some(sample_fields()),
+            signature: None,
+        };
+
+        let bin = AuthCertificate::to_binary_for_signing(&cert);
+        assert_eq!(hex_encode(&bin), GOLDEN_DEFAULT);
+
+        // Explicitly pin the revocation portion: 32 zero bytes + NaN-varint.
+        assert!(
+            hex_encode(&bin).contains(
+                "0000000000000000000000000000000000000000000000000000000000000000ff0000000000000000"
+            ),
+            "default sentinel must serialize the NaN varint (0xff + 8 zero bytes)"
+        );
+    }
+
+    /// Golden vector for a normal dotted outpoint (`<txid>.1`) — regression guard
+    /// ensuring the parity fix did not change the ordinary path. Cross-checked
+    /// against the same TS SDK `toBinary(false)`.
+    #[test]
+    fn to_binary_for_signing_dotted_outpoint_matches_ts_golden() {
+        const GOLDEN_DOTTED: &str = "010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef01020161036f6e6501620374776f";
+
+        let cert = Certificate {
+            cert_type: CertificateType([1u8; 32]),
+            serial_number: SerialNumber([2u8; 32]),
+            subject: pubkey_for_scalar(1),
+            certifier: pubkey_for_scalar(2),
+            revocation_outpoint: Some(
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.1".to_string(),
+            ),
+            fields: Some(sample_fields()),
+            signature: None,
+        };
+
+        let bin = AuthCertificate::to_binary_for_signing(&cert);
+        assert_eq!(hex_encode(&bin), GOLDEN_DOTTED);
+    }
+
+    /// `write_var_int_num_js` unit checks: NaN (no dot) and small integers.
+    #[test]
+    fn write_var_int_num_js_nan_and_small_ints() {
+        let mut nan_buf = Vec::new();
+        write_var_int_num_js(&mut nan_buf, f64::NAN);
+        assert_eq!(nan_buf, vec![0xff, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        let mut zero_buf = Vec::new();
+        write_var_int_num_js(&mut zero_buf, 0.0);
+        assert_eq!(zero_buf, vec![0x00]);
+
+        let mut one_buf = Vec::new();
+        write_var_int_num_js(&mut one_buf, 1.0);
+        assert_eq!(one_buf, vec![0x01]);
+
+        // 253 crosses into the 0xfd branch (little-endian u16).
+        let mut wide_buf = Vec::new();
+        write_var_int_num_js(&mut wide_buf, 253.0);
+        assert_eq!(wide_buf, vec![0xfd, 0xfd, 0x00]);
     }
 }

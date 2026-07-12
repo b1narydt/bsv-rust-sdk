@@ -5,6 +5,7 @@
 //! Translates from TS SDK MasterCertificate.ts and Go SDK master.go.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Deref;
 
 use crate::auth::certificates::certificate::{base64_decode, base64_encode, AuthCertificate};
@@ -39,6 +40,30 @@ impl Deref for MasterCertificate {
     fn deref(&self) -> &Self::Target {
         &self.certificate
     }
+}
+
+/// The default revocation-outpoint sentinel used by
+/// [`MasterCertificate::issue_certificate_for_subject`] when the caller does not
+/// mint a real revocation output.
+///
+/// This is byte-for-byte identical to the TS SDK default
+/// (`getRevocationOutpoint = async (_serial) => '00'.repeat(32)`): 64 hex zeros
+/// with **no** `.vout` suffix. The absence of the `.vout` suffix is load-bearing
+/// — it changes how the outpoint is serialized in the signing preimage (see
+/// `AuthCertificate::to_binary_for_signing`). Do not "helpfully" append `.0`.
+pub fn default_revocation_outpoint() -> String {
+    "00".repeat(32)
+}
+
+/// The default `get_revocation_outpoint` callback for
+/// [`MasterCertificate::issue_certificate_for_subject`], reproducing the TS SDK
+/// default exactly: it ignores the serial and returns [`default_revocation_outpoint`]
+/// (`'00'.repeat(32)`).
+///
+/// Pass this (with `serial_number: None`) to issue a certificate with the default
+/// placeholder revocation outpoint.
+pub async fn default_get_revocation_outpoint(_serial: String) -> Result<String, AuthError> {
+    Ok(default_revocation_outpoint())
 }
 
 impl MasterCertificate {
@@ -200,28 +225,68 @@ impl MasterCertificate {
 
     /// Issue a new signed MasterCertificate for a subject.
     ///
-    /// 1. Generate random serial number (32 bytes)
+    /// 1. Finalize the serial number (use `serial_number` if provided, else
+    ///    generate a random 32-byte serial)
     /// 2. Encrypt fields using create_certificate_fields
-    /// 3. Build Certificate struct
-    /// 4. Sign using AuthCertificate::sign
-    /// 5. Return MasterCertificate { certificate, master_keyring }
+    /// 3. Obtain the revocation outpoint from `get_revocation_outpoint`, called
+    ///    with the finalized serial number as base64 (matching the TS SDK, which
+    ///    passes `finalSerialNumber = Utils.toBase64(Random(32))`)
+    /// 4. Build Certificate struct
+    /// 5. Sign using AuthCertificate::sign
+    /// 6. Return MasterCertificate { certificate, master_keyring }
     ///
-    /// Translated from TS SDK MasterCertificate.issueCertificateForSubject().
-    pub async fn issue_certificate_for_subject<W: WalletInterface + ?Sized>(
+    /// Translated from TS SDK `MasterCertificate.issueCertificateForSubject`:
+    /// ```text
+    /// static async issueCertificateForSubject(
+    ///   certifierWallet, subject, fields, certificateType,
+    ///   getRevocationOutpoint = async (_serial) => '00'.repeat(32),
+    ///   serialNumber?
+    /// )
+    /// ```
+    ///
+    /// The `get_revocation_outpoint` callback is the Rust analogue of the TS
+    /// `getRevocationOutpoint(finalSerialNumber) -> Promise<string>` parameter:
+    /// the SDK does NOT mint a PushDrop itself — the caller's callback supplies
+    /// the outpoint. Pass [`default_get_revocation_outpoint`] to reproduce the TS
+    /// default (`'00'.repeat(32)`), and `None` for `serial_number` to generate a
+    /// random one.
+    ///
+    /// The callback receives the base64-encoded serial number (identical to the
+    /// TS `finalSerialNumber`), so callbacks that mint a revocation output keyed
+    /// on the serial see the exact same value the certificate is signed with.
+    pub async fn issue_certificate_for_subject<W, F, Fut>(
         cert_type: &CertificateType,
         subject: &PublicKey,
         fields: HashMap<String, String>,
         certifier_wallet: &W,
-    ) -> Result<MasterCertificate, AuthError> {
-        // Generate random serial number
-        let serial_bytes = random_bytes(32);
-        let mut serial_arr = [0u8; 32];
-        serial_arr.copy_from_slice(&serial_bytes);
-        let serial_number = SerialNumber(serial_arr);
+        get_revocation_outpoint: F,
+        serial_number: Option<SerialNumber>,
+    ) -> Result<MasterCertificate, AuthError>
+    where
+        W: WalletInterface + ?Sized,
+        F: FnOnce(String) -> Fut,
+        Fut: Future<Output = Result<String, AuthError>>,
+    {
+        // 1. Finalize the serial number (random 32 bytes if not provided).
+        let serial_number = match serial_number {
+            Some(sn) => sn,
+            None => {
+                let serial_bytes = random_bytes(32);
+                let mut serial_arr = [0u8; 32];
+                serial_arr.copy_from_slice(&serial_bytes);
+                SerialNumber(serial_arr)
+            }
+        };
 
-        // Create encrypted fields and master keyring
+        // 2. Create encrypted fields and master keyring.
         let (encrypted_fields, master_keyring) =
             Self::create_certificate_fields(&fields, certifier_wallet, subject).await?;
+
+        // 3. Obtain the revocation outpoint via the caller-supplied callback,
+        //    called with the finalized serial number as base64 (TS parity:
+        //    `getRevocationOutpoint(finalSerialNumber)`).
+        let final_serial_b64 = base64_encode(&serial_number.0);
+        let revocation_outpoint = get_revocation_outpoint(final_serial_b64).await?;
 
         // Get certifier identity key
         let certifier_identity = certifier_wallet
@@ -240,10 +305,7 @@ impl MasterCertificate {
             )
             .await?;
 
-        // Default revocation outpoint (placeholder)
-        let revocation_outpoint = format!("{}.0", "00".repeat(32));
-
-        // Build certificate
+        // 4. Build certificate
         let mut certificate = Certificate {
             cert_type: cert_type.clone(),
             serial_number,
@@ -254,7 +316,7 @@ impl MasterCertificate {
             signature: None,
         };
 
-        // Sign the certificate
+        // 5. Sign the certificate
         AuthCertificate::sign(&mut certificate, certifier_wallet).await?;
 
         MasterCertificate::new(certificate, master_keyring)
@@ -586,6 +648,8 @@ mod tests {
             &subject_pubkey,
             fields,
             &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
         )
         .await
         .expect("issue_certificate_for_subject failed");
@@ -640,6 +704,8 @@ mod tests {
             &subject_pubkey,
             fields.clone(),
             &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
         )
         .await
         .expect("issue failed");
@@ -700,6 +766,8 @@ mod tests {
             &subject_pubkey,
             fields.clone(),
             &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
         )
         .await
         .expect("issue failed");
@@ -711,5 +779,166 @@ mod tests {
             .expect("decrypt_fields failed");
 
         assert_eq!(decrypted.get("secret").unwrap(), "hidden_value");
+    }
+
+    fn anyone_wallet() -> TestWallet {
+        // ProtoWallet('anyone') is scalar 1.
+        let mut buf = [0u8; 32];
+        buf[31] = 1;
+        TestWallet::new(PrivateKey::from_bytes(&buf).unwrap())
+    }
+
+    /// A certificate issued with the DEFAULT callback carries the exact TS
+    /// sentinel string (`'00'.repeat(32)`, NO `.vout`), and it still
+    /// sign->verify round-trips through the SDK's own verify path.
+    #[tokio::test]
+    async fn test_issue_default_carries_ts_sentinel_and_verifies() {
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
+        let cert_type = CertificateType([11u8; 32]);
+
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Alice".to_string());
+
+        let master_cert = MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            &subject_pubkey,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .expect("issue failed");
+
+        // Exact TS sentinel: 64 hex zeros, NO dot.
+        let expected_sentinel = "00".repeat(32);
+        let outpoint = master_cert
+            .certificate
+            .revocation_outpoint
+            .as_deref()
+            .expect("revocation outpoint present");
+        assert_eq!(outpoint, expected_sentinel);
+        assert!(
+            !outpoint.contains('.'),
+            "TS default sentinel must NOT carry a .vout suffix"
+        );
+
+        // Round-trip: the signature produced over the sentinel preimage verifies.
+        let valid = AuthCertificate::verify(&master_cert.certificate, &anyone_wallet())
+            .await
+            .expect("verify failed");
+        assert!(valid, "default-sentinel certificate must verify");
+    }
+
+    /// A custom `get_revocation_outpoint` callback is invoked with the finalized
+    /// serial (base64) and its returned outpoint is carried by the certificate.
+    /// Also asserts that a provided `serial_number` is honored verbatim.
+    #[tokio::test]
+    async fn test_issue_custom_callback_and_provided_serial() {
+        use std::sync::{Arc, Mutex};
+
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
+        let cert_type = CertificateType([12u8; 32]);
+
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Bob".to_string());
+
+        let provided_serial = SerialNumber([9u8; 32]);
+        let expected_serial_b64 = base64_encode(&provided_serial.0);
+        let custom_outpoint =
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899.3".to_string();
+
+        let seen_serial: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen_serial_cb = seen_serial.clone();
+        let custom_outpoint_ret = custom_outpoint.clone();
+
+        let master_cert = MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            &subject_pubkey,
+            fields,
+            &certifier_wallet,
+            move |serial: String| async move {
+                *seen_serial_cb.lock().unwrap() = Some(serial);
+                Ok(custom_outpoint_ret)
+            },
+            Some(provided_serial),
+        )
+        .await
+        .expect("issue failed");
+
+        // Callback was called with the base64 of the (provided) serial.
+        assert_eq!(
+            seen_serial.lock().unwrap().as_deref(),
+            Some(expected_serial_b64.as_str()),
+            "callback must receive the finalized serial as base64"
+        );
+
+        // The certificate carries the callback's returned outpoint verbatim.
+        assert_eq!(
+            master_cert.certificate.revocation_outpoint.as_deref(),
+            Some(custom_outpoint.as_str())
+        );
+
+        // The provided serial number was honored (not regenerated).
+        assert_eq!(master_cert.certificate.serial_number.0, [9u8; 32]);
+
+        // And it still verifies against the SDK's verify path.
+        let valid = AuthCertificate::verify(&master_cert.certificate, &anyone_wallet())
+            .await
+            .expect("verify failed");
+        assert!(valid, "custom-outpoint certificate must verify");
+    }
+
+    /// When `serial_number` is `None`, a random serial is generated (two issuances
+    /// differ), and the generated serial is what the callback observes.
+    #[tokio::test]
+    async fn test_issue_none_serial_generates_random() {
+        use std::sync::{Arc, Mutex};
+
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
+        let cert_type = CertificateType([13u8; 32]);
+
+        // Issue twice with serial_number = None; capture the serial the callback
+        // observes each time, and confirm the two generated serials differ.
+        async fn issue_once(
+            cert_type: &CertificateType,
+            subject_pubkey: &PublicKey,
+            certifier_wallet: &TestWallet,
+        ) -> ([u8; 32], String) {
+            let mut fields = HashMap::new();
+            fields.insert("k".to_string(), "v".to_string());
+            let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let seen_cb = seen.clone();
+            let cert = MasterCertificate::issue_certificate_for_subject(
+                cert_type,
+                subject_pubkey,
+                fields,
+                certifier_wallet,
+                move |serial: String| async move {
+                    *seen_cb.lock().unwrap() = Some(serial);
+                    Ok(default_revocation_outpoint())
+                },
+                None,
+            )
+            .await
+            .expect("issue failed");
+            let observed = seen.lock().unwrap().clone().unwrap();
+            (cert.certificate.serial_number.0, observed)
+        }
+
+        let (serial_a, observed_a) = issue_once(&cert_type, &subject_pubkey, &certifier_wallet).await;
+        let (serial_b, _observed_b) =
+            issue_once(&cert_type, &subject_pubkey, &certifier_wallet).await;
+
+        // Callback observed the same serial the cert was built with.
+        assert_eq!(observed_a, base64_encode(&serial_a));
+        // Fresh random serial each issuance.
+        assert_ne!(
+            serial_a, serial_b,
+            "None serial_number must generate a fresh random serial each issuance"
+        );
     }
 }
