@@ -55,8 +55,8 @@ pub type HexString = String;
 /// value is `None` or `Some(true)`. Serializes transparently as `Option<bool>`
 /// on the wire and in JSON.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(transparent))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct BooleanDefaultTrue(pub Option<bool>);
 
 impl Default for BooleanDefaultTrue {
@@ -117,8 +117,8 @@ impl BooleanDefaultTrue {
 /// value is `None` or `Some(false)`. Serializes transparently as `Option<bool>`
 /// on the wire and in JSON.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(transparent))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct BooleanDefaultFalse(pub Option<bool>);
 
 impl Default for BooleanDefaultFalse {
@@ -199,7 +199,7 @@ pub struct Protocol {
     pub protocol: String,
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl serde::Serialize for Protocol {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
@@ -210,7 +210,7 @@ impl serde::Serialize for Protocol {
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Protocol {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::{self, SeqAccess, Visitor};
@@ -286,7 +286,7 @@ impl Default for Counterparty {
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl serde::Serialize for Counterparty {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.counterparty_type {
@@ -304,7 +304,7 @@ impl serde::Serialize for Counterparty {
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Counterparty {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Accept both a missing field (handled by `#[serde(default)]` at the
@@ -378,7 +378,7 @@ pub fn anyone_private_key() -> PrivateKey {
     .expect("PrivateKey(1) is always valid")
 }
 
-#[cfg(all(test, feature = "network"))]
+#[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     //! Serde-level regression tests for `Counterparty` and its interaction
     //! with `#[serde(default)]` on BRC-100 arg structs.

@@ -23,7 +23,7 @@ use crate::wallet::types::{
 
 /// Serde helpers for custom JSON serialization of wallet types.
 /// Gated behind the "network" feature since serde is an optional dependency.
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 pub(crate) mod serde_helpers {
     use crate::primitives::public_key::PublicKey;
 
@@ -369,7 +369,7 @@ pub(crate) mod serde_helpers {
 /// Used for plain `bool` fields whose TS wire form is `?: true` (the literal
 /// type `true | undefined`) — those must serialize only when `true`, and be
 /// omitted when `false` to match TS's `JSON.stringify(undefined)` behavior.
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -380,17 +380,17 @@ fn is_false(b: &bool) -> bool {
 
 /// Current state of a transaction action.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum ActionStatus {
     Completed,
     Unprocessed,
     Sending,
     Unproven,
     Unsigned,
-    #[cfg_attr(feature = "network", serde(rename = "nosend"))]
+    #[cfg_attr(feature = "serde", serde(rename = "nosend"))]
     NoSend,
-    #[cfg_attr(feature = "network", serde(rename = "nonfinal"))]
+    #[cfg_attr(feature = "serde", serde(rename = "nonfinal"))]
     NonFinal,
     Failed,
 }
@@ -412,8 +412,8 @@ impl ActionStatus {
 
 /// Status of a transaction result (subset of ActionStatus).
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum ActionResultStatus {
     Unproven,
     Sending,
@@ -432,8 +432,8 @@ impl ActionResultStatus {
 
 /// How multiple criteria are combined in queries.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum QueryMode {
     Any,
     All,
@@ -450,11 +450,11 @@ impl QueryMode {
 
 /// What additional data to include with output listings.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OutputInclude {
-    #[cfg_attr(feature = "network", serde(rename = "locking scripts"))]
+    #[cfg_attr(feature = "serde", serde(rename = "locking scripts"))]
     LockingScripts,
-    #[cfg_attr(feature = "network", serde(rename = "entire transactions"))]
+    #[cfg_attr(feature = "serde", serde(rename = "entire transactions"))]
     EntireTransactions,
 }
 
@@ -469,11 +469,11 @@ impl OutputInclude {
 
 /// Protocol for internalizing transaction outputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InternalizeProtocol {
-    #[cfg_attr(feature = "network", serde(rename = "wallet payment"))]
+    #[cfg_attr(feature = "serde", serde(rename = "wallet payment"))]
     WalletPayment,
-    #[cfg_attr(feature = "network", serde(rename = "basket insertion"))]
+    #[cfg_attr(feature = "serde", serde(rename = "basket insertion"))]
     BasketInsertion,
 }
 
@@ -488,8 +488,8 @@ impl InternalizeProtocol {
 
 /// Protocol for certificate acquisition.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum AcquisitionProtocol {
     Direct,
     Issuance,
@@ -506,8 +506,8 @@ impl AcquisitionProtocol {
 
 /// Blockchain network type.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum Network {
     Mainnet,
     Testnet,
@@ -524,8 +524,8 @@ impl Network {
 
 /// Trust level for self-referential operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum TrustSelf {
     Known,
 }
@@ -547,14 +547,14 @@ impl TrustSelf {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CertificateType(pub [u8; 32]);
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl serde::Serialize for CertificateType {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde_helpers::bytes32_base64::serialize(&self.0, serializer)
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for CertificateType {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         serde_helpers::bytes32_base64::deserialize(deserializer).map(CertificateType)
@@ -603,14 +603,14 @@ impl CertificateType {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SerialNumber(pub [u8; 32]);
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl serde::Serialize for SerialNumber {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde_helpers::bytes32_base64::serialize(&self.0, serializer)
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for SerialNumber {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         serde_helpers::bytes32_base64::deserialize(deserializer).map(SerialNumber)
@@ -707,75 +707,75 @@ impl SerialNumber {
 
 /// A certificate in the wallet.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Certificate {
-    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub cert_type: CertificateType,
     pub serial_number: SerialNumber,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub subject: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub certifier: PublicKey,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub revocation_outpoint: Option<String>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fields: Option<HashMap<String, String>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
 }
 
 /// A partial certificate where all fields are optional.
 /// Used for ProveCertificateArgs to match TS SDK's `Partial<WalletCertificate>`.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PartialCertificate {
-    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub cert_type: Option<CertificateType>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub serial_number: Option<SerialNumber>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
-    #[cfg_attr(feature = "network", serde(default))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub subject: Option<PublicKey>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
-    #[cfg_attr(feature = "network", serde(default))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub certifier: Option<PublicKey>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub revocation_outpoint: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub fields: Option<HashMap<String, String>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
-    #[cfg_attr(feature = "network", serde(default))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
 }
 
@@ -802,7 +802,7 @@ pub enum KeyringRevealer {
     PubKey(PublicKey),
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl serde::Serialize for KeyringRevealer {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -812,7 +812,7 @@ impl serde::Serialize for KeyringRevealer {
     }
 }
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for KeyringRevealer {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
@@ -832,27 +832,27 @@ impl<'de> serde::Deserialize<'de> for KeyringRevealer {
 
 /// An input to be spent in a new transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionInput {
     pub outpoint: OutpointString,
     pub input_description: String,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub unlocking_script: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub unlocking_script_length: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub sequence_number: Option<u32>,
@@ -860,32 +860,32 @@ pub struct CreateActionInput {
 
 /// An output to be created in a new transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionOutput {
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub locking_script: Option<Vec<u8>>,
     pub satoshis: SatoshiValue,
     pub output_description: String,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub basket: Option<BasketStringUnder300Bytes>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub tags: Vec<OutputTagStringUnder300Bytes>,
@@ -893,11 +893,11 @@ pub struct CreateActionOutput {
 
 /// Optional parameters for creating a new transaction.
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionOptions {
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -905,7 +905,7 @@ pub struct CreateActionOptions {
     )]
     pub sign_and_process: BooleanDefaultTrue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -913,17 +913,17 @@ pub struct CreateActionOptions {
     )]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub trust_self: Option<TrustSelf>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub known_txids: Vec<TXIDHexString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -931,7 +931,7 @@ pub struct CreateActionOptions {
     )]
     pub return_txid_only: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -939,17 +939,17 @@ pub struct CreateActionOptions {
     )]
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub no_send_change: Vec<OutpointString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub send_with: Vec<TXIDHexString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -960,72 +960,72 @@ pub struct CreateActionOptions {
 
 /// Arguments for creating a new transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionArgs {
     pub description: DescriptionString5to50Bytes,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
-    #[cfg_attr(feature = "network", serde(rename = "inputBEEF"))]
+    #[cfg_attr(feature = "serde", serde(rename = "inputBEEF"))]
     pub input_beef: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub inputs: Vec<CreateActionInput>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub outputs: Vec<CreateActionOutput>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub lock_time: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub version: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub options: Option<CreateActionOptions>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub reference: Option<String>,
 }
 
 /// Data needed to complete signing of a partial transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SignableTransaction {
     // bytes_as_array: TS types `tx` as `AtomicBEEF = Byte[]` (number array).
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub tx: Vec<u8>,
     // bytes_as_base64: TS types `reference` as `Base64String`, so the wire
     // format is a base64 string (not a number array). See BRC-100.
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
 }
 
 /// Status of a transaction sent as part of a batch.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SendWithResult {
     pub txid: TXIDHexString,
     pub status: ActionResultStatus,
@@ -1033,8 +1033,8 @@ pub struct SendWithResult {
 
 /// Status of a review action result from undelayed broadcast.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum ReviewActionResultStatus {
     Success,
     DoubleSpend,
@@ -1055,56 +1055,56 @@ impl ReviewActionResultStatus {
 
 /// Result of reviewing a non-delayed broadcast action.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ReviewActionResult {
     pub txid: TXIDHexString,
     pub status: ReviewActionResultStatus,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub competing_txs: Option<Vec<String>>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub competing_beef: Option<Vec<u8>>,
 }
 
 /// Result of creating a transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionResult {
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub txid: Option<TXIDHexString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub tx: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub no_send_change: Vec<OutpointString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub send_with_results: Vec<SendWithResult>,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signable_transaction: Option<SignableTransaction>,
 }
 
 /// Unlocking script and sequence number for a specific input.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SignActionSpend {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_hex"))]
     pub unlocking_script: Vec<u8>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub sequence_number: Option<u32>,
@@ -1112,11 +1112,11 @@ pub struct SignActionSpend {
 
 /// Controls signing and broadcasting behavior.
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SignActionOptions {
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -1124,7 +1124,7 @@ pub struct SignActionOptions {
     )]
     pub accept_delayed_broadcast: BooleanDefaultTrue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1132,7 +1132,7 @@ pub struct SignActionOptions {
     )]
     pub return_txid_only: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1140,7 +1140,7 @@ pub struct SignActionOptions {
     )]
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub send_with: Vec<TXIDHexString>,
@@ -1148,15 +1148,15 @@ pub struct SignActionOptions {
 
 /// Arguments for signing a previously created transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SignActionArgs {
     // bytes_as_base64: TS types `reference` as `Base64String` on the wire.
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
     pub spends: HashMap<u32, SignActionSpend>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub options: Option<SignActionOptions>,
@@ -1164,22 +1164,22 @@ pub struct SignActionArgs {
 
 /// Result of a successful signing operation.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SignActionResult {
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub txid: Option<TXIDHexString>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub tx: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub send_with_results: Vec<SendWithResult>,
@@ -1187,18 +1187,18 @@ pub struct SignActionResult {
 
 /// Arguments for aborting a transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AbortActionArgs {
     // bytes_as_base64: TS types `reference` as `Base64String` on the wire.
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_base64"))]
     pub reference: Vec<u8>,
 }
 
 /// Result of aborting a transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AbortActionResult {
     pub aborted: bool,
 }
@@ -1209,26 +1209,26 @@ pub struct AbortActionResult {
 
 /// A transaction input with full details.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ActionInput {
     pub source_outpoint: OutpointString,
     pub source_satoshis: SatoshiValue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub source_locking_script: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub unlocking_script: Option<Vec<u8>>,
@@ -1238,33 +1238,33 @@ pub struct ActionInput {
 
 /// A transaction output with full details.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ActionOutput {
     pub satoshis: SatoshiValue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub locking_script: Option<Vec<u8>>,
     pub spendable: bool,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub custom_instructions: Option<String>,
     pub tags: Vec<String>,
     pub output_index: u32,
     pub output_description: String,
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub basket: Option<String>,
 }
 
 /// Full details about a wallet transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Action {
     pub txid: TXIDHexString,
     pub satoshis: i64,
@@ -1272,19 +1272,19 @@ pub struct Action {
     pub is_outgoing: bool,
     pub description: String,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<String>,
     pub version: u32,
     pub lock_time: u32,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub inputs: Vec<ActionInput>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub outputs: Vec<ActionOutput>,
@@ -1299,21 +1299,21 @@ pub const MAX_ACTIONS_LIMIT: u32 = 10000;
 
 /// Filtering and pagination options for listing wallet transactions.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListActionsArgs {
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub label_query_mode: Option<QueryMode>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1321,7 +1321,7 @@ pub struct ListActionsArgs {
     )]
     pub include_labels: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1329,7 +1329,7 @@ pub struct ListActionsArgs {
     )]
     pub include_inputs: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1337,7 +1337,7 @@ pub struct ListActionsArgs {
     )]
     pub include_input_source_locking_scripts: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1345,7 +1345,7 @@ pub struct ListActionsArgs {
     )]
     pub include_input_unlocking_scripts: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1353,22 +1353,22 @@ pub struct ListActionsArgs {
     )]
     pub include_outputs: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
         )
     )]
     pub include_output_locking_scripts: BooleanDefaultFalse,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub limit: PositiveIntegerDefault10Max10000,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -1379,8 +1379,8 @@ pub struct ListActionsArgs {
 
 /// Paginated list of wallet transactions.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListActionsResult {
     pub total_actions: u32,
     pub actions: Vec<Action>,
@@ -1392,32 +1392,32 @@ pub struct ListActionsResult {
 
 /// Derivation and identity data for wallet payment outputs.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Payment {
     // bytes_as_base64: TS SDK types these as Base64String, Go uses default
     // json.Marshal for []byte which produces base64. BSV Desktop expects strings.
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_base64"))]
     pub derivation_prefix: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_base64"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_base64"))]
     pub derivation_suffix: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub sender_identity_key: PublicKey,
 }
 
 /// Metadata for outputs being inserted into baskets.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct BasketInsertion {
     pub basket: BasketStringUnder300Bytes,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub tags: Vec<OutputTagStringUnder300Bytes>,
@@ -1429,40 +1429,40 @@ pub struct BasketInsertion {
 /// This makes impossible states unrepresentable: a WalletPayment always has
 /// a Payment, and a BasketInsertion always has a BasketInsertion.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(tag = "protocol", rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "protocol", rename_all = "camelCase"))]
 pub enum InternalizeOutput {
-    #[cfg_attr(feature = "network", serde(rename = "wallet payment"))]
+    #[cfg_attr(feature = "serde", serde(rename = "wallet payment"))]
     WalletPayment {
-        #[cfg_attr(feature = "network", serde(rename = "outputIndex"))]
+        #[cfg_attr(feature = "serde", serde(rename = "outputIndex"))]
         output_index: u32,
-        #[cfg_attr(feature = "network", serde(rename = "paymentRemittance"))]
+        #[cfg_attr(feature = "serde", serde(rename = "paymentRemittance"))]
         payment: Payment,
     },
-    #[cfg_attr(feature = "network", serde(rename = "basket insertion"))]
+    #[cfg_attr(feature = "serde", serde(rename = "basket insertion"))]
     BasketInsertion {
-        #[cfg_attr(feature = "network", serde(rename = "outputIndex"))]
+        #[cfg_attr(feature = "serde", serde(rename = "outputIndex"))]
         output_index: u32,
-        #[cfg_attr(feature = "network", serde(rename = "insertionRemittance"))]
+        #[cfg_attr(feature = "serde", serde(rename = "insertionRemittance"))]
         insertion: BasketInsertion,
     },
 }
 
 /// Arguments for importing an external transaction into the wallet.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct InternalizeActionArgs {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub tx: Vec<u8>,
     pub description: String,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<LabelStringUnder300Bytes>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -1474,8 +1474,8 @@ pub struct InternalizeActionArgs {
 
 /// Result of internalizing a transaction.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct InternalizeActionResult {
     pub accepted: bool,
 }
@@ -1486,27 +1486,27 @@ pub struct InternalizeActionResult {
 
 /// Filtering and options for listing wallet outputs.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListOutputsArgs {
     pub basket: BasketStringUnder300Bytes,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub tags: Vec<OutputTagStringUnder300Bytes>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub tag_query_mode: Option<QueryMode>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub include: Option<OutputInclude>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1514,7 +1514,7 @@ pub struct ListOutputsArgs {
     )]
     pub include_custom_instructions: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1522,7 +1522,7 @@ pub struct ListOutputsArgs {
     )]
     pub include_tags: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -1530,17 +1530,17 @@ pub struct ListOutputsArgs {
     )]
     pub include_labels: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub limit: PositiveIntegerDefault10Max10000,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultTrue::none",
             skip_serializing_if = "BooleanDefaultTrue::is_none"
@@ -1551,33 +1551,33 @@ pub struct ListOutputsArgs {
 
 /// A wallet UTXO with its metadata.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Output {
     pub satoshis: SatoshiValue,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub locking_script: Option<Vec<u8>>,
     pub spendable: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub custom_instructions: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub tags: Vec<String>,
     pub outpoint: OutpointString,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub labels: Vec<String>,
@@ -1585,19 +1585,19 @@ pub struct Output {
 
 /// Paginated list of wallet outputs.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListOutputsResult {
     pub total_outputs: u32,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
-    #[cfg_attr(feature = "network", serde(rename = "BEEF"))]
+    #[cfg_attr(feature = "serde", serde(rename = "BEEF"))]
     pub beef: Option<Vec<u8>>,
     pub outputs: Vec<Output>,
 }
@@ -1608,8 +1608,8 @@ pub struct ListOutputsResult {
 
 /// Arguments for relinquishing ownership of an output.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RelinquishOutputArgs {
     pub basket: BasketStringUnder300Bytes,
     pub output: OutpointString,
@@ -1617,8 +1617,8 @@ pub struct RelinquishOutputArgs {
 
 /// Result of relinquishing an output.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RelinquishOutputResult {
     pub relinquished: bool,
 }
@@ -1629,45 +1629,45 @@ pub struct RelinquishOutputResult {
 
 /// Arguments for getting a public key.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetPublicKeyArgs {
     // TS types this as `identityKey?: true` (literal `true | undefined`),
     // so the wire form is either present-and-true or absent. Skip when false
     // to match TS's `JSON.stringify(undefined)` omission.
-    #[cfg_attr(feature = "network", serde(default, skip_serializing_if = "is_false"))]
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
     pub identity_key: bool,
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub protocol_id: Option<Protocol>,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub key_id: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub counterparty: Option<Counterparty>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub for_self: Option<bool>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub seek_permission: Option<bool>,
@@ -1675,35 +1675,35 @@ pub struct GetPublicKeyArgs {
 
 /// Result of getting a public key.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetPublicKeyResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub public_key: PublicKey,
 }
 
 /// Arguments for encryption.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct EncryptArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub plaintext: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1711,35 +1711,35 @@ pub struct EncryptArgs {
 
 /// Result of encryption.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct EncryptResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub ciphertext: Vec<u8>,
 }
 
 /// Arguments for decryption.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DecryptArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub ciphertext: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1747,35 +1747,35 @@ pub struct DecryptArgs {
 
 /// Result of decryption.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DecryptResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub plaintext: Vec<u8>,
 }
 
 /// Arguments for creating an HMAC.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateHmacArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub data: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1783,37 +1783,37 @@ pub struct CreateHmacArgs {
 
 /// Result of creating an HMAC.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateHmacResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub hmac: Vec<u8>,
 }
 
 /// Arguments for verifying an HMAC.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VerifyHmacArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub data: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub hmac: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1821,50 +1821,50 @@ pub struct VerifyHmacArgs {
 
 /// Result of verifying an HMAC.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VerifyHmacResult {
     pub valid: bool,
 }
 
 /// Arguments for creating a digital signature.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateSignatureArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub data: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub hash_to_directly_sign: Option<Vec<u8>>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1872,61 +1872,61 @@ pub struct CreateSignatureArgs {
 
 /// Result of creating a digital signature.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateSignatureResult {
     // bytes_as_array: TS SDK returns Byte[] (number array), Go SDK uses BytesList.
     // NOT bytes_as_hex — BSV Desktop JSON API returns [48, 69, ...] not "3045...".
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub signature: Vec<u8>,
 }
 
 /// Arguments for verifying a digital signature.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VerifySignatureArgs {
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub counterparty: Counterparty,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub data: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_array")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub hash_to_directly_verify: Option<Vec<u8>>,
     // bytes_as_array: matches TS Byte[] and Go BytesList format.
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub signature: Vec<u8>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub for_self: Option<bool>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -1934,8 +1934,8 @@ pub struct VerifySignatureArgs {
 
 /// Result of verifying a digital signature.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VerifySignatureResult {
     pub valid: bool,
 }
@@ -1946,57 +1946,57 @@ pub struct VerifySignatureResult {
 
 /// Arguments for acquiring a new certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AcquireCertificateArgs {
-    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub cert_type: CertificateType,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub certifier: PublicKey,
     pub acquisition_protocol: AcquisitionProtocol,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub fields: HashMap<String, String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub serial_number: Option<SerialNumber>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub revocation_outpoint: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub signature: Option<Vec<u8>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub certifier_url: Option<String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub keyring_revealer: Option<KeyringRevealer>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub keyring_for_subject: Option<HashMap<String, String>>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
@@ -2004,28 +2004,28 @@ pub struct AcquireCertificateArgs {
 
 /// Arguments for listing certificates.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListCertificatesArgs {
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::vec_public_key_hex", default)
     )]
     pub certifiers: Vec<PublicKey>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub types: Vec<CertificateType>,
-    #[cfg_attr(feature = "network", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub limit: PositiveIntegerDefault10Max10000,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<PositiveIntegerOrZero>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -2033,34 +2033,34 @@ pub struct ListCertificatesArgs {
     )]
     pub privileged: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
     /// Optional partial certificate filter for exact matching.
     /// When provided, only certificates matching these fields are returned.
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub partial: Option<PartialCertificate>,
 }
 
 /// A certificate with its keyring and verifier.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CertificateResult {
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub keyring: Option<HashMap<String, String>>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_bytes_as_hex")
     )]
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub verifier: Option<Vec<u8>>,
@@ -2068,8 +2068,8 @@ pub struct CertificateResult {
 
 /// Paginated list of certificates.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ListCertificatesResult {
     pub total_certificates: u32,
     pub certificates: Vec<CertificateResult>,
@@ -2077,15 +2077,15 @@ pub struct ListCertificatesResult {
 
 /// Arguments for creating a verifiable certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateArgs {
     pub certificate: PartialCertificate,
     pub fields_to_reveal: Vec<String>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(
             default = "BooleanDefaultFalse::none",
             skip_serializing_if = "BooleanDefaultFalse::is_none"
@@ -2093,7 +2093,7 @@ pub struct ProveCertificateArgs {
     )]
     pub privileged: BooleanDefaultFalse,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
@@ -2101,40 +2101,40 @@ pub struct ProveCertificateArgs {
 
 /// Result of creating a verifiable certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateResult {
     pub keyring_for_verifier: HashMap<String, String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub certificate: Option<Certificate>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(with = "serde_helpers::option_public_key_hex")
     )]
-    #[cfg_attr(feature = "network", serde(default))]
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub verifier: Option<PublicKey>,
 }
 
 /// Arguments for relinquishing ownership of a certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RelinquishCertificateArgs {
-    #[cfg_attr(feature = "network", serde(rename = "type"))]
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub cert_type: CertificateType,
     pub serial_number: SerialNumber,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub certifier: PublicKey,
 }
 
 /// Result of relinquishing a certificate.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RelinquishCertificateResult {
     pub relinquished: bool,
 }
@@ -2145,8 +2145,8 @@ pub struct RelinquishCertificateResult {
 
 /// Information about an entity that issues identity certificates.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityCertifier {
     pub name: String,
     pub icon_url: String,
@@ -2156,10 +2156,10 @@ pub struct IdentityCertifier {
 
 /// An identity certificate with decoded fields and certifier info.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct IdentityCertificate {
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     pub certifier_info: IdentityCertifier,
     pub publicly_revealed_keyring: HashMap<String, String>,
@@ -2168,23 +2168,23 @@ pub struct IdentityCertificate {
 
 /// Arguments for discovering certificates by identity key.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DiscoverByIdentityKeyArgs {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub identity_key: PublicKey,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub limit: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -2192,22 +2192,22 @@ pub struct DiscoverByIdentityKeyArgs {
 
 /// Arguments for discovering certificates by attributes.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DiscoverByAttributesArgs {
     pub attributes: HashMap<String, String>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub limit: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub offset: Option<u32>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub seek_permission: Option<bool>,
@@ -2215,8 +2215,8 @@ pub struct DiscoverByAttributesArgs {
 
 /// Paginated list of identity certificates found during discovery.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DiscoverCertificatesResult {
     pub total_certificates: u32,
     pub certificates: Vec<IdentityCertificate>,
@@ -2228,20 +2228,20 @@ pub struct DiscoverCertificatesResult {
 
 /// Arguments for revealing key linkage between counterparties.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RevealCounterpartyKeyLinkageArgs {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub counterparty: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged: Option<bool>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
@@ -2249,41 +2249,41 @@ pub struct RevealCounterpartyKeyLinkageArgs {
 
 /// Result of revealing counterparty key linkage.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RevealCounterpartyKeyLinkageResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub prover: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub counterparty: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
     pub revelation_time: String,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub encrypted_linkage: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub encrypted_linkage_proof: Vec<u8>,
 }
 
 /// Arguments for revealing specific key linkage.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RevealSpecificKeyLinkageArgs {
     pub counterparty: Counterparty,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged: Option<bool>,
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub privileged_reason: Option<String>,
@@ -2291,22 +2291,22 @@ pub struct RevealSpecificKeyLinkageArgs {
 
 /// Result of revealing specific key linkage.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RevealSpecificKeyLinkageResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub encrypted_linkage: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_array"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_array"))]
     pub encrypted_linkage_proof: Vec<u8>,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub prover: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::public_key_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub counterparty: PublicKey,
-    #[cfg_attr(feature = "network", serde(rename = "protocolID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
-    #[cfg_attr(feature = "network", serde(rename = "keyID"))]
+    #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
     pub key_id: String,
     pub proof_type: u8,
 }
@@ -2317,49 +2317,49 @@ pub struct RevealSpecificKeyLinkageResult {
 
 /// Whether the current session is authenticated.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AuthenticatedResult {
     pub authenticated: bool,
 }
 
 /// Current blockchain height.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetHeightResult {
     pub height: u32,
 }
 
 /// Arguments for retrieving a blockchain header at a specific height.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetHeaderArgs {
     pub height: u32,
 }
 
 /// Blockchain header data for the requested height.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetHeaderResult {
-    #[cfg_attr(feature = "network", serde(with = "serde_helpers::bytes_as_hex"))]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::bytes_as_hex"))]
     pub header: Vec<u8>,
 }
 
 /// Current blockchain network.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetNetworkResult {
     pub network: Network,
 }
 
 /// Version information about the wallet implementation.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct GetVersionResult {
     pub version: String,
 }
@@ -2605,7 +2605,7 @@ mod review_action_result_tests {
         assert_eq!(ReviewActionResultStatus::InvalidTx.as_str(), "invalidTx");
     }
 
-    #[cfg(feature = "network")]
+    #[cfg(feature = "serde")]
     #[test]
     fn test_review_action_result_serde_roundtrip() {
         let r = ReviewActionResult {

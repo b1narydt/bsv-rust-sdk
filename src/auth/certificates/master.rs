@@ -24,11 +24,11 @@ use crate::wallet::types::{Counterparty, CounterpartyType};
 /// the certificate subject. The MasterCertificate can create verifier-specific
 /// keyrings by decrypting the master keys and re-encrypting them for a verifier.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "network", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct MasterCertificate {
     /// The underlying wallet Certificate.
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// Maps field names to base64-encoded master encryption keys.
     pub master_keyring: HashMap<String, String>,

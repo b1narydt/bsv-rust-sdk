@@ -3,7 +3,7 @@
 //! Translates the TS SDK kvstore/types.ts. Defines configuration, entry,
 //! query, and protocol field index types for the key-value store modules.
 
-#[cfg(feature = "network")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Protocol field indices for PushDrop KVStore tokens.
@@ -81,38 +81,38 @@ impl Default for KvStoreConfig {
 
 /// Query parameters for KVStore lookups from overlay services.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "network", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct KvStoreQuery {
     /// Key to search for.
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub key: Option<String>,
     /// Controller public key (hex).
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub controller: Option<String>,
     /// Protocol ID filter.
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", rename = "protocolID")
     )]
     pub protocol_id: Option<WalletProtocol>,
     /// Tags to filter by.
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub tags: Option<Vec<String>>,
     /// Tag query mode: "all" or "any".
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", rename = "tagQueryMode")
     )]
     pub tag_query_mode: Option<String>,
     /// Maximum number of results.
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub limit: Option<u32>,
     /// Number of results to skip.
-    #[cfg_attr(feature = "network", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub skip: Option<u32>,
     /// Sort order: "asc" or "desc".
     #[cfg_attr(
-        feature = "network",
+        feature = "serde",
         serde(skip_serializing_if = "Option::is_none", rename = "sortOrder")
     )]
     pub sort_order: Option<String>,

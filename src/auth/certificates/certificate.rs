@@ -118,10 +118,10 @@ pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, AuthError> {
 /// the BRC-31 authentication protocol. Derefs to the inner
 /// wallet::Certificate for transparent field access.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "network", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AuthCertificate {
     /// The underlying wallet Certificate.
-    #[cfg_attr(feature = "network", serde(flatten))]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Certificate,
 }
 
