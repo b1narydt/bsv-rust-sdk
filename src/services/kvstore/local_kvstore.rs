@@ -5,12 +5,11 @@
 //! is a PushDrop token output in a specific wallet basket (context).
 //! Supports encryption of values and per-key locking for concurrent safety.
 
-use crate::primitives::private_key::PrivateKey;
 use crate::primitives::utils::to_hex;
-use crate::script::templates::push_drop::PushDrop;
-use crate::script::templates::ScriptTemplateLock;
+use crate::script::templates::push_drop::{LockPosition, PushDrop};
 use crate::services::ServicesError;
 use crate::wallet::interfaces::WalletInterface;
+use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
 use super::global_kvstore::KeyLocks;
 
@@ -122,12 +121,33 @@ impl<W: WalletInterface> LocalKvStore<W> {
             value.as_bytes().to_vec()
         };
 
-        // Create PushDrop locking script with value.
-        let pk = PrivateKey::from_random()
-            .map_err(|e| ServicesError::KvStore(format!("key generation failed: {}", e)))?;
-        let pd = PushDrop::new(vec![value_bytes], pk);
-        let locking_script = pd
-            .lock()
+        // Create the PushDrop locking script, locked to a key DERIVED FROM THE
+        // WALLET under this store's (protocol, keyID) — as TS LocalKVStore does.
+        //
+        // This previously minted a fresh random PrivateKey per `set()` and threw it
+        // away, which produced a token nobody could ever spend. The store has held a
+        // `wallet` all along (it was `#[allow(dead_code)]`); now it uses it.
+        let (level, context, key_id) = self.get_protocol(key);
+        let protocol_id = Protocol {
+            security_level: level as u8,
+            protocol: context,
+        };
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Self_,
+            public_key: None,
+        };
+
+        let locking_script = PushDrop::new(&self.wallet, self.config.originator.clone())
+            .lock(
+                vec![value_bytes],
+                protocol_id,
+                &key_id,
+                counterparty,
+                false,
+                true,
+                LockPosition::Before,
+            )
+            .await
             .map_err(|e| ServicesError::KvStore(format!("PushDrop lock failed: {}", e)))?;
 
         let _script_hex = to_hex(&locking_script.to_binary());

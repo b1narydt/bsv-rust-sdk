@@ -4,7 +4,6 @@
 //! callback used by Historian to extract key-value data from PushDrop
 //! transaction outputs.
 
-use crate::script::templates::push_drop::PushDrop;
 use crate::transaction::Transaction;
 
 use super::types::{KvContext, KvProtocol};
@@ -36,7 +35,7 @@ pub fn kv_store_interpreter(
     // previous hand-rolled "collect data pushes before the first opcode" grabbed
     // the leading pubkey, immediately hit OP_CHECKSIG, and bailed with one field.
     // `decode` returns the data fields, including the trailing signature field.
-    let decoded = PushDrop::decode(&output.locking_script).ok()?;
+    let decoded = crate::script::templates::push_drop::decode(&output.locking_script).ok()?;
     let fields = &decoded.fields;
 
     // Support both old format (5 fields: [protocolID, key, value, controller,
@@ -69,12 +68,14 @@ pub fn kv_store_interpreter(
 mod tests {
     use super::*;
     use crate::primitives::private_key::PrivateKey;
-    use crate::script::templates::push_drop::PushDrop;
-    use crate::script::templates::ScriptTemplateLock;
+    use crate::script::templates::push_drop::{LockPosition, PushDrop};
     use crate::transaction::{Transaction, TransactionOutput};
+    use crate::wallet::proto_wallet::ProtoWallet;
+    use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
-    fn make_kv_tx(key: &str, value: &str, protocol_id: &str) -> Transaction {
+    async fn make_kv_tx(key: &str, value: &str, protocol_id: &str) -> Transaction {
         let pk = PrivateKey::from_hex("1").unwrap();
+        let w = ProtoWallet::new(pk.clone());
         let fields = vec![
             protocol_id.as_bytes().to_vec(),
             key.as_bytes().to_vec(),
@@ -82,8 +83,24 @@ mod tests {
             pk.to_public_key().to_der(), // controller
             b"[]".to_vec(),              // tags (empty)
         ];
-        let pd = PushDrop::new(fields, pk);
-        let lock_script = pd.lock().unwrap();
+        let lock_script = PushDrop::new(&w, None)
+            .lock(
+                fields,
+                Protocol {
+                    security_level: 2,
+                    protocol: "kvstore".to_string(),
+                },
+                key,
+                Counterparty {
+                    counterparty_type: CounterpartyType::Self_,
+                    public_key: None,
+                },
+                false,
+                true,
+                LockPosition::Before,
+            )
+            .await
+            .unwrap();
 
         let mut tx = Transaction::new();
         tx.outputs.push(TransactionOutput {
@@ -94,9 +111,9 @@ mod tests {
         tx
     }
 
-    #[test]
-    fn test_interpreter_extracts_matching_key() {
-        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]");
+    #[tokio::test]
+    async fn test_interpreter_extracts_matching_key() {
+        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]").await;
         let ctx = KvContext {
             key: "mykey".to_string(),
             protocol_id: (1, "kvstore".to_string()),
@@ -106,9 +123,9 @@ mod tests {
         assert_eq!(result, Some("myvalue".to_string()));
     }
 
-    #[test]
-    fn test_interpreter_returns_none_for_wrong_key() {
-        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]");
+    #[tokio::test]
+    async fn test_interpreter_returns_none_for_wrong_key() {
+        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]").await;
         let ctx = KvContext {
             key: "otherkey".to_string(),
             protocol_id: (1, "kvstore".to_string()),
@@ -118,9 +135,9 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn test_interpreter_returns_none_for_wrong_protocol() {
-        let tx = make_kv_tx("mykey", "myvalue", "[2,\"other\"]");
+    #[tokio::test]
+    async fn test_interpreter_returns_none_for_wrong_protocol() {
+        let tx = make_kv_tx("mykey", "myvalue", "[2,\"other\"]").await;
         let ctx = KvContext {
             key: "mykey".to_string(),
             protocol_id: (1, "kvstore".to_string()),
@@ -130,15 +147,15 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn test_interpreter_returns_none_no_context() {
-        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]");
+    #[tokio::test]
+    async fn test_interpreter_returns_none_no_context() {
+        let tx = make_kv_tx("mykey", "myvalue", "[1,\"kvstore\"]").await;
         let result = kv_store_interpreter(&tx, 0, None);
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn test_interpreter_returns_none_empty_tx() {
+    #[tokio::test]
+    async fn test_interpreter_returns_none_empty_tx() {
         let tx = Transaction::new();
         let ctx = KvContext {
             key: "mykey".to_string(),

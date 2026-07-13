@@ -10,10 +10,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::primitives::private_key::PrivateKey;
 use crate::primitives::utils::to_hex;
-use crate::script::templates::push_drop::PushDrop;
-use crate::script::templates::ScriptTemplateLock;
+use crate::script::templates::push_drop::{LockPosition, PushDrop};
 use crate::services::overlay_tools::historian::Historian;
 use crate::services::overlay_tools::lookup_resolver::LookupResolver;
 use crate::services::overlay_tools::retry::with_double_spend_retry;
@@ -23,6 +21,8 @@ use crate::services::overlay_tools::types::{
 };
 use crate::services::ServicesError;
 use crate::transaction::beef::Beef;
+use crate::wallet::interfaces::{GetPublicKeyArgs, WalletInterface};
+use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
 use super::interpreter::kv_store_interpreter;
 use super::types::{
@@ -71,7 +71,11 @@ impl Default for KeyLocks {
 /// Each key-value pair is a PushDrop token output tracked by the overlay.
 /// Supports get, set, and remove operations with per-key locking and
 /// double-spend retry for writes.
-pub struct GlobalKvStore {
+pub struct GlobalKvStore<W: WalletInterface> {
+    /// Wallet used to derive the PushDrop locking key and sign the token — TS's
+    /// GlobalKVStore takes a wallet for exactly this reason. Without it, `set`
+    /// could only mint a token locked to a throwaway key that nobody can spend.
+    wallet: W,
     /// Configuration.
     config: KvStoreConfig,
     /// LookupResolver for overlay queries.
@@ -85,9 +89,9 @@ pub struct GlobalKvStore {
     key_locks: KeyLocks,
 }
 
-impl GlobalKvStore {
-    /// Create a new GlobalKvStore with the given configuration.
-    pub fn new(config: KvStoreConfig) -> Result<Self, ServicesError> {
+impl<W: WalletInterface> GlobalKvStore<W> {
+    /// Create a new GlobalKvStore with the given wallet and configuration.
+    pub fn new(wallet: W, config: KvStoreConfig) -> Result<Self, ServicesError> {
         let network = match config.network_preset.as_str() {
             "testnet" => Network::Testnet,
             "local" => Network::Local,
@@ -120,6 +124,7 @@ impl GlobalKvStore {
         let historian = Historian::new(Box::new(kv_store_interpreter));
 
         Ok(GlobalKvStore {
+            wallet,
             config,
             resolver,
             broadcaster,
@@ -171,20 +176,55 @@ impl GlobalKvStore {
 
         // Build PushDrop locking script fields.
         let protocol_str = format!("[{},\"{}\"]", config.protocol_id.0, config.protocol_id.1);
-        let pk = PrivateKey::from_random()
-            .map_err(|e| ServicesError::KvStore(format!("key generation failed: {}", e)))?;
-        let controller_bytes = pk.to_public_key().to_der();
+
+        let protocol_id = Protocol {
+            security_level: config.protocol_id.0 as u8,
+            protocol: config.protocol_id.1.clone(),
+        };
+        let counterparty = Counterparty {
+            counterparty_type: CounterpartyType::Self_,
+            public_key: None,
+        };
+
+        // The controller is the wallet-DERIVED key the token is locked to — not a
+        // throwaway random key (which is what this used to mint, producing a token
+        // nobody could spend).
+        let controller = self
+            .wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: false,
+                    protocol_id: Some(protocol_id.clone()),
+                    key_id: Some(key_owned.clone()),
+                    counterparty: Some(counterparty.clone()),
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: Some(false),
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .map_err(|e| ServicesError::KvStore(format!("getPublicKey failed: {}", e)))?;
 
         let fields = vec![
             protocol_str.as_bytes().to_vec(),
             key_owned.as_bytes().to_vec(),
             value_owned.as_bytes().to_vec(),
-            controller_bytes,
+            controller.public_key.to_der(),
         ];
 
-        let pd = PushDrop::new(fields, pk);
-        let locking_script = pd
-            .lock()
+        let locking_script = PushDrop::new(&self.wallet, None)
+            .lock(
+                fields,
+                protocol_id,
+                &key_owned,
+                counterparty,
+                false,
+                true,
+                LockPosition::Before,
+            )
+            .await
             .map_err(|e| ServicesError::KvStore(format!("PushDrop lock failed: {}", e)))?;
 
         let locking_script_hex = to_hex(&locking_script.to_binary());

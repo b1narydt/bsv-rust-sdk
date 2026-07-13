@@ -4,7 +4,10 @@
 //! PushDrop-based tokens that advertise overlay service endpoints.
 
 use crate::script::locking_script::LockingScript;
+use crate::script::templates::push_drop::{LockPosition, PushDrop};
 use crate::services::ServicesError;
+use crate::wallet::interfaces::{GetPublicKeyArgs, WalletInterface};
+use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
 /// Decoded SHIP or SLAP advertisement token.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,13 +44,89 @@ impl OverlayAdminTokenTemplate {
         })
     }
 
-    /// Encode this template as a PushDrop locking script.
+    /// The BRC-43 protocol ID an advertisement is signed under, per TS
+    /// `OverlayAdminTokenTemplate.lock`.
+    fn advertisement_protocol(protocol: &str) -> Protocol {
+        Protocol {
+            security_level: 2,
+            protocol: if protocol == "SHIP" {
+                "Service Host Interconnect".to_string()
+            } else {
+                "Service Lookup Availability".to_string()
+            },
+        }
+    }
+
+    /// Mint a SHIP/SLAP advertisement locking script.
     ///
-    /// Structure: `<protocol> <identityKey> <domain> <topicOrService> OP_2DROP OP_2DROP <pubkey> OP_CHECKSIG`
+    /// Port of TS `OverlayAdminTokenTemplate.lock`. The identity key is the
+    /// wallet's own (`getPublicKey({ identityKey: true })`), and the token is
+    /// PushDrop-locked under protocol `[2, "Service Host Interconnect" |
+    /// "Service Lookup Availability"]`, keyID `"1"`, counterparty `self`, with
+    /// `include_signature` — so the advertisement carries FIVE fields, the fifth
+    /// being the signature, exactly as overlays publish them.
     ///
-    /// Note: This creates a lock-only script (no signing key). For a full
-    /// PushDrop with signing, use PushDrop::new() directly with the fields
-    /// and a private key.
+    /// Rust previously had no `lock()` at all: it could decode advertisements but
+    /// never mint one, so a Rust overlay node could not advertise itself. (The old
+    /// doc here pointed callers at `PushDrop::new(fields, key)`, which locked to a
+    /// RAW key and appended no signature — an advertisement no overlay would
+    /// accept.)
+    pub async fn lock<W: WalletInterface + ?Sized>(
+        wallet: &W,
+        originator: Option<String>,
+        protocol: &str,
+        domain: &str,
+        topic_or_service: &str,
+    ) -> Result<LockingScript, ServicesError> {
+        if protocol != "SHIP" && protocol != "SLAP" {
+            return Err(ServicesError::Overlay(format!(
+                "Invalid protocol: {protocol} (expected SHIP or SLAP)"
+            )));
+        }
+
+        let identity = wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                originator.as_deref(),
+            )
+            .await
+            .map_err(|e| ServicesError::Overlay(format!("getPublicKey(identityKey): {e}")))?;
+
+        let fields = vec![
+            protocol.as_bytes().to_vec(),
+            identity.public_key.to_der(),
+            domain.as_bytes().to_vec(),
+            topic_or_service.as_bytes().to_vec(),
+        ];
+
+        PushDrop::new(wallet, originator)
+            .lock(
+                fields,
+                Self::advertisement_protocol(protocol),
+                "1",
+                Counterparty {
+                    counterparty_type: CounterpartyType::Self_,
+                    public_key: None,
+                },
+                false,
+                true,
+                LockPosition::Before,
+            )
+            .await
+            .map_err(|e| ServicesError::Overlay(format!("PushDrop lock failed: {e}")))
+    }
+
+    /// Encode this template's four payload fields (protocol, identityKey, domain,
+    /// topicOrService). The signature field is appended by [`Self::lock`].
     pub fn encode_fields(&self) -> Vec<Vec<u8>> {
         vec![
             self.protocol.as_bytes().to_vec(),
@@ -63,7 +142,7 @@ impl OverlayAdminTokenTemplate {
     /// the TS SDK default). The PushDrop fields are [protocol, identityKey,
     /// domain, topicOrService, signature?].
     pub fn decode(script: &LockingScript) -> Result<Self, ServicesError> {
-        let pd = crate::script::templates::PushDrop::decode(script)
+        let pd = crate::script::templates::push_drop::decode(script)
             .map_err(|e| ServicesError::Overlay(format!("PushDrop decode failed: {e}")))?;
         let fields = pd.fields;
         if fields.len() < 4 {
@@ -154,11 +233,36 @@ fn hex_decode(hex: &str) -> Result<Vec<u8>, ServicesError> {
 mod tests {
     use super::*;
     use crate::primitives::private_key::PrivateKey;
-    use crate::script::templates::push_drop::PushDrop;
-    use crate::script::templates::ScriptTemplateLock;
+    use crate::script::templates::push_drop::{LockPosition, PushDrop};
+    use crate::wallet::proto_wallet::ProtoWallet;
+    use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
-    #[test]
-    fn test_encode_decode_round_trip() {
+    /// Build a PushDrop locking script the way production now does — through a
+    /// wallet, with a derived key — so these tests exercise the real path.
+    async fn test_lock(fields: Vec<Vec<u8>>) -> LockingScript {
+        let w = ProtoWallet::new(PrivateKey::from_hex("1").unwrap());
+        PushDrop::new(&w, None)
+            .lock(
+                fields,
+                Protocol {
+                    security_level: 2,
+                    protocol: "overlay admin".to_string(),
+                },
+                "admin",
+                Counterparty {
+                    counterparty_type: CounterpartyType::Self_,
+                    public_key: None,
+                },
+                false,
+                true,
+                LockPosition::Before,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_encode_decode_round_trip() {
         let template = OverlayAdminTokenTemplate::new(
             "SLAP",
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -168,9 +272,7 @@ mod tests {
         .unwrap();
 
         // Create a PushDrop locking script with the fields.
-        let key = PrivateKey::from_hex("1").unwrap();
-        let pd = PushDrop::new(template.encode_fields(), key);
-        let lock_script = pd.lock().unwrap();
+        let lock_script = test_lock(template.encode_fields()).await;
 
         // Decode the locking script.
         let decoded = OverlayAdminTokenTemplate::decode(&lock_script).unwrap();
@@ -183,8 +285,8 @@ mod tests {
         assert_eq!(decoded.topic_or_service, "ls_test_service");
     }
 
-    #[test]
-    fn test_encode_decode_ship_protocol() {
+    #[tokio::test]
+    async fn test_encode_decode_ship_protocol() {
         let template = OverlayAdminTokenTemplate::new(
             "SHIP",
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -193,9 +295,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = PrivateKey::from_hex("1").unwrap();
-        let pd = PushDrop::new(template.encode_fields(), key);
-        let lock_script = pd.lock().unwrap();
+        let lock_script = test_lock(template.encode_fields()).await;
 
         let decoded = OverlayAdminTokenTemplate::decode(&lock_script).unwrap();
         assert_eq!(decoded, template);
