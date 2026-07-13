@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let child = master.derive("m/44'/0'/0'/0/0")?;
     let child_pub = child.public_key()?;
     let address = child_pub.to_address(&[0x00]);
-    println!("Derived address (m/44'/0'/0'/0/0): {}", address);
+    println!("Derived address (m/44'/0'/0'/0/0): {address}");
 
     // Create a ProtoWallet from the derived key
     let key_bytes = child.to_base58();

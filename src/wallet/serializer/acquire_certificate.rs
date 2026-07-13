@@ -93,8 +93,7 @@ pub fn deserialize_acquire_certificate_args(
         ACQUISITION_PROTOCOL_ISSUANCE => AcquisitionProtocol::Issuance,
         _ => {
             return Err(WalletError::Internal(format!(
-                "invalid acquisition protocol: {}",
-                protocol_byte
+                "invalid acquisition protocol: {protocol_byte}"
             )))
         }
     };
@@ -221,7 +220,7 @@ fn b64_val(c: char) -> Result<u8, WalletError> {
         '0'..='9' => Ok(c as u8 - b'0' + 52),
         '+' => Ok(62),
         '/' => Ok(63),
-        _ => Err(WalletError::Internal(format!("invalid base64 char: {}", c))),
+        _ => Err(WalletError::Internal(format!("invalid base64 char: {c}"))),
     }
 }
 

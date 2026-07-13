@@ -12,16 +12,16 @@ use crate::wallet::interfaces::*;
 // ---------------------------------------------------------------------------
 
 fn invalid(field: &str, requirement: &str) -> WalletError {
-    WalletError::InvalidParameter(format!("{}: must be {}", field, requirement))
+    WalletError::InvalidParameter(format!("{field}: must be {requirement}"))
 }
 
 fn validate_string_length(s: &str, name: &str, min: usize, max: usize) -> Result<(), WalletError> {
     let len = s.len();
     if len < min {
-        return Err(invalid(name, &format!("at least {} bytes", min)));
+        return Err(invalid(name, &format!("at least {min} bytes")));
     }
     if len > max {
-        return Err(invalid(name, &format!("no more than {} bytes", max)));
+        return Err(invalid(name, &format!("no more than {max} bytes")));
     }
     Ok(())
 }

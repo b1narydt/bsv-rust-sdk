@@ -370,7 +370,7 @@ mod tests {
         PeerSession {
             session_nonce: nonce.to_string(),
             peer_identity_key: identity.to_string(),
-            peer_nonce: format!("peer_{}", nonce),
+            peer_nonce: format!("peer_{nonce}"),
             is_authenticated: authenticated,
         }
     }
@@ -514,7 +514,10 @@ mod tests {
         // First sighting of msg nonce "m1" is fresh.
         assert_eq!(mgr.mark_message_seen("sess1", "m1", 1_000), MarkSeen::Fresh);
         // Byte-replay of the exact same message nonce is rejected.
-        assert_eq!(mgr.mark_message_seen("sess1", "m1", 1_001), MarkSeen::Replay);
+        assert_eq!(
+            mgr.mark_message_seen("sess1", "m1", 1_001),
+            MarkSeen::Replay
+        );
         // A different fresh nonce still passes on the same session.
         assert_eq!(mgr.mark_message_seen("sess1", "m2", 1_002), MarkSeen::Fresh);
         // Unknown session cannot be marked.

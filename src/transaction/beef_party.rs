@@ -54,8 +54,7 @@ impl BeefParty {
     pub fn add_party(&mut self, party: &str) -> Result<(), TransactionError> {
         if self.is_party(party) {
             return Err(TransactionError::BeefError(format!(
-                "Party {} already exists.",
-                party
+                "Party {party} already exists."
             )));
         }
         self.known_to.insert(party.to_string(), HashMap::new());
@@ -67,7 +66,7 @@ impl BeefParty {
         let known = self
             .known_to
             .get(party)
-            .ok_or_else(|| TransactionError::BeefError(format!("Party {} is unknown.", party)))?;
+            .ok_or_else(|| TransactionError::BeefError(format!("Party {party} is unknown.")))?;
         Ok(known.keys().cloned().collect())
     }
 
@@ -120,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_beef_party_new_with_str_slices() {
-        let bp = BeefParty::new(&["alice", "bob"]);
+        let bp = BeefParty::new(["alice", "bob"]);
         assert!(bp.is_party("alice"));
         assert!(bp.is_party("bob"));
         assert!(!bp.is_party("charlie"));

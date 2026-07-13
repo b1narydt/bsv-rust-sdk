@@ -61,8 +61,7 @@ impl Beef {
 
         if version != BEEF_V1 && version != BEEF_V2 {
             return Err(TransactionError::BeefError(format!(
-                "Serialized BEEF must start with {} or {} but starts with {}",
-                BEEF_V1, BEEF_V2, version
+                "Serialized BEEF must start with {BEEF_V1} or {BEEF_V2} but starts with {version}"
             )));
         }
 
@@ -159,8 +158,7 @@ impl Beef {
                 .position(|btx| btx.txid == *atomic_txid)
                 .ok_or_else(|| {
                     TransactionError::BeefError(format!(
-                        "atomic txid {} not found in BEEF",
-                        atomic_txid
+                        "atomic txid {atomic_txid} not found in BEEF"
                     ))
                 })?
         } else {
@@ -427,8 +425,7 @@ impl Beef {
         // Verify the txid exists
         if self.find_txid(txid).is_none() {
             return Err(TransactionError::BeefError(format!(
-                "{} does not exist in this Beef",
-                txid
+                "{txid} does not exist in this Beef"
             )));
         }
 
@@ -609,7 +606,7 @@ mod tests {
             "merged should have at least as many txs as beef_a"
         );
         assert!(
-            merged.bumps.len() >= 1,
+            !merged.bumps.is_empty(),
             "merged should have at least one bump"
         );
 
@@ -877,8 +874,7 @@ mod tests {
                     // Source tx was in the BEEF with a bump — merkle_path should be set
                     assert!(
                         source_tx.merkle_path.is_some(),
-                        "source tx {} should have merkle_path set from BEEF bump",
-                        source_txid
+                        "source tx {source_txid} should have merkle_path set from BEEF bump"
                     );
                 }
             }

@@ -74,7 +74,7 @@ impl ScriptChunk {
     pub fn to_asm(&self) -> String {
         match &self.data {
             Some(data) => {
-                let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
+                let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
                 hex
             }
             None => {

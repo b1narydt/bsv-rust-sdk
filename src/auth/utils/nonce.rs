@@ -171,8 +171,7 @@ fn b64_val(c: char) -> Result<u8, AuthError> {
         '+' => Ok(62),
         '/' => Ok(63),
         _ => Err(AuthError::SerializationError(format!(
-            "invalid base64 char: {}",
-            c
+            "invalid base64 char: {c}"
         ))),
     }
 }

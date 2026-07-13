@@ -571,7 +571,7 @@ impl CertificateType {
             SerialNumber::base64_decode_sn(s)?
         } else if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
             crate::primitives::utils::from_hex(s)
-                .map_err(|e| WalletError::InvalidParameter(format!("hex: {}", e)))?
+                .map_err(|e| WalletError::InvalidParameter(format!("hex: {e}")))?
         } else if s.len() <= 32 {
             let mut buf = [0u8; 32];
             buf[..s.len()].copy_from_slice(s.as_bytes());
@@ -632,7 +632,7 @@ impl SerialNumber {
         } else if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
             // Hex format (32 bytes -> 64 hex chars)
             crate::primitives::utils::from_hex(s)
-                .map_err(|e| WalletError::InvalidParameter(format!("hex: {}", e)))?
+                .map_err(|e| WalletError::InvalidParameter(format!("hex: {e}")))?
         } else {
             return Err(WalletError::InvalidParameter(format!(
                 "SerialNumber string must be 44 (base64) or 64 (hex) chars, got {}",
@@ -721,10 +721,7 @@ pub struct Certificate {
     pub revocation_outpoint: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fields: Option<HashMap<String, String>>,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
 }
@@ -770,10 +767,7 @@ pub struct PartialCertificate {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub fields: Option<HashMap<String, String>>,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(feature = "serde", serde(default))]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature: Option<Vec<u8>>,
@@ -837,10 +831,7 @@ impl<'de> serde::Deserialize<'de> for KeyringRevealer {
 pub struct CreateActionInput {
     pub outpoint: OutpointString,
     pub input_description: String,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -863,10 +854,7 @@ pub struct CreateActionInput {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct CreateActionOutput {
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -1214,19 +1202,13 @@ pub struct AbortActionResult {
 pub struct ActionInput {
     pub source_outpoint: OutpointString,
     pub source_satoshis: SatoshiValue,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub source_locking_script: Option<Vec<u8>>,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -1242,10 +1224,7 @@ pub struct ActionInput {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ActionOutput {
     pub satoshis: SatoshiValue,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -1555,10 +1534,7 @@ pub struct ListOutputsArgs {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Output {
     pub satoshis: SatoshiValue,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -1969,10 +1945,7 @@ pub struct AcquireCertificateArgs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub revocation_outpoint: Option<String>,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -2055,10 +2028,7 @@ pub struct CertificateResult {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub keyring: Option<HashMap<String, String>>,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_helpers::option_bytes_as_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)

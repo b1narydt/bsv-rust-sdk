@@ -32,22 +32,22 @@ pub fn sign(
         None => {
             // "Anyone" key: PrivateKey(1).to_public_key()
             let anyone = PrivateKey::from_hex("1")
-                .map_err(|e| ServicesError::Messages(format!("anyone key: {}", e)))?;
+                .map_err(|e| ServicesError::Messages(format!("anyone key: {e}")))?;
             anyone.to_public_key()
         }
     };
 
     let key_id = random_bytes(32);
     let key_id_base64 = to_base64(&key_id);
-    let invoice_number = format!("2-message signing-{}", key_id_base64);
+    let invoice_number = format!("2-message signing-{key_id_base64}");
 
     let signing_key = signer
         .derive_child(&verifier_key, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive signing key: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive signing key: {e}")))?;
 
     let signature = signing_key
         .sign(message, true)
-        .map_err(|e| ServicesError::Messages(format!("sign: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("sign: {e}")))?;
     let sig_der = signature.to_der();
 
     let sender_pubkey = signer.to_public_key().to_der();
@@ -106,7 +106,7 @@ pub fn verify(
     }
     let sender_bytes = &signed_message[pos..pos + 33];
     let sender = PublicKey::from_der_bytes(sender_bytes)
-        .map_err(|e| ServicesError::Messages(format!("invalid sender pubkey: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("invalid sender pubkey: {e}")))?;
     pos += 33;
 
     // Parse verifier indicator.
@@ -123,7 +123,7 @@ pub fn verify(
     if verifier_first == 0x00 {
         // Anyone mode.
         actual_recipient = PrivateKey::from_hex("1")
-            .map_err(|e| ServicesError::Messages(format!("anyone key: {}", e)))?;
+            .map_err(|e| ServicesError::Messages(format!("anyone key: {e}")))?;
     } else {
         // Specific verifier: read remaining 32 bytes to form 33-byte compressed pubkey.
         if pos + 32 > signed_message.len() {
@@ -136,7 +136,7 @@ pub fn verify(
         pos += 32;
 
         let verifier_pubkey = PublicKey::from_der_bytes(&verifier_bytes)
-            .map_err(|e| ServicesError::Messages(format!("invalid verifier pubkey: {}", e)))?;
+            .map_err(|e| ServicesError::Messages(format!("invalid verifier pubkey: {e}")))?;
 
         match recipient {
             Some(r) => {
@@ -173,18 +173,18 @@ pub fn verify(
     }
     let sig_der = &signed_message[pos..];
     let signature = Signature::from_der(sig_der)
-        .map_err(|e| ServicesError::Messages(format!("invalid DER signature: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("invalid DER signature: {e}")))?;
 
     // Recompute the verification key.
     // In the TS SDK verify: signingKey = signer.deriveChild(recipient, invoiceNumber)
     // signer is PublicKey (sender), recipient is PrivateKey
     // PublicKey.deriveChild(PrivateKey, invoice) -> returns PublicKey
     let key_id_base64 = to_base64(key_id);
-    let invoice_number = format!("2-message signing-{}", key_id_base64);
+    let invoice_number = format!("2-message signing-{key_id_base64}");
 
     let verification_key = sender
         .derive_child(&actual_recipient, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive verification key: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive verification key: {e}")))?;
 
     // Verify the signature.
     if verification_key.verify(message, &signature) {
@@ -224,7 +224,7 @@ fn to_base64(data: &[u8]) -> String {
 
 /// Hex-encode bytes.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

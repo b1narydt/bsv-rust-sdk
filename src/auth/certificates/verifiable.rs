@@ -82,8 +82,7 @@ impl VerifiableCertificate {
         .await
         .map_err(|e| {
             AuthError::CertificateValidation(format!(
-                "failed to decrypt selectively revealed certificate fields using keyring: {}",
-                e
+                "failed to decrypt selectively revealed certificate fields using keyring: {e}"
             ))
         })?;
 

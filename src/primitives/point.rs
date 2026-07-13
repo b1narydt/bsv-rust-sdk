@@ -163,8 +163,7 @@ impl Point {
                 Point::from_x(&x, odd)
             }
             _ => Err(PrimitivesError::InvalidDer(format!(
-                "unknown point format prefix: 0x{:02x}",
-                prefix
+                "unknown point format prefix: 0x{prefix:02x}"
             ))),
         }
     }
@@ -330,7 +329,7 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, PrimitivesError> {
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +487,7 @@ mod tests {
             }
             let der = p.to_der(true);
             let recovered = Point::from_der(&der).unwrap();
-            assert!(recovered.eq(&p), "round-trip failed for k={}", k);
+            assert!(recovered.eq(&p), "round-trip failed for k={k}");
         }
     }
 
@@ -502,7 +501,7 @@ mod tests {
             }
             let der = p.to_der(false);
             let recovered = Point::from_der(&der).unwrap();
-            assert!(recovered.eq(&p), "round-trip failed for k={}", k);
+            assert!(recovered.eq(&p), "round-trip failed for k={k}");
         }
     }
 
@@ -552,8 +551,8 @@ mod tests {
 
         for (k, ex, ey) in expected {
             let result = g.mul(&BigNumber::from_number(k));
-            assert_eq!(result.x.to_hex(), ex, "x mismatch for k={}", k);
-            assert_eq!(result.y.to_hex(), ey, "y mismatch for k={}", k);
+            assert_eq!(result.x.to_hex(), ex, "x mismatch for k={k}");
+            assert_eq!(result.y.to_hex(), ey, "y mismatch for k={k}");
         }
     }
 

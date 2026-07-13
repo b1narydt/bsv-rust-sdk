@@ -99,7 +99,7 @@ mod tests {
     fn bytes_to_hex(bytes: &[u8]) -> String {
         let mut hex = String::with_capacity(bytes.len() * 2);
         for b in bytes {
-            hex.push_str(&format!("{:02x}", b));
+            hex.push_str(&format!("{b:02x}"));
         }
         hex
     }
@@ -242,16 +242,14 @@ mod tests {
             assert_eq!(
                 bytes_to_hex(&first),
                 v.expected_first_generate,
-                "DRBG vector {} first generate failed",
-                i
+                "DRBG vector {i} first generate failed"
             );
 
             let second = drbg.generate(32);
             assert_eq!(
                 bytes_to_hex(&second),
                 v.expected_second_generate,
-                "DRBG vector {} second generate failed",
-                i
+                "DRBG vector {i} second generate failed"
             );
         }
     }

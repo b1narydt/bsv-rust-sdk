@@ -733,7 +733,7 @@ mod tests {
     fn bytes_to_hex(bytes: &[u8]) -> String {
         let mut hex = String::with_capacity(bytes.len() * 2);
         for b in bytes {
-            hex.push_str(&format!("{:02x}", b));
+            hex.push_str(&format!("{b:02x}"));
         }
         hex
     }
@@ -882,8 +882,7 @@ mod tests {
             assert_eq!(
                 bytes_to_hex(&result),
                 v.expected,
-                "SHA-512 vector {} failed",
-                i
+                "SHA-512 vector {i} failed"
             );
         }
     }

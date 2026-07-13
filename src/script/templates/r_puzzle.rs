@@ -98,7 +98,7 @@ impl RPuzzle {
 
         let msg_hash = sha256(preimage);
         let sig = ecdsa_sign_with_k(&msg_hash, key.bn(), k, true).map_err(|e| {
-            ScriptError::InvalidSignature(format!("ECDSA sign with k failed: {}", e))
+            ScriptError::InvalidSignature(format!("ECDSA sign with k failed: {e}"))
         })?;
 
         let mut sig_bytes = sig.to_der();
@@ -205,10 +205,10 @@ mod tests {
     use super::*;
     use crate::primitives::base_point::BasePoint;
     use crate::primitives::big_number::Endian;
-    use crate::primitives::hash::{hash160, hash256, ripemd160, sha1, sha256};
+    use crate::primitives::hash::sha256;
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // -----------------------------------------------------------------------
@@ -287,14 +287,11 @@ mod tests {
             assert_eq!(
                 chunks.len(),
                 expected_chunks,
-                "{:?} should have {} chunks",
-                ptype,
-                expected_chunks
+                "{ptype:?} should have {expected_chunks} chunks"
             );
             assert_eq!(
                 chunks[9].op, expected_op,
-                "{:?} hash opcode mismatch",
-                ptype
+                "{ptype:?} hash opcode mismatch"
             );
         }
     }

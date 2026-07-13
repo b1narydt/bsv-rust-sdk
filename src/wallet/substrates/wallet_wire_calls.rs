@@ -72,8 +72,7 @@ impl TryFrom<u8> for WalletWireCall {
             27 => Ok(WalletWireCall::GetNetwork),
             28 => Ok(WalletWireCall::GetVersion),
             _ => Err(crate::wallet::error::WalletError::Internal(format!(
-                "unknown call code: {}",
-                value
+                "unknown call code: {value}"
             ))),
         }
     }
@@ -123,7 +122,7 @@ mod tests {
     fn test_try_from_all_valid_codes() {
         for code in 1u8..=28 {
             let call = WalletWireCall::try_from(code);
-            assert!(call.is_ok(), "code {} should be valid", code);
+            assert!(call.is_ok(), "code {code} should be valid");
             assert_eq!(call.unwrap() as u8, code);
         }
     }

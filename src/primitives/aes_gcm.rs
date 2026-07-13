@@ -426,7 +426,7 @@ mod tests {
     }
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // --- NIST SP 800-38D test vectors ---
@@ -623,7 +623,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             PrimitivesError::DecryptionFailed => {}
-            e => panic!("Expected DecryptionFailed, got {:?}", e),
+            e => panic!("Expected DecryptionFailed, got {e:?}"),
         }
     }
 
@@ -755,14 +755,12 @@ mod tests {
             assert_eq!(
                 encrypted.len(),
                 plaintext.len() + 16,
-                "Encrypted length wrong for pt len {}",
-                len
+                "Encrypted length wrong for pt len {len}"
             );
             let decrypted = aes_gcm_decrypt(&key, &iv, &encrypted, &[]).unwrap();
             assert_eq!(
                 decrypted, plaintext,
-                "Round-trip failed for plaintext length {}",
-                len
+                "Round-trip failed for plaintext length {len}"
             );
         }
     }
@@ -778,8 +776,7 @@ mod tests {
             let decrypted = aes_gcm_decrypt(&key, &iv, &encrypted, &[]).unwrap();
             assert_eq!(
                 decrypted, plaintext,
-                "32-byte IV round-trip failed for pt len {}",
-                len
+                "32-byte IV round-trip failed for pt len {len}"
             );
         }
     }

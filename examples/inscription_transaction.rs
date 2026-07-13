@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let inscription = Inscription::new(content_type, inscription_data.to_vec());
     let inscription_script = inscription.to_script();
 
-    println!("Content type: {}", content_type);
+    println!("Content type: {content_type}");
     println!(
         "Inscription data: {}",
         String::from_utf8_lossy(inscription_data)
@@ -97,9 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_hex = tx.to_hex()?;
     let txid = tx.id()?;
 
-    println!("Transaction ID: {}", txid);
+    println!("Transaction ID: {txid}");
     println!("Transaction hex ({} bytes):", tx_hex.len() / 2);
-    println!("{}", tx_hex);
+    println!("{tx_hex}");
     println!();
     println!("Inscription transaction built and serialized successfully.");
     println!("Format: OP_FALSE OP_RETURN <content_type> <data>");

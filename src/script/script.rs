@@ -93,7 +93,7 @@ impl Script {
             // Not an opcode -- treat as hex data
             let mut hex = token.to_string();
             if !hex.len().is_multiple_of(2) {
-                hex = format!("0{}", hex);
+                hex = format!("0{hex}");
             }
             if let Ok(data) = hex_to_bytes(&hex) {
                 let len = data.len();
@@ -140,7 +140,7 @@ impl Script {
     /// Serialize then hex-encode.
     pub fn to_hex(&self) -> String {
         let bytes = self.to_binary();
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// ASM string representation.
@@ -416,7 +416,7 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     for i in (0..hex.len()).step_by(2) {
         let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|_| format!("invalid hex at position {}", i))?;
+            .map_err(|_| format!("invalid hex at position {i}"))?;
         bytes.push(byte);
     }
     Ok(bytes)
@@ -431,7 +431,7 @@ mod tests {
     use super::*;
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]

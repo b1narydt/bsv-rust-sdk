@@ -35,12 +35,12 @@ pub fn encode_bip276(
     }
 
     let data_hex = to_hex(data);
-    let payload = format!("{}:{:02x}{:02x}{}", prefix, version, network, data_hex);
+    let payload = format!("{prefix}:{version:02x}{network:02x}{data_hex}");
 
     let checksum = hash256(payload.as_bytes());
     let checksum_hex = to_hex(&checksum[..4]);
 
-    Ok(format!("{}{}", payload, checksum_hex))
+    Ok(format!("{payload}{checksum_hex}"))
 }
 
 /// Decode a BIP276 encoded string.
@@ -87,7 +87,7 @@ pub fn decode_bip276(encoded: &str) -> Result<(String, u8, u8, Vec<u8>), ScriptE
         Vec::new()
     } else {
         from_hex(data_hex)
-            .map_err(|e| ScriptError::InvalidFormat(format!("BIP276: invalid data hex: {}", e)))?
+            .map_err(|e| ScriptError::InvalidFormat(format!("BIP276: invalid data hex: {e}")))?
     };
 
     Ok((prefix.to_string(), version, network, data))
@@ -103,8 +103,7 @@ pub fn decode_script_bip276(encoded: &str) -> Result<Script, ScriptError> {
     let (prefix, _version, _network, data) = decode_bip276(encoded)?;
     if prefix != BIP276_PREFIX {
         return Err(ScriptError::InvalidFormat(format!(
-            "BIP276: expected prefix '{}', got '{}'",
-            BIP276_PREFIX, prefix
+            "BIP276: expected prefix '{BIP276_PREFIX}', got '{prefix}'"
         )));
     }
     Ok(Script::from_binary(&data))

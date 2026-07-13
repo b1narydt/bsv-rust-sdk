@@ -61,8 +61,7 @@ impl MerklePath {
         for (height, leaves) in path.iter().enumerate() {
             if leaves.is_empty() && height == 0 {
                 return Err(TransactionError::InvalidFormat(format!(
-                    "Empty level at height: {}",
-                    height
+                    "Empty level at height: {height}"
                 )));
             }
             let mut offsets_at_height = HashSet::new();
@@ -288,7 +287,7 @@ impl MerklePath {
         let leaf0_hash = leaf0.hash.as_deref().unwrap_or("");
 
         let working_hash = if leaf1.duplicate {
-            let combined = format!("{}{}", leaf0_hash, leaf0_hash);
+            let combined = format!("{leaf0_hash}{leaf0_hash}");
             Self::merkle_hash(&combined)?
         } else {
             let combined = format!("{}{}", leaf1.hash.as_deref().unwrap_or(""), leaf0_hash);
@@ -311,8 +310,7 @@ impl MerklePath {
             .map(|l| l.offset)
             .ok_or_else(|| {
                 TransactionError::InvalidFormat(format!(
-                    "Transaction ID {} not found in the Merkle Path",
-                    txid
+                    "Transaction ID {txid} not found in the Merkle Path"
                 ))
             })
     }
@@ -350,13 +348,12 @@ impl MerklePath {
             let offset = (index >> height) ^ 1;
             let leaf = self.find_or_compute_leaf(height, offset)?.ok_or_else(|| {
                 TransactionError::InvalidFormat(format!(
-                    "Missing hash for index {} at height {}",
-                    index, height
+                    "Missing hash for index {index} at height {height}"
                 ))
             })?;
 
             if leaf.duplicate {
-                let combined = format!("{}{}", working_hash, working_hash);
+                let combined = format!("{working_hash}{working_hash}");
                 working_hash = Self::merkle_hash(&combined)?;
             } else if offset % 2 != 0 {
                 // Sibling is on the right (odd offset), so sibling hash goes first
@@ -551,15 +548,13 @@ mod tests {
                     } else {
                         mp.path[0]
                             .iter()
-                            .filter(|l| l.hash.is_some())
-                            .map(|l| l.hash.clone().unwrap())
+                            .filter_map(|l| l.hash.clone())
                             .collect()
                     }
                 } else {
                     mp.path[0]
                         .iter()
-                        .filter(|l| l.hash.is_some())
-                        .map(|l| l.hash.clone().unwrap())
+                        .filter_map(|l| l.hash.clone())
                         .collect()
                 };
 

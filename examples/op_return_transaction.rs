@@ -89,9 +89,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_hex = tx.to_hex()?;
     let txid = tx.id()?;
 
-    println!("Transaction ID: {}", txid);
+    println!("Transaction ID: {txid}");
     println!("Transaction hex ({} bytes):", tx_hex.len() / 2);
-    println!("{}", tx_hex);
+    println!("{tx_hex}");
     println!();
     println!("OP_RETURN transaction built and serialized successfully.");
 

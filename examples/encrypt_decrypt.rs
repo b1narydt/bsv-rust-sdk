@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ciphertext
             .iter()
             .take(32)
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>()
             + "...",
         ciphertext.len()
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Decrypt
     let decrypted = wallet.decrypt_sync(&ciphertext, &protocol, key_id, &counterparty)?;
     let decrypted_text = std::str::from_utf8(&decrypted)?;
-    println!("Decrypted:  \"{}\"", decrypted_text);
+    println!("Decrypted:  \"{decrypted_text}\"");
 
     assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     println!("\nEncrypt + decrypt round-trip succeeded.");

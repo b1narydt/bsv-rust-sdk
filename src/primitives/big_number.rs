@@ -199,8 +199,7 @@ impl BigNumber {
         for c in hex_str.chars() {
             if !c.is_ascii_hexdigit() {
                 return Err(PrimitivesError::InvalidHex(format!(
-                    "invalid hex character: {}",
-                    c
+                    "invalid hex character: {c}"
                 )));
             }
         }
@@ -214,7 +213,7 @@ impl BigNumber {
             let start = pos.saturating_sub(16);
             let chunk = &hex_str[start..pos];
             let val = u64::from_str_radix(chunk, 16).map_err(|e| {
-                PrimitivesError::InvalidHex(format!("failed to parse hex chunk: {}", e))
+                PrimitivesError::InvalidHex(format!("failed to parse hex chunk: {e}"))
             })?;
             limbs.push(val);
             pos = start;
@@ -296,14 +295,14 @@ impl BigNumber {
         for (i, &limb) in limbs.iter().rev().enumerate() {
             if i == 0 {
                 // First (most significant) limb: no leading zeros
-                hex.push_str(&format!("{:x}", limb));
+                hex.push_str(&format!("{limb:x}"));
             } else {
                 // Subsequent limbs: pad to 16 hex chars
-                hex.push_str(&format!("{:016x}", limb));
+                hex.push_str(&format!("{limb:016x}"));
             }
         }
 
-        format!("{}{}", prefix, hex)
+        format!("{prefix}{hex}")
     }
 
     /// Convert to a byte array with the specified endianness.
@@ -2775,8 +2774,7 @@ mod tests {
             assert_eq!(
                 decoded.to_number(),
                 Some(val),
-                "round-trip failed for {}",
-                val
+                "round-trip failed for {val}"
             );
         }
     }

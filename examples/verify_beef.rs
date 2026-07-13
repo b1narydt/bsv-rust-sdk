@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let original_txid = tx.id()?;
-    println!("Original transaction ID: {}", original_txid);
+    println!("Original transaction ID: {original_txid}");
 
     // -----------------------------------------------------------------------
     // 2. Wrap in BEEF V1 format (no merkle path -- new/unconfirmed tx)
@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BEEF hex: {}",
         beef_bytes
             .iter()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>()
     );
     println!();
@@ -100,8 +100,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     let decoded_txid = &decoded_beef.txs[0].txid;
     println!();
-    println!("Original txid:     {}", original_txid);
-    println!("Decoded BEEF txid: {}", decoded_txid);
+    println!("Original txid:     {original_txid}");
+    println!("Decoded BEEF txid: {decoded_txid}");
 
     if original_txid == *decoded_txid {
         println!();

@@ -79,7 +79,7 @@ impl TransactionInput {
         // Write TXID in reversed (internal/LE) byte order
         if let Some(ref txid) = self.source_txid {
             let mut txid_bytes = hex_to_bytes(txid)
-                .map_err(|e| TransactionError::InvalidFormat(format!("invalid txid hex: {}", e)))?;
+                .map_err(|e| TransactionError::InvalidFormat(format!("invalid txid hex: {e}")))?;
             txid_bytes.reverse();
             writer.write_all(&txid_bytes)?;
         } else if let Some(ref source_tx) = self.source_transaction {
@@ -114,7 +114,7 @@ impl TransactionInput {
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }
@@ -127,7 +127,7 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     for i in (0..hex.len()).step_by(2) {
         let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|e| format!("invalid hex at position {}: {}", i, e))?;
+            .map_err(|e| format!("invalid hex at position {i}: {e}"))?;
         bytes.push(byte);
     }
     Ok(bytes)

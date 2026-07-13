@@ -30,8 +30,7 @@ impl TxDataFormat {
             1 => Ok(TxDataFormat::RawTxAndBumpIndex),
             2 => Ok(TxDataFormat::TxidOnly),
             _ => Err(TransactionError::InvalidFormat(format!(
-                "unknown TxDataFormat byte: {}",
-                b
+                "unknown TxDataFormat byte: {b}"
             ))),
         }
     }

@@ -110,8 +110,7 @@ pub fn deserialize_internalize_action_args(
             }
             _ => {
                 return Err(WalletError::Internal(format!(
-                    "invalid protocol byte: {}",
-                    protocol_byte
+                    "invalid protocol byte: {protocol_byte}"
                 )))
             }
         };

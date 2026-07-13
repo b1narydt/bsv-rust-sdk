@@ -309,7 +309,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // ---- Electrum tests ----

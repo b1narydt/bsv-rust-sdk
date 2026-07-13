@@ -117,7 +117,7 @@ impl ExtendedKey {
 
             let index: u32 = index_str
                 .parse()
-                .map_err(|_| CompatError::InvalidPath(format!("invalid index: {}", index_str)))?;
+                .map_err(|_| CompatError::InvalidPath(format!("invalid index: {index_str}")))?;
 
             let child_index = if hardened {
                 index
@@ -281,7 +281,7 @@ impl ExtendedKey {
     /// Parse an extended key from a Base58Check string (xprv or xpub).
     pub fn from_string(s: &str) -> Result<Self, CompatError> {
         let decoded = base58_decode(s)
-            .map_err(|e| CompatError::InvalidExtendedKey(format!("base58 decode: {}", e)))?;
+            .map_err(|e| CompatError::InvalidExtendedKey(format!("base58 decode: {e}")))?;
 
         if decoded.len() != 82 {
             return Err(CompatError::InvalidExtendedKey(format!(
@@ -583,7 +583,7 @@ mod tests {
         assert!(result.is_err(), "hardened from public should fail");
         match result.unwrap_err() {
             CompatError::HardenedFromPublic => {}
-            e => panic!("expected HardenedFromPublic, got {:?}", e),
+            e => panic!("expected HardenedFromPublic, got {e:?}"),
         }
     }
 
@@ -608,7 +608,7 @@ mod tests {
         assert!(result.is_err(), "depth 255 derivation should fail");
         match result.unwrap_err() {
             CompatError::DepthExceeded => {}
-            e => panic!("expected DepthExceeded, got {:?}", e),
+            e => panic!("expected DepthExceeded, got {e:?}"),
         }
     }
 

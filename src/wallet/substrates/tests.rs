@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 
-use crate::primitives::public_key::PublicKey;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use crate::wallet::substrates::wallet_wire_calls::WalletWireCall;
@@ -616,7 +615,7 @@ async fn test_wallet_client_validation_rejects_empty_plaintext() {
     assert!(result.is_err());
     match result.unwrap_err() {
         WalletError::InvalidParameter(_) => {} // expected
-        other => panic!("expected InvalidParameter, got: {:?}", other),
+        other => panic!("expected InvalidParameter, got: {other:?}"),
     }
 }
 

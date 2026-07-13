@@ -80,8 +80,7 @@ impl MasterCertificate {
                 if !master_keyring.contains_key(field_name) || master_keyring[field_name].is_empty()
                 {
                     return Err(AuthError::CertificateValidation(format!(
-                        "master keyring must contain a value for every field. Missing or empty key for field: \"{}\"",
-                        field_name
+                        "master keyring must contain a value for every field. Missing or empty key for field: \"{field_name}\""
                     )));
                 }
             }
@@ -139,8 +138,7 @@ impl MasterCertificate {
             // Verify field exists in the certificate
             if !fields.contains_key(field_name) || fields[field_name].is_empty() {
                 return Err(AuthError::CertificateValidation(format!(
-                    "fields to reveal must be a subset of the certificate fields. Missing the \"{}\" field",
-                    field_name
+                    "fields to reveal must be a subset of the certificate fields. Missing the \"{field_name}\" field"
                 )));
             }
 
@@ -149,8 +147,7 @@ impl MasterCertificate {
                 Some(k) => base64_decode(k)?,
                 None => {
                     return Err(AuthError::CertificateValidation(format!(
-                        "master keyring missing key for field: \"{}\"",
-                        field_name
+                        "master keyring missing key for field: \"{field_name}\""
                     )));
                 }
             };
@@ -183,8 +180,7 @@ impl MasterCertificate {
             let encrypted_field_value = base64_decode(&fields[field_name])?;
             let _ = sym_key.decrypt(&encrypted_field_value).map_err(|_| {
                 AuthError::CertificateValidation(format!(
-                    "master key for field \"{}\" failed to decrypt the field value",
-                    field_name
+                    "master key for field \"{field_name}\" failed to decrypt the field value"
                 ))
             })?;
 
@@ -372,8 +368,7 @@ impl MasterCertificate {
             let plaintext_bytes = sym_key.decrypt(&encrypted_field_bytes)?;
             let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
                 AuthError::CertificateValidation(format!(
-                    "decrypted field '{}' is not valid UTF-8: {}",
-                    field_name, e
+                    "decrypted field '{field_name}' is not valid UTF-8: {e}"
                 ))
             })?;
             decrypted.insert(field_name.clone(), plaintext);
@@ -929,7 +924,8 @@ mod tests {
             (cert.certificate.serial_number.0, observed)
         }
 
-        let (serial_a, observed_a) = issue_once(&cert_type, &subject_pubkey, &certifier_wallet).await;
+        let (serial_a, observed_a) =
+            issue_once(&cert_type, &subject_pubkey, &certifier_wallet).await;
         let (serial_b, _observed_b) =
             issue_once(&cert_type, &subject_pubkey, &certifier_wallet).await;
 

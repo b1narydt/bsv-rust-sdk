@@ -342,7 +342,7 @@ impl AuthCertificate {
         serial_number: Option<&str>,
     ) -> (Protocol, String) {
         let key_id = match serial_number {
-            Some(sn) => format!("{} {}", sn, field_name),
+            Some(sn) => format!("{sn} {field_name}"),
             None => field_name.to_string(),
         };
         (
@@ -463,16 +463,14 @@ impl AuthCertificate {
                 Some(v) => base64_decode(v)?,
                 None => {
                     return Err(AuthError::CertificateValidation(format!(
-                        "field '{}' not found in encrypted fields",
-                        field_name
+                        "field '{field_name}' not found in encrypted fields"
                     )));
                 }
             };
             let plaintext_bytes = sym_key.decrypt(&encrypted_field_value)?;
             let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
                 AuthError::CertificateValidation(format!(
-                    "decrypted field '{}' is not valid UTF-8: {}",
-                    field_name, e
+                    "decrypted field '{field_name}' is not valid UTF-8: {e}"
                 ))
             })?;
             decrypted.insert(field_name.clone(), plaintext);
@@ -588,7 +586,7 @@ mod tests {
     fn hex_encode(bytes: &[u8]) -> String {
         let mut s = String::with_capacity(bytes.len() * 2);
         for b in bytes {
-            s.push_str(&format!("{:02x}", b));
+            s.push_str(&format!("{b:02x}"));
         }
         s
     }

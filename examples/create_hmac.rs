@@ -34,20 +34,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "HMAC:     {}",
         hmac.iter()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>()
     );
     println!("Length:   {} bytes", hmac.len());
 
     // Verify HMAC
     let valid = wallet.verify_hmac_sync(data, &hmac, &protocol, key_id, &counterparty)?;
-    println!("Valid:    {}", valid);
+    println!("Valid:    {valid}");
     assert!(valid, "HMAC verification must succeed");
 
     // Verify with tampered data
     let tampered = b"Tampered message requiring integrity";
     let invalid = wallet.verify_hmac_sync(tampered, &hmac, &protocol, key_id, &counterparty)?;
-    println!("Tampered: {} (expected false)", invalid);
+    println!("Tampered: {invalid} (expected false)");
     assert!(!invalid, "Tampered HMAC must fail verification");
 
     println!("\nHMAC create + verify succeeded.");

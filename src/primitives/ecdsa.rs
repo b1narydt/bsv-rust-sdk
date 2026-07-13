@@ -71,7 +71,7 @@ pub fn ecdsa_sign(
     loop {
         // Generate k from DRBG
         let k_bytes = drbg.generate(n_byte_len);
-        let k_hex: String = k_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        let k_hex: String = k_bytes.iter().map(|b| format!("{b:02x}")).collect();
         let k_bn = BigNumber::from_hex(&k_hex)
             .map_err(|_| PrimitivesError::ArithmeticError("invalid k hex".to_string()))?;
 
@@ -93,7 +93,7 @@ pub fn ecdsa_sign(
         let r_bn = r_point
             .get_x()
             .umod(n)
-            .map_err(|e| PrimitivesError::ArithmeticError(format!("r mod n: {}", e)))?;
+            .map_err(|e| PrimitivesError::ArithmeticError(format!("r mod n: {e}")))?;
 
         if r_bn.is_zero() {
             continue;
@@ -102,22 +102,22 @@ pub fn ecdsa_sign(
         // s = k^-1 * (hash + r * privkey) mod n
         let k_inv = k_bn
             .invm(n)
-            .map_err(|e| PrimitivesError::ArithmeticError(format!("k inverse: {}", e)))?;
+            .map_err(|e| PrimitivesError::ArithmeticError(format!("k inverse: {e}")))?;
 
         let r_times_key = r_bn
             .mul(private_key)
             .umod(n)
-            .map_err(|e| PrimitivesError::ArithmeticError(format!("r*key mod n: {}", e)))?;
+            .map_err(|e| PrimitivesError::ArithmeticError(format!("r*key mod n: {e}")))?;
 
         let sum = msg
             .add(&r_times_key)
             .umod(n)
-            .map_err(|e| PrimitivesError::ArithmeticError(format!("hash+r*key mod n: {}", e)))?;
+            .map_err(|e| PrimitivesError::ArithmeticError(format!("hash+r*key mod n: {e}")))?;
 
         let mut s_bn = k_inv
             .mul(&sum)
             .umod(n)
-            .map_err(|e| PrimitivesError::ArithmeticError(format!("s mod n: {}", e)))?;
+            .map_err(|e| PrimitivesError::ArithmeticError(format!("s mod n: {e}")))?;
 
         if s_bn.is_zero() {
             continue;
@@ -180,7 +180,7 @@ pub fn ecdsa_sign_with_k(
     let r_bn = r_point
         .get_x()
         .umod(n)
-        .map_err(|e| PrimitivesError::ArithmeticError(format!("r mod n: {}", e)))?;
+        .map_err(|e| PrimitivesError::ArithmeticError(format!("r mod n: {e}")))?;
 
     if r_bn.is_zero() {
         return Err(PrimitivesError::ArithmeticError("r is zero".to_string()));
@@ -189,22 +189,22 @@ pub fn ecdsa_sign_with_k(
     // s = k^-1 * (hash + r * privkey) mod n
     let k_inv = k
         .invm(n)
-        .map_err(|e| PrimitivesError::ArithmeticError(format!("k inverse: {}", e)))?;
+        .map_err(|e| PrimitivesError::ArithmeticError(format!("k inverse: {e}")))?;
 
     let r_times_key = r_bn
         .mul(private_key)
         .umod(n)
-        .map_err(|e| PrimitivesError::ArithmeticError(format!("r*key mod n: {}", e)))?;
+        .map_err(|e| PrimitivesError::ArithmeticError(format!("r*key mod n: {e}")))?;
 
     let sum = msg
         .add(&r_times_key)
         .umod(n)
-        .map_err(|e| PrimitivesError::ArithmeticError(format!("hash+r*key mod n: {}", e)))?;
+        .map_err(|e| PrimitivesError::ArithmeticError(format!("hash+r*key mod n: {e}")))?;
 
     let mut s_bn = k_inv
         .mul(&sum)
         .umod(n)
-        .map_err(|e| PrimitivesError::ArithmeticError(format!("s mod n: {}", e)))?;
+        .map_err(|e| PrimitivesError::ArithmeticError(format!("s mod n: {e}")))?;
 
     if s_bn.is_zero() {
         return Err(PrimitivesError::ArithmeticError("s is zero".to_string()));
@@ -436,11 +436,11 @@ mod tests {
             let s_hex = sig.s().to_hex();
 
             // Pad r and s to 64 hex chars for comparison
-            let r_padded = format!("{:0>64}", r_hex);
-            let s_padded = format!("{:0>64}", s_hex);
+            let r_padded = format!("{r_hex:0>64}");
+            let s_padded = format!("{s_hex:0>64}");
 
-            assert_eq!(r_padded, v.expected_r, "Vector {}: r mismatch", i);
-            assert_eq!(s_padded, v.expected_s, "Vector {}: s mismatch", i);
+            assert_eq!(r_padded, v.expected_r, "Vector {i}: r mismatch");
+            assert_eq!(s_padded, v.expected_s, "Vector {i}: s mismatch");
         }
     }
 
@@ -532,15 +532,14 @@ mod tests {
 
         for i in 1..=5 {
             let key = BigNumber::from_number(i * 1000);
-            let msg_hash = sha256(format!("message {}", i).as_bytes());
+            let msg_hash = sha256(format!("message {i}").as_bytes());
 
             let sig = ecdsa_sign(&msg_hash, &key, true).unwrap();
             let pubkey = base_point.mul(&key);
 
             assert!(
                 ecdsa_verify(&msg_hash, &sig, &pubkey),
-                "Key {} should verify",
-                i
+                "Key {i} should verify"
             );
         }
     }

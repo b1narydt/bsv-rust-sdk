@@ -1,3 +1,8 @@
+//! Requires the `network` feature: `services::overlay_tools` (LookupResolver,
+//! TopicBroadcaster, OverlayAdminTokenTemplate) is gated behind it, so this file
+//! must compile away on the `--no-default-features` CI matrix legs.
+#![cfg(feature = "network")]
+
 //! Does Rust decode a REAL SHIP/SLAP advertisement minted by @bsv/sdk?
 //!
 //! Vectors from `OverlayAdminTokenTemplate.lock()` in @bsv/sdk 2.0.13

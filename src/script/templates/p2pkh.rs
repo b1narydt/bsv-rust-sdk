@@ -48,7 +48,7 @@ impl P2PKH {
     /// and configures the template for locking.
     pub fn from_address(address: &str) -> Result<Self, ScriptError> {
         let (_prefix, payload) = base58_check_decode(address, 1)
-            .map_err(|e| ScriptError::InvalidAddress(format!("invalid address: {}", e)))?;
+            .map_err(|e| ScriptError::InvalidAddress(format!("invalid address: {e}")))?;
 
         if payload.len() != 20 {
             return Err(ScriptError::InvalidAddress(format!(
@@ -94,7 +94,7 @@ impl P2PKH {
 
         // Sign the 32-byte hash directly
         let sig = ecdsa_sign(&msg_hash, key.bn(), true)
-            .map_err(|e| ScriptError::InvalidSignature(format!("ECDSA sign failed: {}", e)))?;
+            .map_err(|e| ScriptError::InvalidSignature(format!("ECDSA sign failed: {e}")))?;
 
         // Build checksig format: DER + sighash byte
         let mut sig_bytes = sig.to_der();
@@ -160,7 +160,7 @@ impl ScriptTemplateUnlock for P2PKH {
 mod tests {
     use super::*;
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // -----------------------------------------------------------------------
@@ -281,9 +281,8 @@ mod tests {
         let estimate = p2pkh.estimate_unlock_length();
         // Should be approximately 107-108
         assert!(
-            estimate >= 100 && estimate <= 120,
-            "estimate should be ~107-108, got {}",
-            estimate
+            (100..=120).contains(&estimate),
+            "estimate should be ~107-108, got {estimate}"
         );
     }
 
@@ -351,7 +350,7 @@ mod tests {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
         let len = p2pkh.estimate_length().unwrap();
-        assert!(len >= 100 && len <= 120);
+        assert!((100..=120).contains(&len));
     }
 
     // -----------------------------------------------------------------------
@@ -369,7 +368,7 @@ mod tests {
         let lock_script = p2pkh.lock().unwrap();
         let asm = lock_script.to_asm();
 
-        let expected_asm = format!("OP_DUP OP_HASH160 {} OP_EQUALVERIFY OP_CHECKSIG", hash_hex);
+        let expected_asm = format!("OP_DUP OP_HASH160 {hash_hex} OP_EQUALVERIFY OP_CHECKSIG");
         assert_eq!(asm, expected_asm);
     }
 }

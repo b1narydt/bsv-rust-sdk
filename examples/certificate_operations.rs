@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // type which includes an encrypted keyring for each revealed field.
     //
     // Here we show how fields would be selected for revelation.
-    let fields_to_reveal = vec!["name", "organization"];
+    let fields_to_reveal = ["name", "organization"];
     let revealed: HashMap<String, String> = fields
         .iter()
         .filter(|(k, _)| fields_to_reveal.contains(&k.as_str()))
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Selective revelation (2 of {} fields):", fields.len());
     for (name, value) in &revealed {
-        println!("  {}: {}", name, value);
+        println!("  {name}: {value}");
     }
     println!();
 

@@ -2490,7 +2490,14 @@ mod tests {
             }
         }
 
-        assert_eq!(accepted, 1, "exactly one concurrent delivery must be accepted");
-        assert_eq!(replayed, n - 1, "all other concurrent deliveries must be replays");
+        assert_eq!(
+            accepted, 1,
+            "exactly one concurrent delivery must be accepted"
+        );
+        assert_eq!(
+            replayed,
+            n - 1,
+            "all other concurrent deliveries must be replays"
+        );
     }
 }

@@ -87,8 +87,7 @@ impl PublicKey {
                 Ok(PublicKey { point })
             }
             prefix => Err(PrimitivesError::InvalidPublicKey(format!(
-                "unknown prefix byte: 0x{:02x}",
-                prefix
+                "unknown prefix byte: 0x{prefix:02x}"
             ))),
         }
     }
@@ -340,21 +339,19 @@ mod tests {
             assert_eq!(
                 pub_key.to_der_hex(),
                 v.public_key_compressed,
-                "Vector {}: compressed mismatch",
-                i
+                "Vector {i}: compressed mismatch"
             );
 
             // Uncompressed DER
             let uncompressed_hex = to_hex(&pub_key.to_der_uncompressed());
             assert_eq!(
                 uncompressed_hex, v.public_key_uncompressed,
-                "Vector {}: uncompressed mismatch",
-                i
+                "Vector {i}: uncompressed mismatch"
             );
 
             // Address
             let address = pub_key.to_address(&[0x00]);
-            assert_eq!(address, v.address_mainnet, "Vector {}: address mismatch", i);
+            assert_eq!(address, v.address_mainnet, "Vector {i}: address mismatch");
         }
     }
 
@@ -367,13 +364,12 @@ mod tests {
         for i in 1..=5 {
             let priv_key = PrivateKey::from_hex(&format!("{:064x}", i * 1000)).unwrap();
             let pub_key = PublicKey::from_private_key(&priv_key);
-            let msg = format!("Message number {}", i);
+            let msg = format!("Message number {i}");
 
             let sig = priv_key.sign(msg.as_bytes(), true).unwrap();
             assert!(
                 pub_key.verify(msg.as_bytes(), &sig),
-                "Key {} should verify",
-                i
+                "Key {i} should verify"
             );
         }
     }

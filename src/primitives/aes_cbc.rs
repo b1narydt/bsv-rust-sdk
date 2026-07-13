@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // --- PKCS7 tests ---
@@ -289,7 +289,7 @@ mod tests {
             let plaintext: Vec<u8> = (0..len).map(|i| (i & 0xff) as u8).collect();
             let ct = aes_cbc_encrypt(&key, &iv, &plaintext).unwrap();
             let pt = aes_cbc_decrypt(&key, &iv, &ct).unwrap();
-            assert_eq!(pt, plaintext, "Round-trip failed for length {}", len);
+            assert_eq!(pt, plaintext, "Round-trip failed for length {len}");
         }
     }
 

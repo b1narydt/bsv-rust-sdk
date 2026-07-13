@@ -91,7 +91,7 @@ impl KeyShares {
                 x = BigNumber::from_bytes(&h, Endian::Big);
                 x = x
                     .umod(&curve.p)
-                    .map_err(|e| PrimitivesError::ArithmeticError(format!("mod p: {}", e)))?;
+                    .map_err(|e| PrimitivesError::ArithmeticError(format!("mod p: {e}")))?;
 
                 attempts += 1;
                 if attempts > 5 {
@@ -170,8 +170,7 @@ impl KeyShares {
             let parts: Vec<&str> = share.split('.').collect();
             if parts.len() != 4 {
                 return Err(PrimitivesError::InvalidFormat(format!(
-                    "Invalid share format in share {}. Expected format: \"x.y.t.i\" - received {}",
-                    idx, share
+                    "Invalid share format in share {idx}. Expected format: \"x.y.t.i\" - received {share}"
                 )));
             }
 
@@ -180,21 +179,18 @@ impl KeyShares {
 
             let t: usize = t_str.parse().map_err(|_| {
                 PrimitivesError::InvalidFormat(format!(
-                    "Threshold not a valid number in share {}",
-                    idx
+                    "Threshold not a valid number in share {idx}"
                 ))
             })?;
 
             if idx != 0 && threshold != t {
                 return Err(PrimitivesError::InvalidFormat(format!(
-                    "Threshold mismatch in share {}",
-                    idx
+                    "Threshold mismatch in share {idx}"
                 )));
             }
             if idx != 0 && integrity != i_str {
                 return Err(PrimitivesError::InvalidFormat(format!(
-                    "Integrity mismatch in share {}",
-                    idx
+                    "Integrity mismatch in share {idx}"
                 )));
             }
 
@@ -230,8 +226,7 @@ impl KeyShares {
 
         if shares.points.len() < threshold {
             return Err(PrimitivesError::ThresholdError(format!(
-                "At least {} shares are required to reconstruct the private key",
-                threshold
+                "At least {threshold} shares are required to reconstruct the private key"
             )));
         }
 
@@ -462,9 +457,7 @@ mod tests {
                 assert_eq!(
                     recovered.to_hex(),
                     key.to_hex(),
-                    "Shares ({}, {}) should reconstruct",
-                    i,
-                    j
+                    "Shares ({i}, {j}) should reconstruct"
                 );
             }
         }

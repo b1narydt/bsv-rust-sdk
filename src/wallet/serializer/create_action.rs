@@ -412,8 +412,7 @@ pub(crate) fn read_send_with_results(
             ACTION_RESULT_STATUS_FAILED => ActionResultStatus::Failed,
             _ => {
                 return Err(WalletError::Internal(format!(
-                    "invalid status byte: {}",
-                    status_byte
+                    "invalid status byte: {status_byte}"
                 )))
             }
         };

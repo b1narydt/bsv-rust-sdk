@@ -98,7 +98,7 @@ fn varint_size(val: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::locking_script::LockingScript;
+    
     use crate::script::templates::p2pkh::P2PKH;
     use crate::script::templates::ScriptTemplateLock;
     use crate::transaction::transaction_input::TransactionInput;
@@ -185,7 +185,7 @@ mod tests {
         // Calculate expected: version(4) + varint(1) + input(40 + varint(unlock_len) + unlock_len) + varint(1) + output(8 + varint(25) + 25) + locktime(4)
         let expected_size =
             4 + 1 + (40 + varint_size(unlock_len) + unlock_len) + 1 + (8 + 1 + 25) + 4;
-        let expected_fee = (expected_size * 1000 + 999) / 1000;
+        let expected_fee = (expected_size * 1000).div_ceil(1000);
         assert_eq!(fee, expected_fee);
     }
 }

@@ -176,8 +176,7 @@ mod tests {
             let p_result = g.mul(&k);
             assert!(
                 bp_result.eq(&p_result),
-                "BasePoint.mul mismatch for k={}",
-                k_val
+                "BasePoint.mul mismatch for k={k_val}"
             );
         }
     }
@@ -200,8 +199,8 @@ mod tests {
 
         for (k, ex, ey) in expected {
             let result = bp.mul(&BigNumber::from_number(k));
-            assert_eq!(result.x.to_hex(), ex, "x mismatch for k={}", k);
-            assert_eq!(result.y.to_hex(), ey, "y mismatch for k={}", k);
+            assert_eq!(result.x.to_hex(), ex, "x mismatch for k={k}");
+            assert_eq!(result.y.to_hex(), ey, "y mismatch for k={k}");
         }
     }
 

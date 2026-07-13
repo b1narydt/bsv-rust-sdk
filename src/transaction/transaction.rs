@@ -80,7 +80,7 @@ impl Transaction {
     /// Deserialize a transaction from a hex string.
     pub fn from_hex(hex: &str) -> Result<Self, TransactionError> {
         let bytes = hex_to_bytes(hex)
-            .map_err(|e| TransactionError::InvalidFormat(format!("invalid hex: {}", e)))?;
+            .map_err(|e| TransactionError::InvalidFormat(format!("invalid hex: {e}")))?;
         let mut cursor = Cursor::new(bytes);
         Self::from_binary(&mut cursor)
     }
@@ -289,7 +289,7 @@ impl Transaction {
     /// Deserialize a transaction from an EF format hex string.
     pub fn from_hex_ef(hex: &str) -> Result<Self, TransactionError> {
         let bytes = hex_to_bytes(hex)
-            .map_err(|e| TransactionError::InvalidFormat(format!("invalid hex: {}", e)))?;
+            .map_err(|e| TransactionError::InvalidFormat(format!("invalid hex: {e}")))?;
         let mut cursor = Cursor::new(bytes);
         Self::from_ef(&mut cursor)
     }
@@ -354,7 +354,7 @@ impl Transaction {
         let input = &self.inputs[input_index];
         if let Some(ref txid) = input.source_txid {
             let mut bytes = hex_to_bytes(txid)
-                .map_err(|e| TransactionError::InvalidFormat(format!("invalid txid hex: {}", e)))?;
+                .map_err(|e| TransactionError::InvalidFormat(format!("invalid txid hex: {e}")))?;
             bytes.reverse(); // display (BE) -> internal (LE)
             let mut arr = [0u8; 32];
             if bytes.len() == 32 {
@@ -610,7 +610,7 @@ impl Transaction {
             self.sighash_preimage(input_index, scope, source_satoshis, source_locking_script)?;
         let unlocking_script = template
             .sign(&preimage)
-            .map_err(|e| TransactionError::SigningFailed(format!("{}", e)))?;
+            .map_err(|e| TransactionError::SigningFailed(format!("{e}")))?;
         self.inputs[input_index].unlocking_script = Some(unlocking_script);
         Ok(())
     }
@@ -644,21 +644,18 @@ impl Transaction {
             let (source_satoshis, source_locking_script) = {
                 let source_tx = self.inputs[i].source_transaction.as_ref().ok_or_else(|| {
                     TransactionError::SigningFailed(format!(
-                        "input {}: source_transaction required for sign_all_inputs()",
-                        i
+                        "input {i}: source_transaction required for sign_all_inputs()"
                     ))
                 })?;
                 let out_idx = self.inputs[i].source_output_index as usize;
                 let output = source_tx.outputs.get(out_idx).ok_or_else(|| {
                     TransactionError::SigningFailed(format!(
-                        "input {}: source transaction has no output at index {}",
-                        i, out_idx
+                        "input {i}: source transaction has no output at index {out_idx}"
                     ))
                 })?;
                 let satoshis = output.satoshis.ok_or_else(|| {
                     TransactionError::SigningFailed(format!(
-                        "input {}: source output {} has no satoshis",
-                        i, out_idx
+                        "input {i}: source output {out_idx} has no satoshis"
                     ))
                 })?;
                 (satoshis, output.locking_script.clone())
@@ -668,7 +665,7 @@ impl Transaction {
                 self.sighash_preimage(i, scope, source_satoshis, &source_locking_script)?;
             let unlocking_script = template
                 .sign(&preimage)
-                .map_err(|e| TransactionError::SigningFailed(format!("input {}: {}", i, e)))?;
+                .map_err(|e| TransactionError::SigningFailed(format!("input {i}: {e}")))?;
             self.inputs[i].unlocking_script = Some(unlocking_script);
         }
 
@@ -686,7 +683,7 @@ impl Default for Transaction {
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }
@@ -785,7 +782,7 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     for i in (0..hex.len()).step_by(2) {
         let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|e| format!("invalid hex at position {}: {}", i, e))?;
+            .map_err(|e| format!("invalid hex at position {i}: {e}"))?;
         bytes.push(byte);
     }
     Ok(bytes)
@@ -976,7 +973,7 @@ mod tests {
             vectors.iter().enumerate()
         {
             let tx = Transaction::from_hex(raw_tx_hex)
-                .unwrap_or_else(|e| panic!("vector {}: failed to parse tx: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: failed to parse tx: {e}"));
 
             let sub_script = if script_hex.is_empty() {
                 vec![]
@@ -986,7 +983,7 @@ mod tests {
 
             let preimage = tx
                 .sighash_preimage_legacy(*input_index, *hash_type, &sub_script)
-                .unwrap_or_else(|e| panic!("vector {}: sighash error: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: sighash error: {e}"));
 
             // The expected hash is in display (BE/reversed) format
             let mut hash_bytes = hash256(&preimage);
@@ -997,8 +994,7 @@ mod tests {
                 passed += 1;
             } else {
                 println!(
-                    "MISMATCH vector {}: expected={}, got={}",
-                    i, expected_hash, computed_hash
+                    "MISMATCH vector {i}: expected={expected_hash}, got={computed_hash}"
                 );
             }
         }
@@ -1162,39 +1158,36 @@ mod tests {
 
             // Parse BEEF at the Beef level to get subject tx with full source chain
             let beef = crate::transaction::beef::Beef::from_hex(hex)
-                .unwrap_or_else(|e| panic!("vector {}: from_hex failed: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: from_hex failed: {e}"));
             let tx = beef
                 .into_transaction()
-                .unwrap_or_else(|e| panic!("vector {}: into_transaction failed: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: into_transaction failed: {e}"));
 
             // Re-serialize to BEEF
             let beef_bytes = tx
                 .to_beef()
-                .unwrap_or_else(|e| panic!("vector {}: to_beef failed: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: to_beef failed: {e}"));
 
             // Verify BEEF V1 header
             assert_eq!(
                 &beef_bytes[0..4],
                 &[0x01, 0x00, 0xBE, 0xEF],
-                "vector {}: wrong BEEF header",
-                i
+                "vector {i}: wrong BEEF header"
             );
 
             // Parse back and verify same subject txid
-            let re_hex: String = beef_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            let re_hex: String = beef_bytes.iter().map(|b| format!("{b:02x}")).collect();
             let re_parsed = Transaction::from_beef(&re_hex)
-                .unwrap_or_else(|e| panic!("vector {}: round-trip from_beef failed: {}", i, e));
+                .unwrap_or_else(|e| panic!("vector {i}: round-trip from_beef failed: {e}"));
             assert_eq!(
                 re_parsed.id().unwrap(),
                 tx.id().unwrap(),
-                "vector {}: txid mismatch after round-trip",
-                i
+                "vector {i}: txid mismatch after round-trip"
             );
             assert_eq!(
                 re_parsed.outputs.len(),
                 tx.outputs.len(),
-                "vector {}: output count mismatch",
-                i
+                "vector {i}: output count mismatch"
             );
         }
     }
@@ -1209,7 +1202,7 @@ mod tests {
 
         let tx = Transaction::from_beef(original_hex).expect("from_beef");
         let beef_bytes = tx.to_beef().expect("to_beef");
-        let result_hex: String = beef_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        let result_hex: String = beef_bytes.iter().map(|b| format!("{b:02x}")).collect();
 
         assert_eq!(
             result_hex, original_hex,
@@ -1230,10 +1223,8 @@ mod tests {
         let mut parent = Transaction::new();
         parent.add_output(TransactionOutput {
             satoshis: Some(50_000),
-            locking_script: LockingScript::from_binary(&vec![
-                0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac,
-            ]),
+            locking_script: LockingScript::from_binary(&[0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac]),
             change: false,
         });
         let parent_txid = parent.id().unwrap();
@@ -1268,7 +1259,7 @@ mod tests {
         });
         child.add_output(TransactionOutput {
             satoshis: Some(40_000),
-            locking_script: LockingScript::from_binary(&vec![0x6a, 0x04, 0xde, 0xad]),
+            locking_script: LockingScript::from_binary(&[0x6a, 0x04, 0xde, 0xad]),
             change: false,
         });
 
@@ -1282,7 +1273,7 @@ mod tests {
         let re_beef = crate::transaction::beef::Beef::from_hex(
             &beef_bytes
                 .iter()
-                .map(|b| format!("{:02x}", b))
+                .map(|b| format!("{b:02x}"))
                 .collect::<String>(),
         )
         .expect("re-parse BEEF");
@@ -1307,9 +1298,7 @@ mod tests {
         let mut tx = Transaction::new();
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&vec![
-                0x6a, 0x02, 0xab, 0xcd,
-            ]),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&[0x6a, 0x02, 0xab, 0xcd]),
             change: false,
         });
 
@@ -1318,8 +1307,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("merkle proof") || err.contains("source transaction"),
-            "error should mention missing proofs, got: {}",
-            err
+            "error should mention missing proofs, got: {err}"
         );
     }
 
@@ -1340,9 +1328,7 @@ mod tests {
         });
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&vec![
-                0x6a, 0x02, 0xab, 0xcd,
-            ]),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&[0x6a, 0x02, 0xab, 0xcd]),
             change: false,
         });
 
@@ -1354,8 +1340,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("no source transaction"),
-            "error should mention missing source transaction, got: {}",
-            err
+            "error should mention missing source transaction, got: {err}"
         );
     }
 }

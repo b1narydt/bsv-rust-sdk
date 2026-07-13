@@ -161,7 +161,7 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
 /// base64-encoded. This matches the TS SDK getCertificateFieldEncryptionDetails
 /// with a serial number.
 pub fn get_certificate_field_encryption_key_id(field_name: &str, serial_number: &str) -> String {
-    format!("{} {}", serial_number, field_name)
+    format!("{serial_number} {field_name}")
 }
 
 /// Get the encryption key ID for a master certificate field.
@@ -180,7 +180,7 @@ pub fn get_master_field_encryption_key_id(field_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::certificates::certificate::AuthCertificate;
+    
     use crate::auth::certificates::master::{default_get_revocation_outpoint, MasterCertificate};
     use crate::primitives::private_key::PrivateKey;
     use crate::wallet::error::WalletError;

@@ -59,8 +59,7 @@ impl Mnemonic {
         let ent_bits = entropy.len() * 8;
         if !(128..=256).contains(&ent_bits) || !ent_bits.is_multiple_of(32) {
             return Err(CompatError::InvalidEntropy(format!(
-                "entropy must be 128-256 bits in 32-bit increments, got {} bits",
-                ent_bits
+                "entropy must be 128-256 bits in 32-bit increments, got {ent_bits} bits"
             )));
         }
 
@@ -102,8 +101,7 @@ impl Mnemonic {
     pub fn from_random(bits: usize, language: Language) -> Result<Self, CompatError> {
         if !(128..=256).contains(&bits) || !bits.is_multiple_of(32) {
             return Err(CompatError::InvalidEntropy(format!(
-                "bits must be 128-256 in 32-bit increments, got {}",
-                bits
+                "bits must be 128-256 in 32-bit increments, got {bits}"
             )));
         }
         let entropy = random_bytes(bits / 8);
@@ -127,8 +125,7 @@ impl Mnemonic {
         // Valid word counts: 12, 15, 18, 21, 24
         if !(12..=24).contains(&word_count) || !word_count.is_multiple_of(3) {
             return Err(CompatError::InvalidMnemonic(format!(
-                "invalid word count: {} (must be 12, 15, 18, 21, or 24)",
-                word_count
+                "invalid word count: {word_count} (must be 12, 15, 18, 21, or 24)"
             )));
         }
 
@@ -141,8 +138,7 @@ impl Mnemonic {
                 Some(idx) => indices.push(idx as u32),
                 None => {
                     return Err(CompatError::InvalidMnemonic(format!(
-                        "word not in wordlist: {}",
-                        word
+                        "word not in wordlist: {word}"
                     )));
                 }
             }
@@ -225,7 +221,7 @@ impl Mnemonic {
     /// Uses 2048 iterations.
     pub fn to_seed(&self, passphrase: &str) -> Vec<u8> {
         let mnemonic_str = self.to_phrase();
-        let salt = format!("mnemonic{}", passphrase);
+        let salt = format!("mnemonic{passphrase}");
         pbkdf2_hmac_sha512(mnemonic_str.as_bytes(), salt.as_bytes(), 2048, 64)
     }
 
@@ -270,7 +266,7 @@ mod tests {
     }
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[derive(serde::Deserialize)]
@@ -391,7 +387,7 @@ mod tests {
         for (i, v) in vectors.vectors.iter().enumerate() {
             let entropy = hex_to_bytes(&v.entropy);
             let m = Mnemonic::from_entropy(&entropy, Language::English).unwrap();
-            assert_eq!(m.to_string(), v.mnemonic, "Vector {} mnemonic mismatch", i);
+            assert_eq!(m.to_string(), v.mnemonic, "Vector {i} mnemonic mismatch");
         }
     }
 
@@ -402,7 +398,7 @@ mod tests {
         for (i, v) in vectors.vectors.iter().enumerate() {
             let m = Mnemonic::from_string(&v.mnemonic, Language::English).unwrap();
             let seed = m.to_seed(&v.passphrase);
-            assert_eq!(bytes_to_hex(&seed), v.seed, "Vector {} seed mismatch", i);
+            assert_eq!(bytes_to_hex(&seed), v.seed, "Vector {i} seed mismatch");
         }
     }
 }

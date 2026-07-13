@@ -105,7 +105,7 @@ impl SymmetricKey {
     /// Return the key as a hex string.
     pub fn to_hex(&self) -> String {
         let bytes = self.key.to_array(Endian::Big, Some(32));
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// Return the key as 32 bytes.

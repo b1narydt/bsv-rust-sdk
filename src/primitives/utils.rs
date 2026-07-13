@@ -11,7 +11,7 @@ const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghij
 
 /// Encode bytes as a hexadecimal string.
 pub fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Decode a hexadecimal string into bytes.
@@ -25,7 +25,7 @@ pub fn from_hex(hex: &str) -> Result<Vec<u8>, PrimitivesError> {
         .step_by(2)
         .map(|i| {
             u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
-                PrimitivesError::InvalidHex(format!("invalid hex char at position {}: {}", i, e))
+                PrimitivesError::InvalidHex(format!("invalid hex char at position {i}: {e}"))
             })
         })
         .collect()
@@ -99,8 +99,7 @@ pub fn base58_decode(s: &str) -> Result<Vec<u8>, PrimitivesError> {
         let ch_val = ch as usize;
         if ch_val >= 128 || alphabet_map[ch_val] == 255 {
             return Err(PrimitivesError::InvalidFormat(format!(
-                "invalid base58 character: {}",
-                ch
+                "invalid base58 character: {ch}"
             )));
         }
         let mut carry = alphabet_map[ch_val] as u32;
@@ -230,7 +229,7 @@ mod tests {
         for data in test_cases.iter().skip(1) {
             let encoded = base58_encode(data);
             let decoded = base58_decode(&encoded).unwrap();
-            assert_eq!(&decoded, data, "Base58 roundtrip failed for {:?}", data);
+            assert_eq!(&decoded, data, "Base58 roundtrip failed for {data:?}");
         }
     }
 
@@ -241,8 +240,7 @@ mod tests {
         let encoded = base58_encode(&data);
         assert!(
             encoded.starts_with("111"),
-            "Expected 3 leading '1's for 3 leading zero bytes, got: {}",
-            encoded
+            "Expected 3 leading '1's for 3 leading zero bytes, got: {encoded}"
         );
         let decoded = base58_decode(&encoded).unwrap();
         assert_eq!(decoded, data);

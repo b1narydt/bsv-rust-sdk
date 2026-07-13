@@ -52,8 +52,7 @@ pub fn deserialize_verify_signature_args(data: &[u8]) -> Result<VerifySignatureA
         }
         _ => {
             return Err(WalletError::Internal(format!(
-                "invalid data type flag: {}",
-                data_type_flag
+                "invalid data type flag: {data_type_flag}"
             )))
         }
     };

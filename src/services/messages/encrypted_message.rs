@@ -25,33 +25,33 @@ pub fn encrypt(
 ) -> Result<Vec<u8>, ServicesError> {
     let key_id = random_bytes(32);
     let key_id_base64 = to_base64(&key_id);
-    let invoice_number = format!("2-message encryption-{}", key_id_base64);
+    let invoice_number = format!("2-message encryption-{key_id_base64}");
 
     // Derive child keys using Type-42.
     // sender_derived_priv = sender_priv.derive_child(recipient_pub, invoice)
     let sender_derived_priv = sender
         .derive_child(recipient, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive sender child: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive sender child: {e}")))?;
 
     // recipient_derived_pub = recipient_pub.derive_child(sender_priv, invoice)
     let recipient_derived_pub = recipient
         .derive_child(sender, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive recipient child: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive recipient child: {e}")))?;
 
     // Compute shared secret: sender_derived_priv * recipient_derived_pub
     let shared_secret = sender_derived_priv
         .derive_shared_secret(&recipient_derived_pub)
-        .map_err(|e| ServicesError::Messages(format!("shared secret: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("shared secret: {e}")))?;
 
     // Derive symmetric key from shared secret (compressed, skip prefix byte).
     let shared_compressed = shared_secret.to_der(true);
     let sym_key = SymmetricKey::from_bytes(&shared_compressed[1..])
-        .map_err(|e| ServicesError::Messages(format!("symmetric key: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("symmetric key: {e}")))?;
 
     // Encrypt the message.
     let encrypted = sym_key
         .encrypt(message)
-        .map_err(|e| ServicesError::Messages(format!("encrypt: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("encrypt: {e}")))?;
 
     // Assemble output.
     let sender_pubkey = sender.to_public_key().to_der();
@@ -95,7 +95,7 @@ pub fn decrypt(
 
     // Parse sender public key (33 bytes).
     let sender_pub = PublicKey::from_der_bytes(&encrypted_message[pos..pos + 33])
-        .map_err(|e| ServicesError::Messages(format!("invalid sender pubkey: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("invalid sender pubkey: {e}")))?;
     pos += 33;
 
     // Parse expected recipient public key (33 bytes).
@@ -122,31 +122,31 @@ pub fn decrypt(
 
     // Recompute shared secret using Type-42 derivation.
     let key_id_base64 = to_base64(key_id);
-    let invoice_number = format!("2-message encryption-{}", key_id_base64);
+    let invoice_number = format!("2-message encryption-{key_id_base64}");
 
     // In decrypt context (matching TS SDK):
     // sender_derived_pub = sender_pub.derive_child(recipient_priv, invoice) -> PublicKey
     let sender_derived_pub = sender_pub
         .derive_child(recipient, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive sender child pub: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive sender child pub: {e}")))?;
 
     // recipient_derived_priv = recipient_priv.derive_child(sender_pub, invoice) -> PrivateKey
     let recipient_derived_priv = recipient
         .derive_child(&sender_pub, &invoice_number)
-        .map_err(|e| ServicesError::Messages(format!("derive recipient child priv: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("derive recipient child priv: {e}")))?;
 
     // shared_secret = recipient_derived_priv * sender_derived_pub
     let shared_secret = recipient_derived_priv
         .derive_shared_secret(&sender_derived_pub)
-        .map_err(|e| ServicesError::Messages(format!("shared secret: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("shared secret: {e}")))?;
 
     let shared_compressed = shared_secret.to_der(true);
     let sym_key = SymmetricKey::from_bytes(&shared_compressed[1..])
-        .map_err(|e| ServicesError::Messages(format!("symmetric key: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("symmetric key: {e}")))?;
 
     let plaintext = sym_key
         .decrypt(encrypted_data)
-        .map_err(|e| ServicesError::Messages(format!("decrypt: {}", e)))?;
+        .map_err(|e| ServicesError::Messages(format!("decrypt: {e}")))?;
 
     Ok((plaintext, sender_pub))
 }
@@ -179,7 +179,7 @@ fn to_base64(data: &[u8]) -> String {
 
 /// Hex-encode bytes.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

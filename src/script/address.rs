@@ -153,8 +153,7 @@ mod tests {
         let s = addr.to_string();
         assert!(
             s.starts_with('m') || s.starts_with('n'),
-            "testnet address should start with m or n, got: {}",
-            s
+            "testnet address should start with m or n, got: {s}"
         );
     }
 
@@ -225,7 +224,7 @@ mod tests {
         hash.copy_from_slice(&pubkey_hash);
 
         let addr = Address::from_public_key_hash(&hash, true);
-        let display_str = format!("{}", addr);
+        let display_str = format!("{addr}");
         assert_eq!(display_str, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH");
     }
 }

@@ -40,8 +40,7 @@ impl PointInFiniteField {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 2 {
             return Err(PrimitivesError::InvalidFormat(format!(
-                "Expected 'x.y' format, got: {}",
-                s
+                "Expected 'x.y' format, got: {s}"
             )));
         }
         let x_bytes = base58_decode(parts[0])?;

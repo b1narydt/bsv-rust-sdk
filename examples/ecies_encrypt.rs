@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         electrum_ct
             .iter()
             .take(20)
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>()
             + "...",
         electrum_ct.len()
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let electrum_pt = ECIES::electrum_decrypt(&electrum_ct, &recipient_key)?;
     let electrum_text = std::str::from_utf8(&electrum_pt)?;
-    println!("Decrypted:        \"{}\"", electrum_text);
+    println!("Decrypted:        \"{electrum_text}\"");
     assert_eq!(plaintext.as_slice(), electrum_pt.as_slice());
     println!("Electrum round-trip verified.");
 
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bitcore_ct
             .iter()
             .take(20)
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>()
             + "...",
         bitcore_ct.len()
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bitcore_pt = ECIES::bitcore_decrypt(&bitcore_ct, &recipient_key)?;
     let bitcore_text = std::str::from_utf8(&bitcore_pt)?;
-    println!("Decrypted:        \"{}\"", bitcore_text);
+    println!("Decrypted:        \"{bitcore_text}\"");
     assert_eq!(plaintext.as_slice(), bitcore_pt.as_slice());
     println!("Bitcore round-trip verified.");
 

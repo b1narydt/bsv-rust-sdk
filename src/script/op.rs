@@ -775,8 +775,8 @@ mod tests {
 
         for (byte, expected) in known {
             let op = Op::from(byte);
-            assert_eq!(op, expected, "From<u8> for byte {:#04x} failed", byte);
-            assert_eq!(op.to_byte(), byte, "to_byte for {:#04x} failed", byte);
+            assert_eq!(op, expected, "From<u8> for byte {byte:#04x} failed");
+            assert_eq!(op.to_byte(), byte, "to_byte for {byte:#04x} failed");
         }
     }
 
@@ -787,8 +787,7 @@ mod tests {
             assert_eq!(
                 Op::from(byte),
                 Op::OpInvalidOpcode,
-                "Direct-push byte {:#04x} should map to OpInvalidOpcode",
-                byte
+                "Direct-push byte {byte:#04x} should map to OpInvalidOpcode"
             );
         }
     }
@@ -828,11 +827,11 @@ mod tests {
             "OP_TRUE",
         ];
         for name in &names {
-            let op = Op::from_name(name).unwrap_or_else(|| panic!("from_name failed for {}", name));
+            let op = Op::from_name(name).unwrap_or_else(|| panic!("from_name failed for {name}"));
             // For aliases, the canonical name may differ
             let canonical = op.to_name();
             let op2 = Op::from_name(canonical)
-                .unwrap_or_else(|| panic!("from_name failed for canonical {}", canonical));
+                .unwrap_or_else(|| panic!("from_name failed for canonical {canonical}"));
             assert_eq!(op, op2);
         }
     }
@@ -845,8 +844,7 @@ mod tests {
             assert_ne!(
                 op,
                 Op::OpInvalidOpcode,
-                "Byte {:#04x} should not be OpInvalidOpcode",
-                byte
+                "Byte {byte:#04x} should not be OpInvalidOpcode"
             );
         }
     }
@@ -866,8 +864,7 @@ mod tests {
         // Let's just verify it's at least 130 (the ~180 named opcodes minus direct-push gap)
         assert!(
             count >= 130,
-            "Expected at least 130 named opcodes, got {}",
-            count
+            "Expected at least 130 named opcodes, got {count}"
         );
     }
 }

@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let original =
         PrivateKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")?;
     let wif = original.to_wif(&[0x80]);
-    println!("WIF:        {}", wif);
+    println!("WIF:        {wif}");
 
     // Import the private key from WIF
     let private_key = PrivateKey::from_wif(&wif)?;
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compute the P2PKH address (mainnet prefix 0x00)
     let address = public_key.to_address(&[0x00]);
-    println!("Address:    {}", address);
+    println!("Address:    {address}");
 
     // Verify WIF round-trip
     let wif_roundtrip = private_key.to_wif(&[0x80]);

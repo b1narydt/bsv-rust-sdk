@@ -327,8 +327,7 @@ pub fn read_optional_bool(reader: &mut impl Read) -> Result<Option<bool>, Wallet
         0 => Ok(Some(false)),
         1 => Ok(Some(true)),
         _ => Err(WalletError::Internal(format!(
-            "invalid optional bool byte: {}",
-            b
+            "invalid optional bool byte: {b}"
         ))),
     }
 }
@@ -429,8 +428,7 @@ pub fn read_counterparty(reader: &mut impl Read) -> Result<Counterparty, WalletE
             })
         }
         _ => Err(WalletError::Internal(format!(
-            "invalid counterparty flag byte: 0x{:02x}",
-            flag
+            "invalid counterparty flag byte: 0x{flag:02x}"
         ))),
     }
 }
@@ -715,8 +713,7 @@ pub fn write_outpoint(writer: &mut impl Write, outpoint: &str) -> Result<(), Wal
     let parts: Vec<&str> = outpoint.split('.').collect();
     if parts.len() != 2 {
         return Err(WalletError::Internal(format!(
-            "invalid outpoint format: {}",
-            outpoint
+            "invalid outpoint format: {outpoint}"
         )));
     }
     let txid_bytes = hex_decode(parts[0])?;
@@ -729,7 +726,7 @@ pub fn write_outpoint(writer: &mut impl Write, outpoint: &str) -> Result<(), Wal
     // Write txid in display hex order (same as Go SDK's WriteBytesReverse of internal-order hash)
     write_raw_bytes(writer, &txid_bytes)?;
     let index: u32 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-        WalletError::Internal(format!("invalid outpoint index: {}", e))
+        WalletError::Internal(format!("invalid outpoint index: {e}"))
     })?;
     write_varint(writer, index as u64)
 }
@@ -782,7 +779,7 @@ fn hex_nibble(c: char) -> Result<u8, WalletError> {
         '0'..='9' => Ok(c as u8 - b'0'),
         'a'..='f' => Ok(c as u8 - b'a' + 10),
         'A'..='F' => Ok(c as u8 - b'A' + 10),
-        _ => Err(WalletError::Internal(format!("invalid hex char: {}", c))),
+        _ => Err(WalletError::Internal(format!("invalid hex char: {c}"))),
     }
 }
 
@@ -790,7 +787,7 @@ fn hex_nibble(c: char) -> Result<u8, WalletError> {
 pub fn hex_encode(data: &[u8]) -> String {
     let mut s = String::with_capacity(data.len() * 2);
     for b in data {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }

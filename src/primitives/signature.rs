@@ -356,11 +356,11 @@ impl Signature {
         let e_neg = message_hash
             .neg()
             .umod(n)
-            .map_err(|e| PrimitivesError::InvalidSignature(format!("umod failed: {}", e)))?;
+            .map_err(|e| PrimitivesError::InvalidSignature(format!("umod failed: {e}")))?;
         let r_inv = self
             .r
             .invm(n)
-            .map_err(|e| PrimitivesError::InvalidSignature(format!("invm failed: {}", e)))?;
+            .map_err(|e| PrimitivesError::InvalidSignature(format!("invm failed: {e}")))?;
 
         let sr = r_point.mul(&self.s);
         let eg = BasePoint::instance().mul(&e_neg);
@@ -417,7 +417,7 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, PrimitivesError> {
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -730,13 +730,11 @@ mod tests {
                 let (_, got_rec, got_comp) = Signature::from_compact_bsm(&compact).unwrap();
                 assert_eq!(
                     got_rec, rec,
-                    "recovery mismatch for rec={} comp={}",
-                    rec, comp
+                    "recovery mismatch for rec={rec} comp={comp}"
                 );
                 assert_eq!(
                     got_comp, comp,
-                    "compressed mismatch for rec={} comp={}",
-                    rec, comp
+                    "compressed mismatch for rec={rec} comp={comp}"
                 );
             }
         }
@@ -795,7 +793,7 @@ mod tests {
             let priv_key = PrivateKey::from_hex(key_hex).unwrap();
             let pub_key = PublicKey::from_private_key(&priv_key);
 
-            let message = format!("test message for recovery key {}", i);
+            let message = format!("test message for recovery key {i}");
             let msg_hash = sha256(message.as_bytes());
             let msg_bn = BigNumber::from_bytes(&msg_hash, Endian::Big);
 
@@ -805,8 +803,7 @@ mod tests {
             let recovered = sig.recover_public_key(recovery, &msg_bn).unwrap();
             assert_eq!(
                 pub_key, recovered,
-                "recovered key should match for key {}",
-                key_hex
+                "recovered key should match for key {key_hex}"
             );
         }
     }
@@ -878,8 +875,7 @@ mod tests {
             let der_hex = sig.to_hex();
             assert_eq!(
                 der_hex, expected_der,
-                "DER encoding mismatch for r={}",
-                r_hex
+                "DER encoding mismatch for r={r_hex}"
             );
 
             // Test round-trip
@@ -887,14 +883,12 @@ mod tests {
             assert_eq!(
                 recovered.r().cmp(sig.r()),
                 0,
-                "round-trip r mismatch for r={}",
-                r_hex
+                "round-trip r mismatch for r={r_hex}"
             );
             assert_eq!(
                 recovered.s().cmp(sig.s()),
                 0,
-                "round-trip s mismatch for r={}",
-                r_hex
+                "round-trip s mismatch for r={r_hex}"
             );
         }
     }

@@ -330,10 +330,10 @@ mod tests {
     fn test_op_numbers() {
         // OP_2 through OP_16
         for n in 2..=16u8 {
-            let asm = format!("OP_{}", n);
+            let asm = format!("OP_{n}");
             let mut spend = make_spend(&asm, "");
             spend.validate().unwrap();
-            assert_eq!(spend.stack, vec![vec![n]], "OP_{} should push [{}]", n, n);
+            assert_eq!(spend.stack, vec![vec![n]], "OP_{n} should push [{n}]");
         }
     }
 
@@ -481,7 +481,7 @@ mod tests {
         // Should fail with either StackUnderflow or InvalidStackOperation
         let mut spend = make_spend("", "OP_DUP");
         let result = spend.validate();
-        assert!(result.is_err(), "expected error but got {:?}", result);
+        assert!(result.is_err(), "expected error but got {result:?}");
     }
 
     #[test]
@@ -640,10 +640,10 @@ mod tests {
         use crate::primitives::hash::hash160;
         let pubkey_data = vec![0x04; 33]; // dummy compressed pubkey
         let hash = hash160(&pubkey_data);
-        let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
-        let pubkey_hex: String = pubkey_data.iter().map(|b| format!("{:02x}", b)).collect();
+        let hash_hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        let pubkey_hex: String = pubkey_data.iter().map(|b| format!("{b:02x}")).collect();
 
-        let locking = format!("OP_DUP OP_HASH160 {} OP_EQUALVERIFY OP_DROP OP_1", hash_hex);
+        let locking = format!("OP_DUP OP_HASH160 {hash_hex} OP_EQUALVERIFY OP_DROP OP_1");
         let mut spend = make_spend(&pubkey_hex, &locking);
         assert!(spend.validate().unwrap());
     }
@@ -712,7 +712,7 @@ mod tests {
             "OP_DEPTH OP_3 OP_EQUALVERIFY OP_DROP OP_DROP OP_DROP OP_1",
         );
         let result = spend.validate();
-        assert!(result.is_ok(), "test_op_depth failed: {:?}", result);
+        assert!(result.is_ok(), "test_op_depth failed: {result:?}");
     }
 
     #[test]
@@ -1187,7 +1187,7 @@ mod tests {
 
             // Try as opcode (with or without OP_ prefix)
             if let Some(op) =
-                Op::from_name(token).or_else(|| Op::from_name(&format!("OP_{}", token)))
+                Op::from_name(token).or_else(|| Op::from_name(&format!("OP_{token}")))
             {
                 chunks.push(ScriptChunk::new_opcode(op));
                 i += 1;
@@ -1339,8 +1339,7 @@ mod tests {
         }
 
         println!(
-            "script_tests.json: {} passed, {} failed, {} skipped",
-            passed, failed, skipped
+            "script_tests.json: {passed} passed, {failed} failed, {skipped} skipped"
         );
 
         // We expect the majority to pass. Set a reasonable threshold.
@@ -1350,15 +1349,12 @@ mod tests {
         } else {
             0.0
         };
-        println!("Pass rate: {:.1}% ({}/{})", pass_rate, passed, total_run);
+        println!("Pass rate: {pass_rate:.1}% ({passed}/{total_run})");
 
         // Assert at least 60% pass rate for non-transaction-dependent entries
         assert!(
             pass_rate >= 50.0,
-            "script_tests.json pass rate too low: {:.1}% ({}/{})",
-            pass_rate,
-            passed,
-            total_run
+            "script_tests.json pass rate too low: {pass_rate:.1}% ({passed}/{total_run})"
         );
     }
 
@@ -1393,7 +1389,7 @@ mod tests {
             source_transaction: None,
         };
 
-        let mut spend = Spend::new(SpendParams {
+        let spend = Spend::new(SpendParams {
             locking_script: locking.clone(),
             unlocking_script: crate::script::unlocking_script::UnlockingScript::from_asm(""),
             source_txid: txid_be.to_string(),

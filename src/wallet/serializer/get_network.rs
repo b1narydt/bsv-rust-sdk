@@ -22,8 +22,7 @@ pub fn deserialize_get_network_result(data: &[u8]) -> Result<GetNetworkResult, W
         NETWORK_TESTNET_CODE => Network::Testnet,
         _ => {
             return Err(WalletError::Internal(format!(
-                "invalid network byte: {}",
-                b
+                "invalid network byte: {b}"
             )))
         }
     };

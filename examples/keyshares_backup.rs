@@ -17,8 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let threshold = 3;
     let total = 5;
     let shares = KeyShares::split(&original_key, threshold, total)?;
-    println!("Total shares:      {}", total);
-    println!("Threshold:         {}", threshold);
+    println!("Total shares:      {total}");
+    println!("Threshold:         {threshold}");
     println!("Integrity hash:    {}", shares.integrity);
 
     // Display share backup strings

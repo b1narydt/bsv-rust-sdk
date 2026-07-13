@@ -24,7 +24,7 @@ fn testdata_dir() -> PathBuf {
 }
 
 fn read_vector(filename: &str) -> (serde_json::Value, Vec<u8>) {
-    let path = testdata_dir().join(format!("{}.json", filename));
+    let path = testdata_dir().join(format!("{filename}.json"));
     let content = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -405,7 +405,7 @@ test_result_vector!(
                 spendable: true,
                 custom_instructions: None,
                 tags: vec![],
-                outpoint: format!("{}.0", TXID_HEX),
+                outpoint: format!("{TXID_HEX}.0"),
                 labels: vec![],
             },
             Output {

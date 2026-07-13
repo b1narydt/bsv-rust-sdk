@@ -99,7 +99,7 @@ impl BSM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::big_number::{BigNumber, Endian};
+    
 
     // Base64 decode helper
     fn base64_decode(input: &str) -> Vec<u8> {

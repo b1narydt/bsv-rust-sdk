@@ -184,8 +184,7 @@ pub fn deserialize_list_actions_result(data: &[u8]) -> Result<ListActionsResult,
             ACTION_STATUS_FAILED => ActionStatus::Failed,
             _ => {
                 return Err(WalletError::Internal(format!(
-                    "invalid status byte: {}",
-                    status_byte
+                    "invalid status byte: {status_byte}"
                 )))
             }
         };

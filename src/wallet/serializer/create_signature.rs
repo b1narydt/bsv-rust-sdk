@@ -50,8 +50,7 @@ pub fn deserialize_create_signature_args(data: &[u8]) -> Result<CreateSignatureA
         }
         _ => {
             return Err(WalletError::Internal(format!(
-                "invalid data type flag: {}",
-                data_type_flag
+                "invalid data type flag: {data_type_flag}"
             )))
         }
     };

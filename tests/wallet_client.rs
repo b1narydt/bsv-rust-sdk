@@ -42,18 +42,14 @@ fn assert_invalid_parameter(result: Result<(), WalletError>, field_substring: &s
         Err(WalletError::InvalidParameter(msg)) => {
             assert!(
                 msg.contains(field_substring),
-                "expected error message to contain '{}', got: {}",
-                field_substring,
-                msg
+                "expected error message to contain '{field_substring}', got: {msg}"
             );
         }
         Err(other) => panic!(
-            "expected InvalidParameter containing '{}', got: {:?}",
-            field_substring, other
+            "expected InvalidParameter containing '{field_substring}', got: {other:?}"
         ),
         Ok(()) => panic!(
-            "expected InvalidParameter containing '{}', got Ok",
-            field_substring
+            "expected InvalidParameter containing '{field_substring}', got Ok"
         ),
     }
 }

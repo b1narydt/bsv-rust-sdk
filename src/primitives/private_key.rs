@@ -37,7 +37,7 @@ impl PrivateKey {
             let bn = BigNumber::from_bytes(&bytes, Endian::Big);
             let key = bn
                 .umod(&curve.n)
-                .map_err(|e| PrimitivesError::InvalidPrivateKey(format!("mod n: {}", e)))?;
+                .map_err(|e| PrimitivesError::InvalidPrivateKey(format!("mod n: {e}")))?;
             if !key.is_zero() {
                 return Ok(PrivateKey { inner: key });
             }
@@ -98,7 +98,7 @@ impl PrivateKey {
     /// Export the private key as a 64-character zero-padded hex string.
     pub fn to_hex(&self) -> String {
         let hex = self.inner.to_hex();
-        format!("{:0>64}", hex)
+        format!("{hex:0>64}")
     }
 
     /// Export the private key in WIF (Wallet Import Format).
@@ -188,7 +188,7 @@ impl PrivateKey {
         let hmac_bn = BigNumber::from_bytes(&hmac_result, Endian::Big);
         let child =
             self.inner.add(&hmac_bn).umod(&curve.n).map_err(|e| {
-                PrimitivesError::ArithmeticError(format!("derive_child mod n: {}", e))
+                PrimitivesError::ArithmeticError(format!("derive_child mod n: {e}"))
             })?;
         let child_bytes = child.to_array(Endian::Big, Some(32));
         PrivateKey::from_bytes(&child_bytes)
@@ -350,11 +350,11 @@ mod tests {
             let key = PrivateKey::from_hex(&v.private_key_hex).unwrap();
             let prefix_bytes = crate::primitives::utils::from_hex(&v.wif_prefix).unwrap();
             let wif = key.to_wif(&prefix_bytes);
-            assert_eq!(wif, v.wif_mainnet, "Vector {}: WIF mismatch", i);
+            assert_eq!(wif, v.wif_mainnet, "Vector {i}: WIF mismatch");
 
             // Round-trip
             let recovered = PrivateKey::from_wif(&wif).unwrap();
-            assert_eq!(key, recovered, "Vector {}: WIF round-trip failed", i);
+            assert_eq!(key, recovered, "Vector {i}: WIF round-trip failed");
         }
     }
 

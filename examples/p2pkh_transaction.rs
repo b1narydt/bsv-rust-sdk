@@ -30,8 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recipient_pubkey = recipient_key.to_public_key();
     let recipient_address = recipient_pubkey.to_address(&[0x00]);
 
-    println!("Sender address:    {}", sender_address);
-    println!("Recipient address: {}", recipient_address);
+    println!("Sender address:    {sender_address}");
+    println!("Recipient address: {recipient_address}");
     println!();
 
     // -----------------------------------------------------------------------
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Source locking script (hex): {}",
         source_locking_script.to_hex()
     );
-    println!("Source satoshis: {}", source_satoshis);
+    println!("Source satoshis: {source_satoshis}");
     println!();
 
     // -----------------------------------------------------------------------
@@ -99,9 +99,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_hex = tx.to_hex()?;
     let txid = tx.id()?;
 
-    println!("Transaction ID: {}", txid);
+    println!("Transaction ID: {txid}");
     println!("Transaction hex ({} bytes):", tx_hex.len() / 2);
-    println!("{}", tx_hex);
+    println!("{tx_hex}");
     println!();
     println!("P2PKH transaction built, signed, and serialized successfully.");
 

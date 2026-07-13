@@ -75,8 +75,7 @@ impl Inscription {
         })?;
         let content_type = String::from_utf8(ct_data.clone()).map_err(|e| {
             ScriptError::InvalidScript(format!(
-                "inscription content type is not valid UTF-8: {}",
-                e
+                "inscription content type is not valid UTF-8: {e}"
             ))
         })?;
 

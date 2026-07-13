@@ -99,7 +99,7 @@ pub fn schnorr_generate_proof(
     let r_plus_ea = r.bn().add(&ea);
     let z = r_plus_ea
         .umod(&curve.n)
-        .map_err(|err| PrimitivesError::ArithmeticError(format!("mod n: {}", err)))?;
+        .map_err(|err| PrimitivesError::ArithmeticError(format!("mod n: {err}")))?;
 
     Ok(SchnorrProof {
         r_point,

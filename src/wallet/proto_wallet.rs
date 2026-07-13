@@ -342,7 +342,7 @@ impl ProtoWallet {
         // Create Schnorr DLEQ proof (matching TS SDK ProtoWallet.ts)
         // Proves knowledge of private key `a` such that A = a*G and S = a*B
         let linkage_point = Point::from_der(&linkage_bytes)
-            .map_err(|e| WalletError::Internal(format!("invalid linkage point: {}", e)))?;
+            .map_err(|e| WalletError::Internal(format!("invalid linkage point: {e}")))?;
         let counterparty_pub = match &counterparty.public_key {
             Some(pk) => pk.clone(),
             None => {
@@ -1218,7 +1218,7 @@ mod tests {
 
         assert!(err.is_err());
         let msg = format!("{}", err.unwrap_err());
-        assert!(msg.contains("not implemented"), "got: {}", msg);
+        assert!(msg.contains("not implemented"), "got: {msg}");
     }
 
     #[tokio::test]
