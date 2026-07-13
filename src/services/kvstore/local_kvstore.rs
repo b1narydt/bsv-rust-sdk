@@ -46,7 +46,6 @@ impl Default for LocalKvStoreConfig {
 /// Per-key locking via tokio::sync::Mutex ensures concurrent write safety.
 pub struct LocalKvStore<W: WalletInterface> {
     /// Wallet interface for output management and crypto operations.
-    #[allow(dead_code)]
     wallet: W,
     /// Configuration.
     config: LocalKvStoreConfig,
@@ -195,6 +194,8 @@ impl<W: WalletInterface> LocalKvStore<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::private_key::PrivateKey;
+    use crate::wallet::proto_wallet::ProtoWallet;
     use std::sync::Arc;
 
     #[test]
@@ -206,20 +207,26 @@ mod tests {
         assert!(config.originator.is_none());
     }
 
+    /// An empty context must be REJECTED by the constructor.
+    ///
+    /// This used to declare a `DummyWallet` it never constructed and then assert
+    /// `config.context.is_empty()` — i.e. it restated its own input and never
+    /// called `LocalKvStore::new` at all, so it could not have caught a missing
+    /// validation. The comment blamed "no WalletInterface impl"; `ProtoWallet` is
+    /// one. Now it actually exercises the constructor.
     #[test]
     fn test_empty_context_rejected() {
-        struct DummyWallet;
-
-        // We need a minimal WalletInterface impl for testing.
-        // Since WalletInterface uses RPITIT, we test the config validation directly.
+        let wallet = ProtoWallet::new(PrivateKey::from_bytes(&[0x11u8; 32]).unwrap());
         let config = LocalKvStoreConfig {
             context: String::new(),
             ..Default::default()
         };
 
-        // Can't easily construct LocalKvStore without a WalletInterface impl,
-        // so test the validation logic directly.
-        assert!(config.context.is_empty());
+        let result = LocalKvStore::new(wallet, config);
+        assert!(
+            result.is_err(),
+            "an empty context must be rejected by LocalKvStore::new"
+        );
     }
 
     #[tokio::test]

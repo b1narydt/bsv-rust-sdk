@@ -101,12 +101,16 @@ impl OverlayAdminTokenTemplate {
             .await
             .map_err(|e| ServicesError::Overlay(format!("getPublicKey(identityKey): {e}")))?;
 
-        let fields = vec![
-            protocol.as_bytes().to_vec(),
-            identity.public_key.to_der(),
-            domain.as_bytes().to_vec(),
-            topic_or_service.as_bytes().to_vec(),
-        ];
+        // Build the payload fields through `encode_fields`, so the advertisement
+        // layout has exactly ONE definition. (Constructing them inline here would
+        // duplicate the layout that `decode` reads back, and the two could drift.)
+        let fields = OverlayAdminTokenTemplate {
+            protocol: protocol.to_string(),
+            identity_key: hex_encode(&identity.public_key.to_der()),
+            domain: domain.to_string(),
+            topic_or_service: topic_or_service.to_string(),
+        }
+        .encode_fields();
 
         PushDrop::new(wallet, originator)
             .lock(
