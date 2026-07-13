@@ -97,9 +97,8 @@ impl RPuzzle {
             .ok_or_else(|| ScriptError::InvalidScript("RPuzzle: no k-value for unlock".into()))?;
 
         let msg_hash = sha256(preimage);
-        let sig = ecdsa_sign_with_k(&msg_hash, key.bn(), k, true).map_err(|e| {
-            ScriptError::InvalidSignature(format!("ECDSA sign with k failed: {e}"))
-        })?;
+        let sig = ecdsa_sign_with_k(&msg_hash, key.bn(), k, true)
+            .map_err(|e| ScriptError::InvalidSignature(format!("ECDSA sign with k failed: {e}")))?;
 
         let mut sig_bytes = sig.to_der();
         sig_bytes.push(self.sighash_type as u8);
@@ -289,10 +288,7 @@ mod tests {
                 expected_chunks,
                 "{ptype:?} should have {expected_chunks} chunks"
             );
-            assert_eq!(
-                chunks[9].op, expected_op,
-                "{ptype:?} hash opcode mismatch"
-            );
+            assert_eq!(chunks[9].op, expected_op, "{ptype:?} hash opcode mismatch");
         }
     }
 

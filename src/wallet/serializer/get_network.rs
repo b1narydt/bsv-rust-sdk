@@ -20,11 +20,7 @@ pub fn deserialize_get_network_result(data: &[u8]) -> Result<GetNetworkResult, W
     let network = match b {
         NETWORK_MAINNET_CODE => Network::Mainnet,
         NETWORK_TESTNET_CODE => Network::Testnet,
-        _ => {
-            return Err(WalletError::Internal(format!(
-                "invalid network byte: {b}"
-            )))
-        }
+        _ => return Err(WalletError::Internal(format!("invalid network byte: {b}"))),
     };
     Ok(GetNetworkResult { network })
 }

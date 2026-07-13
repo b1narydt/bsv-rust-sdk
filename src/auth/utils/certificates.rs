@@ -180,7 +180,7 @@ pub fn get_master_field_encryption_key_id(field_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use crate::auth::certificates::master::{default_get_revocation_outpoint, MasterCertificate};
     use crate::primitives::private_key::PrivateKey;
     use crate::wallet::error::WalletError;

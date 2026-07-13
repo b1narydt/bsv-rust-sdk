@@ -45,12 +45,10 @@ fn assert_invalid_parameter(result: Result<(), WalletError>, field_substring: &s
                 "expected error message to contain '{field_substring}', got: {msg}"
             );
         }
-        Err(other) => panic!(
-            "expected InvalidParameter containing '{field_substring}', got: {other:?}"
-        ),
-        Ok(()) => panic!(
-            "expected InvalidParameter containing '{field_substring}', got Ok"
-        ),
+        Err(other) => {
+            panic!("expected InvalidParameter containing '{field_substring}', got: {other:?}")
+        }
+        Ok(()) => panic!("expected InvalidParameter containing '{field_substring}', got Ok"),
     }
 }
 

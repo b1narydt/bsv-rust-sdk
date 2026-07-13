@@ -728,10 +728,7 @@ mod tests {
             for &comp in &[true, false] {
                 let compact = sig.to_compact_bsm(rec, comp);
                 let (_, got_rec, got_comp) = Signature::from_compact_bsm(&compact).unwrap();
-                assert_eq!(
-                    got_rec, rec,
-                    "recovery mismatch for rec={rec} comp={comp}"
-                );
+                assert_eq!(got_rec, rec, "recovery mismatch for rec={rec} comp={comp}");
                 assert_eq!(
                     got_comp, comp,
                     "compressed mismatch for rec={rec} comp={comp}"
@@ -873,10 +870,7 @@ mod tests {
 
             // Test encoding
             let der_hex = sig.to_hex();
-            assert_eq!(
-                der_hex, expected_der,
-                "DER encoding mismatch for r={r_hex}"
-            );
+            assert_eq!(der_hex, expected_der, "DER encoding mismatch for r={r_hex}");
 
             // Test round-trip
             let recovered = Signature::from_der(&sig.to_der()).unwrap();

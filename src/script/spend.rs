@@ -1186,8 +1186,7 @@ mod tests {
             }
 
             // Try as opcode (with or without OP_ prefix)
-            if let Some(op) =
-                Op::from_name(token).or_else(|| Op::from_name(&format!("OP_{token}")))
+            if let Some(op) = Op::from_name(token).or_else(|| Op::from_name(&format!("OP_{token}")))
             {
                 chunks.push(ScriptChunk::new_opcode(op));
                 i += 1;
@@ -1338,9 +1337,7 @@ mod tests {
             }
         }
 
-        println!(
-            "script_tests.json: {passed} passed, {failed} failed, {skipped} skipped"
-        );
+        println!("script_tests.json: {passed} passed, {failed} failed, {skipped} skipped");
 
         // We expect the majority to pass. Set a reasonable threshold.
         let total_run = passed + failed;

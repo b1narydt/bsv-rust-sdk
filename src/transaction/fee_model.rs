@@ -98,7 +98,7 @@ fn varint_size(val: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use crate::script::templates::p2pkh::P2PKH;
     use crate::script::templates::ScriptTemplateLock;
     use crate::transaction::transaction_input::TransactionInput;

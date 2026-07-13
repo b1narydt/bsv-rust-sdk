@@ -993,9 +993,7 @@ mod tests {
             if computed_hash == *expected_hash {
                 passed += 1;
             } else {
-                println!(
-                    "MISMATCH vector {i}: expected={expected_hash}, got={computed_hash}"
-                );
+                println!("MISMATCH vector {i}: expected={expected_hash}, got={computed_hash}");
             }
         }
 
@@ -1223,8 +1221,10 @@ mod tests {
         let mut parent = Transaction::new();
         parent.add_output(TransactionOutput {
             satoshis: Some(50_000),
-            locking_script: LockingScript::from_binary(&[0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac]),
+            locking_script: LockingScript::from_binary(&[
+                0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac,
+            ]),
             change: false,
         });
         let parent_txid = parent.id().unwrap();
@@ -1298,7 +1298,9 @@ mod tests {
         let mut tx = Transaction::new();
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&[0x6a, 0x02, 0xab, 0xcd]),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&[
+                0x6a, 0x02, 0xab, 0xcd,
+            ]),
             change: false,
         });
 
@@ -1328,7 +1330,9 @@ mod tests {
         });
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
-            locking_script: crate::script::locking_script::LockingScript::from_binary(&[0x6a, 0x02, 0xab, 0xcd]),
+            locking_script: crate::script::locking_script::LockingScript::from_binary(&[
+                0x6a, 0x02, 0xab, 0xcd,
+            ]),
             change: false,
         });
 

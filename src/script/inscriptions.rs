@@ -74,9 +74,7 @@ impl Inscription {
             ScriptError::InvalidScript("inscription content type chunk has no data".to_string())
         })?;
         let content_type = String::from_utf8(ct_data.clone()).map_err(|e| {
-            ScriptError::InvalidScript(format!(
-                "inscription content type is not valid UTF-8: {e}"
-            ))
+            ScriptError::InvalidScript(format!("inscription content type is not valid UTF-8: {e}"))
         })?;
 
         // Fourth chunk: payload data

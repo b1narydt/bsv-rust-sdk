@@ -546,16 +546,10 @@ mod tests {
                             .filter_map(|t| t.as_str().map(|s| s.to_string()))
                             .collect()
                     } else {
-                        mp.path[0]
-                            .iter()
-                            .filter_map(|l| l.hash.clone())
-                            .collect()
+                        mp.path[0].iter().filter_map(|l| l.hash.clone()).collect()
                     }
                 } else {
-                    mp.path[0]
-                        .iter()
-                        .filter_map(|l| l.hash.clone())
-                        .collect()
+                    mp.path[0].iter().filter_map(|l| l.hash.clone()).collect()
                 };
 
                 for txid in &txids {

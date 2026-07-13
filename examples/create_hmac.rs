@@ -33,9 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hmac = wallet.create_hmac_sync(data, &protocol, key_id, &counterparty)?;
     println!(
         "HMAC:     {}",
-        hmac.iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        hmac.iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
     println!("Length:   {} bytes", hmac.len());
 

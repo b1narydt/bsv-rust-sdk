@@ -99,7 +99,6 @@ impl BSM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // Base64 decode helper
     fn base64_decode(input: &str) -> Vec<u8> {
