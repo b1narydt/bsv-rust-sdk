@@ -90,11 +90,21 @@ fn validate_protocol_id(protocol: &crate::wallet::types::Protocol) -> Result<(),
             "not ending with 'protocol'",
         ));
     }
-    // BRC-98: must not start with "p"
-    if normalized.starts_with('p') {
+    // The reserved namespace is the standalone token "p" — i.e. a name of the form
+    // `p <something>` — NOT every name that happens to begin with the letter p.
+    //
+    // This used to test `starts_with('p')`, a bare character check, which rejected
+    // ordinary names like "payment request auth" and "policy". Nothing else
+    // implements that: the reference BRC-43 `KeyDeriver` in the TS SDK validates
+    // length, charset, consecutive spaces, and the " protocol" suffix — and has no
+    // p-prefix rule at all. So the strict check was not enforcing the spec, it was
+    // making this SDK unable to speak the wire everyone else already speaks:
+    // `[2, "payment request auth"]` is the protocol the MessageBox payment-request
+    // HMAC is bound to, and no Rust client could produce it.
+    if normalized == "p" || normalized.starts_with("p ") {
         return Err(invalid(
             "protocol_id.protocol",
-            "not starting with 'p' (reserved per BRC-98)",
+            "not in the reserved 'p' namespace (a name of the form `p <...>`)",
         ));
     }
     Ok(())
@@ -129,11 +139,14 @@ fn validate_basket_name(s: &str) -> Result<(), WalletError> {
     if normalized == "default" {
         return Err(invalid("basket", "not 'default'"));
     }
-    // BRC-99: must not start with "p"
-    if normalized.starts_with('p') {
+    // Same correction as `validate_protocol_id`: the reserved namespace is the
+    // standalone token "p" (`p <something>`), not every basket whose name happens to
+    // begin with the letter p. The bare `starts_with('p')` check rejected ordinary
+    // names — "payments", "presigs" — for no reason any other implementation shares.
+    if normalized == "p" || normalized.starts_with("p ") {
         return Err(invalid(
             "basket",
-            "not starting with 'p' (reserved per BRC-99)",
+            "not in the reserved 'p' namespace (a name of the form `p <...>`)",
         ));
     }
     Ok(())
@@ -548,6 +561,60 @@ mod tests {
     use crate::wallet::types::{
         BooleanDefaultFalse, BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol,
     };
+
+    // ---- the reserved "p" NAMESPACE, not the letter p ----------------------
+    //
+    // These pin an interop fix. The check here used to be `starts_with('p')` — a
+    // bare character test — which rejected ordinary protocol and basket names.
+    // Nothing else in the ecosystem implements that: the reference BRC-43
+    // KeyDeriver (TS SDK) has no p-prefix rule at all. The practical consequence
+    // was that no Rust client could produce `[2, "payment request auth"]`, the
+    // protocol the MessageBox payment-request HMAC is bound to — so
+    // `request_payment` was unreachable from Rust entirely.
+    //
+    // If someone "tightens" this back to `starts_with('p')`, these go red.
+
+    fn proto(name: &str) -> Protocol {
+        Protocol {
+            security_level: 2,
+            protocol: name.to_string(),
+        }
+    }
+
+    /// THE REGRESSION THIS FIX EXISTS FOR: the MessageBox payment-request protocol.
+    #[test]
+    fn payment_request_auth_is_a_valid_protocol() {
+        validate_protocol_id(&proto("payment request auth"))
+            .expect("the wire protocol every other SDK speaks must validate here too");
+    }
+
+    /// Ordinary names that merely BEGIN with the letter p are fine.
+    #[test]
+    fn protocol_names_beginning_with_the_letter_p_are_allowed() {
+        for name in ["policy", "presign", "payments", "paragon vault"] {
+            validate_protocol_id(&proto(name)).unwrap_or_else(|e| {
+                panic!("{name:?} must be a valid protocol name, got: {e}");
+            });
+        }
+    }
+
+    /// The reserved namespace is `p` as a STANDALONE token — still rejected.
+    #[test]
+    fn the_reserved_p_namespace_is_still_rejected() {
+        assert!(validate_protocol_id(&proto("p foo")).is_err());
+        assert!(validate_protocol_id(&proto("p 1 bar")).is_err());
+    }
+
+    /// Same correction on baskets.
+    #[test]
+    fn basket_names_beginning_with_the_letter_p_are_allowed() {
+        for name in ["payments", "presigs", "paragon tokens"] {
+            validate_basket_name(name)
+                .unwrap_or_else(|e| panic!("{name:?} must be a valid basket, got: {e}"));
+        }
+        // ...and the reserved namespace still is not.
+        assert!(validate_basket_name("p foo").is_err());
+    }
 
     fn test_pubkey() -> crate::primitives::public_key::PublicKey {
         let pk = PrivateKey::from_bytes(&{

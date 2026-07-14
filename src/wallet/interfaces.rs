@@ -717,12 +717,27 @@ pub struct Certificate {
     pub subject: PublicKey,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub certifier: PublicKey,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    // `skip_serializing_if` without `default` is not a round-trip: serializing a
+    // `None` OMITS the key, and deserializing then rejects the very JSON we just
+    // produced ("missing field"). `signature` in particular is `None` for every
+    // UNSIGNED certificate — the state a cert is necessarily in while it is being
+    // presented for signing — so without `default` such a cert cannot be sent over
+    // the wire at all.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub revocation_outpoint: Option<String>,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub fields: Option<HashMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub signature: Option<Vec<u8>>,
 }
 
@@ -2512,6 +2527,79 @@ pub trait WalletInterface: Send + Sync {
     async fn get_network(&self, originator: Option<&str>) -> Result<GetNetworkResult, WalletError>;
 
     async fn get_version(&self, originator: Option<&str>) -> Result<GetVersionResult, WalletError>;
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod certificate_serde_tests {
+    //! An UNSIGNED certificate must survive a JSON round-trip.
+    //!
+    //! Every optional field is `skip_serializing_if = "Option::is_none"`, so a `None`
+    //! is OMITTED from the JSON. Without a matching `default`, deserialization then
+    //! rejects the exact document serialization just produced. That is not a corner
+    //! case: `signature: None` is the state of every certificate that is being
+    //! presented to a signer, which is the one time a cert MUST cross a wire.
+
+    use super::*;
+    use crate::primitives::private_key::PrivateKey;
+
+    fn unsigned_cert() -> Certificate {
+        Certificate {
+            cert_type: CertificateType([0x01; 32]),
+            serial_number: SerialNumber([0x02; 32]),
+            subject: PrivateKey::from_random().unwrap().to_public_key(),
+            certifier: PrivateKey::from_random().unwrap().to_public_key(),
+            revocation_outpoint: None,
+            fields: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn unsigned_certificate_round_trips() {
+        let cert = unsigned_cert();
+        let json = serde_json::to_string(&cert).expect("serialize");
+        let back: Certificate = serde_json::from_str(&json).expect(
+            "an unsigned certificate must deserialize from its own serialization — a signer \
+             cannot be handed a cert body it is unable to parse",
+        );
+        assert_eq!(back.cert_type.0, cert.cert_type.0);
+        assert_eq!(back.serial_number.0, cert.serial_number.0);
+        assert_eq!(back.subject, cert.subject);
+        assert_eq!(back.certifier, cert.certifier);
+        assert!(back.revocation_outpoint.is_none());
+        assert!(back.fields.is_none());
+        assert!(back.signature.is_none());
+    }
+
+    #[test]
+    fn absent_optional_keys_deserialize_as_none() {
+        // The omitted keys really are absent — this is what the signer receives.
+        let json = serde_json::to_string(&unsigned_cert()).unwrap();
+        assert!(!json.contains("signature"), "None must be omitted: {json}");
+        assert!(!json.contains("revocationOutpoint"), "None must be omitted");
+        assert!(!json.contains("fields"), "None must be omitted");
+
+        let back: Certificate = serde_json::from_str(&json).unwrap();
+        assert!(back.signature.is_none());
+    }
+
+    #[test]
+    fn a_populated_certificate_still_round_trips() {
+        // The default must not swallow real values.
+        let mut fields = HashMap::new();
+        fields.insert("role".to_string(), "admin".to_string());
+        let cert = Certificate {
+            revocation_outpoint: Some("aa".repeat(32) + ".1"),
+            fields: Some(fields),
+            signature: Some(vec![0xde, 0xad, 0xbe, 0xef]),
+            ..unsigned_cert()
+        };
+        let json = serde_json::to_string(&cert).unwrap();
+        let back: Certificate = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.revocation_outpoint, cert.revocation_outpoint);
+        assert_eq!(back.fields, cert.fields);
+        assert_eq!(back.signature, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+    }
 }
 
 #[cfg(test)]
