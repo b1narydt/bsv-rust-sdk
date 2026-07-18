@@ -18,6 +18,16 @@ use super::types::PeerSession;
 /// and frees its replay seen-set. 15 min is *far* larger than the normal
 /// sub-second idle gap between authenticated messages, so a live client never
 /// trips it; a stale/captured `yourNonce` no longer resolves a session forever.
+///
+/// **Intentional deviation from the TS SDK**: TS `SessionManager` never
+/// expires or reaps (`lastUpdate` is only a best-session tiebreaker), which
+/// leaks session + replay-set memory on long-lived processes. Rust keeps the
+/// reap as a memory-bound improvement. This is safe because expiry is
+/// enforced consistently on *both* the verify path (`get_active_session`) and
+/// the reuse paths (`Peer::get_authenticated_session`,
+/// `Peer::create_general_message`), and clients self-heal: `AuthFetch`
+/// detects the resulting `SessionNotFound` / unsigned-401 as a stale session
+/// and re-handshakes (mirroring TS AuthFetch.ts:268-283).
 pub const DEFAULT_SESSION_IDLE_TTL_MS: u64 = 15 * 60 * 1000;
 
 /// Default per-session cap on remembered message nonces (FIFO eviction).

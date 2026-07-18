@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use tokio::sync::{oneshot, OnceCell, RwLock};
 
-use crate::auth::certificates::master::MasterCertificate;
 use crate::auth::error::AuthError;
 use crate::auth::peer::Peer;
 use crate::auth::transports::Transport;
@@ -45,6 +44,10 @@ pub const PAYMENT_VERSION: &str = "1.0";
 
 /// Default maximum 402-retry attempts when none is specified in `FetchOptions`.
 const DEFAULT_PAYMENT_RETRY_ATTEMPTS: u32 = 3;
+
+/// Stale-session retry budget, granted when the first stale-session error is
+/// seen. Mirrors TS SDK `config.retryCounter ??= 3` in AuthFetch.ts:278.
+const STALE_SESSION_RETRIES: u32 = 3;
 
 /// Per-call options for `fetch_with_options`.
 #[derive(Clone, Debug, Default)]
@@ -148,7 +151,10 @@ struct AuthPeer<W: WalletInterface> {
     /// `general_rx` and fans responses out through these oneshot senders.
     router: ResponseRouter,
     /// Guarantees the BRC-31 handshake runs exactly once across concurrent
-    /// first requests to this peer.
+    /// first requests to this peer. Never reset in place: stale-session
+    /// recovery evicts the whole `AuthPeer` from the peers map (mirroring TS
+    /// `delete this.peers[baseURL]`, AuthFetch.ts:277), so the replacement
+    /// peer starts with a fresh cell and a fresh SessionManager.
     handshake_once: OnceCell<()>,
     /// Transport handle (same `Arc` the Peer holds). General-message sends go
     /// through this directly — `Transport::send` is `&self`, so network I/O
@@ -182,7 +188,6 @@ struct AuthPeer<W: WalletInterface> {
 /// This struct is only available when the `network` feature is enabled.
 pub struct AuthFetch<W: WalletInterface + Clone + 'static> {
     wallet: W,
-    certificates_to_include: Vec<MasterCertificate>,
     certificates_to_request: Option<RequestedCertificateSet>,
     /// Per-base-URL peers, each behind an `Arc` so the hot path can clone the
     /// handle out from under a brief read lock and operate lock-free
@@ -196,15 +201,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
     pub fn new(wallet: W) -> Self {
         AuthFetch {
             wallet,
-            certificates_to_include: Vec::new(),
             certificates_to_request: None,
             peers: RwLock::new(HashMap::new()),
         }
-    }
-
-    /// Set certificates to include in handshake exchanges.
-    pub fn set_certificates(&mut self, certs: Vec<MasterCertificate>) {
-        self.certificates_to_include = certs;
     }
 
     /// Set certificate types to request from servers during handshake.
@@ -242,9 +241,47 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         headers: Option<HashMap<String, String>>,
         options: FetchOptions,
     ) -> Result<AuthFetchResponse, AuthError> {
-        let response = self
-            .do_fetch_once(url, method, body.clone(), headers.clone())
-            .await?;
+        let base_url = extract_base_url(url)?;
+
+        // Stale-session recovery, mirroring TS SDK AuthFetch.ts:268-283.
+        // A stale session (server restarted, or our own idle TTL reaped the
+        // session client-side) surfaces as a local `SessionNotFound` or an
+        // unsigned 401 from a previously-authenticated peer. Recover by
+        // evicting the cached peer — which discards its SessionManager and
+        // handshake gate — so the next attempt performs a fresh handshake.
+        // Bounded like TS `retryCounter ??= 3`.
+        let mut retries_left: Option<u32> = None;
+        let response = loop {
+            match self
+                .do_fetch_once(url, method, body.clone(), headers.clone())
+                .await
+            {
+                Ok(response) => break response,
+                Err(e) => {
+                    let identity_known = {
+                        let peers = self.peers.read().await;
+                        match peers.get(&base_url) {
+                            Some(p) => p.identity_key.read().await.is_some(),
+                            None => false,
+                        }
+                    };
+                    if !is_stale_session_error(&e, identity_known) {
+                        return Err(e);
+                    }
+                    if !register_stale_retry(&mut retries_left) {
+                        // TS parity: AuthFetch.ts:105.
+                        return Err(AuthError::AuthFailed(
+                            "Request failed after maximum number of retries.".to_string(),
+                        ));
+                    }
+                    // TS parity: `delete this.peers[baseURL]` (AuthFetch.ts:277).
+                    // Dropping the AuthPeer drops its Peer + SessionManager, so
+                    // the stale session cannot be picked up again; the peer's
+                    // dispatcher task exits when its channel sender is dropped.
+                    self.peers.write().await.remove(&base_url);
+                }
+            }
+        };
 
         if response.status == 402 {
             return self
@@ -734,10 +771,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // Create a new Peer
         let peer = Peer::new(self.wallet.clone(), transport_for_peer);
 
-        // Configure certificates
-        if !self.certificates_to_include.is_empty() {
-            peer.set_certificates_to_include(self.certificates_to_include.clone());
-        }
+        // Configure certificates to request during handshake
         if let Some(ref requested) = self.certificates_to_request {
             peer.set_certificates_to_request(requested.clone());
         }
@@ -861,6 +895,52 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         peers.entry(base_url.to_string()).or_insert(auth_peer);
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stale-session recovery helpers
+// ---------------------------------------------------------------------------
+
+/// Classify whether a fetch error indicates a stale session, mirroring the TS
+/// `isStaleSession` detection (AuthFetch.ts:268-272):
+///
+/// - any local `SessionNotFound` (TS matches the message
+///   `'Session not found for nonce'` — the Rust variant is a superset that
+///   also covers idle-expired sessions refused by the TTL-aware reuse path);
+/// - a transport error whose message carries the normalized stale marker
+///   (matched case-insensitively so cross-stack casing drift cannot break
+///   self-healing);
+/// - an unsigned HTTP 401 (`without valid BSV authentication`) from a peer
+///   whose identity key we had already learned — i.e. a server that
+///   previously authenticated us but no longer recognises the session (TS
+///   additionally requires `peerToUse.identityKey != null && status === 401`).
+fn is_stale_session_error(err: &AuthError, identity_known: bool) -> bool {
+    match err {
+        AuthError::SessionNotFound(_) => true,
+        AuthError::TransportError(msg) => {
+            if msg.to_lowercase().contains("session not found for nonce") {
+                return true;
+            }
+            identity_known
+                && msg.contains("without valid BSV authentication")
+                && msg.contains("HTTP 401")
+        }
+        _ => false,
+    }
+}
+
+/// Consume one stale-session retry. Initializes the budget to
+/// [`STALE_SESSION_RETRIES`] on the first stale error (TS
+/// `config.retryCounter ??= 3`) and decrements once per retry (TS decrements
+/// at `fetch` entry, AuthFetch.ts:103-108). Returns `false` once the budget
+/// is exhausted — the caller must then fail with the TS max-retries error.
+fn register_stale_retry(retries_left: &mut Option<u32>) -> bool {
+    let remaining = retries_left.get_or_insert(STALE_SESSION_RETRIES);
+    if *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1688,6 +1768,91 @@ mod tests {
         assert!(!json_str.contains("derivation_prefix"));
         assert!(!json_str.contains("derivation_suffix"));
         assert!(!json_str.contains("server_identity_key"));
+    }
+
+    // -----------------------------------------------------------------------
+    // New tests: stale-session recovery (TS AuthFetch.ts:268-283 parity)
+    // -----------------------------------------------------------------------
+
+    /// Stale classification: a local SessionNotFound is always stale — this is
+    /// how a client-side idle-expired session (refused by the TTL-aware reuse
+    /// path in Peer) routes into recovery.
+    #[test]
+    fn test_stale_detection_session_not_found_is_stale() {
+        let err = AuthError::SessionNotFound("Session not found for nonce: abc".to_string());
+        assert!(is_stale_session_error(&err, false));
+        assert!(is_stale_session_error(&err, true));
+    }
+
+    /// Stale classification: the unsigned-401 transport error is stale ONLY
+    /// when the peer's identity key was already learned (TS parity:
+    /// `peerToUse.identityKey != null && status === 401`, AuthFetch.ts:270-272).
+    #[test]
+    fn test_stale_detection_unsigned_401_requires_known_identity() {
+        let unsigned_401 = AuthError::TransportError(
+            "HTTP 401 Unauthorized from http://x/y without valid BSV authentication".to_string(),
+        );
+        assert!(is_stale_session_error(&unsigned_401, true));
+        assert!(
+            !is_stale_session_error(&unsigned_401, false),
+            "a 401 before any handshake completed is not a stale session"
+        );
+
+        // Non-401 unsigned responses are never stale.
+        let unsigned_500 = AuthError::TransportError(
+            "HTTP 500 Internal Server Error from http://x/y without valid BSV authentication"
+                .to_string(),
+        );
+        assert!(!is_stale_session_error(&unsigned_500, true));
+    }
+
+    /// Stale classification: a transport error carrying the server's stale
+    /// marker text is matched case-insensitively, so casing drift on either
+    /// stack cannot break self-healing.
+    #[test]
+    fn test_stale_detection_transport_marker_case_insensitive() {
+        for text in [
+            "HTTP 500 from http://x: Session not found for nonce: abc",
+            "HTTP 500 from http://x: session not found for nonce: abc",
+        ] {
+            let err = AuthError::TransportError(text.to_string());
+            assert!(
+                is_stale_session_error(&err, false),
+                "must be stale: {}",
+                text
+            );
+        }
+    }
+
+    /// Non-stale errors never trigger recovery.
+    #[test]
+    fn test_stale_detection_other_errors_not_stale() {
+        for err in [
+            AuthError::Timeout("auth fetch response timeout".to_string()),
+            AuthError::InvalidSignature("bad".to_string()),
+            AuthError::TransportError("connection refused".to_string()),
+        ] {
+            assert!(!is_stale_session_error(&err, true), "not stale: {:?}", err);
+        }
+    }
+
+    /// Retry budget mirrors TS: first stale error grants 3 retries
+    /// (`retryCounter ??= 3`), one is consumed per attempt, and exhaustion
+    /// yields the max-retries failure — 4 total attempts, same as TS.
+    #[test]
+    fn test_register_stale_retry_budget() {
+        let mut retries: Option<u32> = None;
+        assert!(register_stale_retry(&mut retries)); // 1st stale → retry #1
+        assert_eq!(retries, Some(2));
+        assert!(register_stale_retry(&mut retries)); // retry #2
+        assert!(register_stale_retry(&mut retries)); // retry #3
+        assert_eq!(retries, Some(0));
+        assert!(
+            !register_stale_retry(&mut retries),
+            "budget exhausted after {} retries",
+            STALE_SESSION_RETRIES
+        );
+        assert_eq!(retries, Some(0), "exhausted budget stays at zero");
     }
 
     /// iso_now produces a non-empty, roughly ISO-shaped string.

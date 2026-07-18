@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
 
-use super::certificates::master::MasterCertificate;
 use super::error::AuthError;
 use super::session_manager::{MarkSeen, SessionManager};
 use super::transports::Transport;
@@ -181,14 +180,10 @@ pub struct Peer<W: WalletInterface> {
     /// Read guards are never held across a wallet `await` — sessions are
     /// `.cloned()` out of the guard at every call site before any crypto.
     session_manager: Arc<RwLock<SessionManager>>,
-    /// Certificates to include in handshake responses. `StdRwLock` so the
-    /// `&self` setter and the `&self` handshake handlers can both touch it; it
-    /// is only ever read under a brief synchronous lock (cloned out before any
-    /// await), never held across `.await`.
-    #[allow(dead_code)]
-    certificates_to_include: StdRwLock<Vec<MasterCertificate>>,
-    /// Certificate types to request from peers during handshake. Same locking
-    /// discipline as `certificates_to_include`.
+    /// Certificate types to request from peers during handshake. `StdRwLock`
+    /// so the `&self` setter and the `&self` handshake handlers can both touch
+    /// it; it is only ever read under a brief synchronous lock (cloned out
+    /// before any await), never held across `.await`.
     certificates_to_request: StdRwLock<Option<RequestedCertificateSet>>,
 
     // Event channels (sender side -- Peer pushes events here). `mpsc::Sender`
@@ -238,7 +233,6 @@ impl<W: WalletInterface> Peer<W> {
             wallet,
             transport,
             session_manager: Arc::new(RwLock::new(SessionManager::new())),
-            certificates_to_include: StdRwLock::new(Vec::new()),
             certificates_to_request: StdRwLock::new(None),
             general_message_tx: general_tx,
             certificate_tx: cert_tx,
@@ -252,17 +246,6 @@ impl<W: WalletInterface> Peer<W> {
             on_certificate_request_received_callbacks: StdMutex::new(HashMap::new()),
             callback_id_counter: StdMutex::new(0),
         }
-    }
-
-    /// Set certificates to include in handshake responses.
-    ///
-    /// `&self` (interior mutability) so it can be called on a shared
-    /// `Arc<Peer>` before or after the peer is wrapped in an `Arc`.
-    pub fn set_certificates_to_include(&self, certs: Vec<MasterCertificate>) {
-        *self
-            .certificates_to_include
-            .write()
-            .expect("certificates_to_include lock poisoned") = certs;
     }
 
     /// Set certificate types to request from peers during handshake.
@@ -442,6 +425,15 @@ impl<W: WalletInterface> Peer<W> {
         session: &PeerSession,
         payload: Vec<u8>,
     ) -> Result<AuthMessage, AuthError> {
+        // TS parity (Peer.ts:163): outbound sends refresh session activity
+        // too, so an actively-sending client never idle-expires its own
+        // session while the server side stays warm. Brief synchronous write
+        // lock; not held across the wallet crypto await below.
+        self.session_manager
+            .write()
+            .await
+            .touch(&session.session_nonce, now_ms());
+
         let request_nonce = base64_encode(&crate::primitives::random::random_bytes(32));
         let key_id = format!("{} {}", request_nonce, session.peer_nonce);
 
@@ -496,15 +488,19 @@ impl<W: WalletInterface> Peer<W> {
         payload: Vec<u8>,
     ) -> Result<AuthMessage, AuthError> {
         // Brief read lock: clone the session out before any wallet crypto.
+        // TTL-honoring (same check as the verify path): an idle-expired
+        // session must never be zombie-signed with — callers see
+        // `SessionNotFound` and recover by re-handshaking.
+        let now = now_ms();
         let session = self
             .session_manager
             .read()
             .await
-            .get_session_by_identifier(session_identifier)
+            .get_active_session(session_identifier, now)
             .cloned()
             .ok_or_else(|| {
                 AuthError::SessionNotFound(format!(
-                    "session not found for identifier: {}",
+                    "Session not found for identifier: {}",
                     session_identifier
                 ))
             })?;
@@ -565,6 +561,13 @@ impl<W: WalletInterface> Peer<W> {
         session: &PeerSession,
         certificates: Vec<Certificate>,
     ) -> Result<(), AuthError> {
+        // TS parity (Peer.ts:778): outbound cert responses refresh session
+        // activity, same as general messages.
+        self.session_manager
+            .write()
+            .await
+            .touch(&session.session_nonce, now_ms());
+
         let identity_key_str = self.get_identity_public_key().await?;
 
         // Fresh request nonce for this outgoing message (32 random bytes,
@@ -629,11 +632,17 @@ impl<W: WalletInterface> Peer<W> {
         &self,
         identity_key: &str,
     ) -> Result<PeerSession, AuthError> {
-        // Check if we already have an authenticated session.
+        // Check if we already have an authenticated, non-expired session.
         // Brief read lock: clone out before returning / before handshake await.
+        // TTL-honoring (same check as the verify path): an idle-expired
+        // session is treated as "no session" so we re-handshake instead of
+        // reusing a session our own verify path would refuse. The expired
+        // entry itself is physically evicted by `reap_idle` inside
+        // `initiate_handshake`.
         {
+            let now = now_ms();
             let mgr = self.session_manager.read().await;
-            if let Some(session) = mgr.get_session_by_identifier(identity_key) {
+            if let Some(session) = mgr.get_active_session(identity_key, now) {
                 if session.is_authenticated {
                     return Ok(session.clone());
                 }
@@ -935,7 +944,7 @@ impl<W: WalletInterface> Peer<W> {
             .get_active_session(your_nonce, now)
             .cloned()
             .ok_or_else(|| {
-                AuthError::SessionNotFound(format!("session not found for nonce: {}", your_nonce))
+                AuthError::SessionNotFound(format!("Session not found for nonce: {}", your_nonce))
             })?;
 
         // 3. Verify signature over JSON.stringify(requestedCertificates)
@@ -1226,7 +1235,7 @@ impl<W: WalletInterface> Peer<W> {
             .get_active_session(your_nonce, now)
             .cloned()
             .ok_or_else(|| {
-                AuthError::SessionNotFound(format!("session not found for nonce: {}", your_nonce))
+                AuthError::SessionNotFound(format!("Session not found for nonce: {}", your_nonce))
             })?;
 
         // Verify signature
@@ -2456,6 +2465,145 @@ mod tests {
             .verify_general_message(fresh)
             .await
             .expect("a fresh-nonce message must still be accepted");
+    }
+
+    /// An idle-expired session is refused by the REUSE path
+    /// (`create_general_message`), not just the verify path, and
+    /// `get_authenticated_session` treats it as "no session" and self-heals by
+    /// re-handshaking to a fresh session — no zombie-signing (TS parity: an
+    /// unauthenticated/absent session always triggers `initiateHandshake`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_expired_session_refused_on_reuse_and_rehandshake_recovers() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+
+        let old_nonce = peer_a
+            .session_by_identifier(&identity_b)
+            .await
+            .expect("A must hold a session for B")
+            .session_nonce;
+
+        // Backdate A's session activity far past the 15-min idle TTL.
+        peer_a.session_manager.write().await.touch(&old_nonce, 1);
+
+        // Reuse path: signing with the expired session must be refused with
+        // the same outcome the verify path would produce (SessionNotFound),
+        // instead of zombie-signing a session our own verify path rejects.
+        let err = peer_a
+            .create_general_message(&identity_b, b"zombie".to_vec())
+            .await
+            .expect_err("expired session must not be signed with");
+        assert!(
+            matches!(err, AuthError::SessionNotFound(_)),
+            "expected SessionNotFound for expired session, got: {:?}",
+            err
+        );
+
+        // Recovery: get_authenticated_session sees no active session and
+        // re-handshakes. Pump B so the handshake can complete.
+        let pump = {
+            let pb = peer_b.clone();
+            tokio::spawn(async move {
+                for _ in 0..200 {
+                    pb.process_pending().await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+        };
+
+        let fresh = peer_a
+            .get_authenticated_session(&identity_b)
+            .await
+            .expect("re-handshake must succeed");
+        assert!(fresh.is_authenticated);
+        assert_ne!(
+            fresh.session_nonce, old_nonce,
+            "recovery must mint a NEW session, not resurrect the expired one"
+        );
+
+        // The expired session was physically reaped by the handshake path.
+        assert!(
+            peer_a.session_by_identifier(&old_nonce).await.is_none(),
+            "expired session must have been reaped"
+        );
+
+        // And the fresh session signs successfully.
+        peer_a
+            .create_general_message(&identity_b, b"alive".to_vec())
+            .await
+            .expect("fresh session must sign");
+
+        pump.abort();
+    }
+
+    /// Outbound sends refresh `last_used_ms` (TS Peer.ts:163 parity), so an
+    /// actively-sending client never idle-expires its own session even if it
+    /// receives nothing back for a while.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_outbound_send_refreshes_session_activity() {
+        use crate::auth::session_manager::DEFAULT_SESSION_IDLE_TTL_MS;
+
+        let (peer_a, _peer_b, identity_b) = authenticated_pair().await;
+        let nonce = peer_a
+            .session_by_identifier(&identity_b)
+            .await
+            .unwrap()
+            .session_nonce;
+
+        // Backdate activity to 1 minute before the TTL boundary — still live.
+        let now = now_ms();
+        let backdated = now - (DEFAULT_SESSION_IDLE_TTL_MS - 60_000);
+        peer_a
+            .session_manager
+            .write()
+            .await
+            .touch(&nonce, backdated);
+
+        // Outbound sign refreshes activity to ~now.
+        peer_a
+            .create_general_message(&identity_b, b"ping".to_vec())
+            .await
+            .expect("session is within TTL and must sign");
+
+        // Probe just past the point where the BACKDATED timestamp would have
+        // expired: without the outbound refresh this would be expired; with
+        // it, the session is still live.
+        let probe = now + 61_000;
+        assert!(
+            !peer_a.session_manager.read().await.is_expired(&nonce, probe),
+            "outbound send must refresh last_used_ms"
+        );
+    }
+
+    /// The SessionNotFound message must match TS casing exactly
+    /// (`Session not found for nonce`, Peer.ts:870) — TS AuthFetch's
+    /// stale-session detection is a case-sensitive `includes`
+    /// (AuthFetch.ts:269), so cross-stack self-healing depends on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_session_not_found_message_matches_ts_casing() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+
+        let captured = peer_a
+            .create_general_message(&identity_b, b"hello".to_vec())
+            .await
+            .expect("create_general_message");
+
+        // Evict B's session so the verify path takes the not-found branch.
+        let b_nonce = captured.your_nonce.clone().unwrap();
+        peer_b
+            .session_manager
+            .write()
+            .await
+            .remove_session(&b_nonce);
+
+        let err = peer_b
+            .verify_general_message(captured)
+            .await
+            .expect_err("verify must fail once the session is gone");
+        assert!(
+            err.to_string().contains("Session not found for nonce"),
+            "error must carry the exact TS casing, got: {}",
+            err
+        );
     }
 
     /// Item 4: N concurrent verifies of the SAME captured message must not
