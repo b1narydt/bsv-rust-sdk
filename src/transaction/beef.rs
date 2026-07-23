@@ -72,7 +72,11 @@ impl Beef {
             .map_err(|e| TransactionError::InvalidFormat(e.to_string()))?
             as usize;
         for _ in 0..bump_count {
-            let bump = MerklePath::from_binary(reader)?;
+            // TS parity: Beef.fromReader parses embedded bumps with
+            // legalOffsetsOnly=false, so a non-canonical/untrimmed bump does not
+            // fail the whole BEEF. SPV integrity is still enforced downstream by
+            // compute_root / "Mismatched roots".
+            let bump = MerklePath::from_binary_with(reader, false)?;
             beef.bumps.push(bump);
         }
 
