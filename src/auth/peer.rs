@@ -1238,6 +1238,20 @@ impl<W: WalletInterface> Peer<W> {
                 AuthError::SessionNotFound(format!("Session not found for nonce: {}", your_nonce))
             })?;
 
+        // TS parity (Peer.processGeneralMessage verifies against
+        // peerSession.peerIdentityKey): the general message must come from the
+        // peer bound to THIS session during the handshake — not merely from
+        // whoever the message claims to be. Without this, a captured `yourNonce`
+        // could carry a message signed by a different (attacker-held) key and
+        // still verify against that claimed key. Bind to the session peer, like
+        // the certificate-request/response paths already do.
+        if msg.identity_key != session.peer_identity_key {
+            return Err(AuthError::InvalidMessage(format!(
+                "general message identity_key {} does not match session peer {}",
+                msg.identity_key, session.peer_identity_key
+            )));
+        }
+
         // Verify signature
         let payload = msg.payload.clone().unwrap_or_default();
         let key_id = format!("{} {}", msg_nonce, session.session_nonce);
@@ -2467,6 +2481,37 @@ mod tests {
             .expect("a fresh-nonce message must still be accepted");
     }
 
+    /// TS parity (Peer.processGeneralMessage binds verification to
+    /// `peerSession.peerIdentityKey`): a general message whose claimed
+    /// `identity_key` differs from the session's handshake-bound peer must be
+    /// rejected on the identity mismatch — before signature verification — so a
+    /// captured `yourNonce` cannot carry a message from a different key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_general_message_identity_must_match_session_peer() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+
+        // A valid general message from A over the A–B session (correct yourNonce).
+        let mut msg = peer_a
+            .create_general_message(&identity_b, b"hello".to_vec())
+            .await
+            .expect("create_general_message");
+
+        // Swap only the claimed sender identity to a different key; yourNonce still
+        // resolves the A–B session, but the sender no longer matches the bound peer.
+        let attacker_identity = format!("02{}", "11".repeat(32));
+        assert_ne!(
+            attacker_identity, msg.identity_key,
+            "attacker key must differ"
+        );
+        msg.identity_key = attacker_identity;
+
+        let res = peer_b.verify_general_message(msg).await;
+        assert!(
+            matches!(&res, Err(AuthError::InvalidMessage(m)) if m.contains("does not match session peer")),
+            "identity_key != session peer must be rejected on the binding check, got: {res:?}"
+        );
+    }
+
     /// An idle-expired session is refused by the REUSE path
     /// (`create_general_message`), not just the verify path, and
     /// `get_authenticated_session` treats it as "no session" and self-heals by
@@ -2569,7 +2614,11 @@ mod tests {
         // it, the session is still live.
         let probe = now + 61_000;
         assert!(
-            !peer_a.session_manager.read().await.is_expired(&nonce, probe),
+            !peer_a
+                .session_manager
+                .read()
+                .await
+                .is_expired(&nonce, probe),
             "outbound send must refresh last_used_ms"
         );
     }

@@ -120,8 +120,21 @@ impl MerklePath {
         Ok(mp)
     }
 
-    /// Parse a MerklePath from BUMP binary format.
+    /// Parse a MerklePath from BUMP binary format (strict: rejects illegal offsets).
     pub fn from_binary(reader: &mut impl Read) -> Result<Self, TransactionError> {
+        Self::from_binary_with(reader, true)
+    }
+
+    /// Parse a MerklePath from BUMP binary format, choosing whether to enforce
+    /// legal offsets. TS `Beef.fromReader` parses embedded bumps with
+    /// `MerklePath.fromReader(br, false)` (legalOffsetsOnly = false) so BEEFs
+    /// carrying non-canonical/untrimmed bumps still parse; the `compute_root`
+    /// consistency check remains the SPV guard. Standalone `from_binary` stays
+    /// strict (`true`).
+    pub fn from_binary_with(
+        reader: &mut impl Read,
+        legal_offsets_only: bool,
+    ) -> Result<Self, TransactionError> {
         let block_height =
             read_varint(reader).map_err(|e| TransactionError::InvalidFormat(e.to_string()))? as u32;
         let mut tree_height_buf = [0u8; 1];
@@ -173,7 +186,7 @@ impl MerklePath {
             level_vec.sort_by_key(|l| l.offset);
         }
 
-        MerklePath::new_inner(block_height, path, true)
+        MerklePath::new_inner(block_height, path, legal_offsets_only)
     }
 
     /// Serialize the MerklePath to BUMP binary format.
@@ -589,6 +602,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_from_binary_with_legal_offsets_false_accepts_illegal_offset() {
+        // TS parity: Beef.fromReader parses embedded bumps with
+        // legalOffsetsOnly=false. The "Invalid offset" invalid-bump vector is
+        // rejected by the strict `from_binary`, but must PARSE via
+        // `from_binary_with(_, false)` (the offset legality check is skipped;
+        // SPV integrity is still enforced later by compute_root).
+        let v = load_invalid_vectors()
+            .into_iter()
+            .find(|v| v.name.contains("Invalid offset"))
+            .expect("an 'Invalid offset' vector must exist");
+        let bytes = from_hex(&v.hex).expect("decode invalid-offset vector hex");
+
+        let strict = MerklePath::from_binary(&mut std::io::Cursor::new(&bytes));
+        assert!(
+            matches!(&strict, Err(e) if e.to_string().contains("Invalid offset")),
+            "strict from_binary must reject the illegal offset, got: {strict:?}"
+        );
+
+        let relaxed = MerklePath::from_binary_with(&mut std::io::Cursor::new(&bytes), false);
+        assert!(
+            relaxed.is_ok(),
+            "from_binary_with(_, false) must accept the illegal-offset bump (TS parity), got: {:?}",
+            relaxed.err()
+        );
     }
 
     #[test]
