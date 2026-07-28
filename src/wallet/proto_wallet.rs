@@ -29,7 +29,9 @@ use crate::wallet::interfaces::{
     VerifyHmacArgs, VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletInterface,
 };
 use crate::wallet::key_deriver::KeyDeriver;
+use crate::wallet::key_deriver_api::KeyDeriverApi;
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
+use std::sync::Arc;
 
 /// Result of revealing counterparty key linkage.
 pub struct RevealCounterpartyResult {
@@ -74,26 +76,32 @@ pub struct RevealSpecificResult {
 /// revelation. Unlike a full wallet, it does not create transactions,
 /// manage outputs, or interact with the blockchain.
 pub struct ProtoWallet {
-    key_deriver: KeyDeriver,
+    key_deriver: Arc<dyn KeyDeriverApi>,
 }
 
 impl ProtoWallet {
     /// Create a new ProtoWallet from a private key.
     pub fn new(private_key: PrivateKey) -> Self {
         ProtoWallet {
-            key_deriver: KeyDeriver::new(private_key),
+            key_deriver: Arc::new(KeyDeriver::new(private_key)),
         }
     }
 
-    /// Create a new ProtoWallet from an existing KeyDeriver.
-    pub fn from_key_deriver(kd: KeyDeriver) -> Self {
+    /// Create a new ProtoWallet from an existing key deriver.
+    ///
+    /// Every operation — identity key included — goes through the deriver's
+    /// own implementation, so a deriver whose identity is decoupled from a
+    /// locally-held root key (e.g. a threshold vault) answers with its true
+    /// identity and surfaces derivation errors instead of silently deriving
+    /// from a throwaway root.
+    pub fn from_key_deriver(kd: Arc<dyn KeyDeriverApi>) -> Self {
         ProtoWallet { key_deriver: kd }
     }
 
     /// Create an "anyone" ProtoWallet using the special anyone key (PrivateKey(1)).
     pub fn anyone() -> Self {
         ProtoWallet {
-            key_deriver: KeyDeriver::new_anyone(),
+            key_deriver: Arc::new(KeyDeriver::new_anyone()),
         }
     }
 
