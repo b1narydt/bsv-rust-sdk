@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Without this, every consumer wrote the same newtype-over-`Arc` plus a 28-method delegation block purely to satisfy the bound — three independent copies in one downstream repo alone, ~750 lines of pure ceremony. `Arc<ProtoWallet>` now satisfies `WalletInterface + Clone` directly. Purely additive: no existing impl changes meaning.
 
+- **`wallet::KeyDeriverApi` trait**, mirroring the `KeyDeriverApi` interface upstream TS declares at `wallet/KeyDeriver.d.ts` — the same seven members (`root_key`, `identity_key`, `derive_public_key`, `derive_private_key`, `derive_symmetric_key`, `reveal_counterparty_secret`, `reveal_specific_secret`), plus `identity_key_hex` as a provided method. Rust had the members but only as inherent methods on `KeyDeriver` and `CachedKeyDeriver`, so `class KeyDeriver implements KeyDeriverApi` had no Rust counterpart and a deriver could never be named abstractly.
+
+  The consequence was that key derivation could not be decoupled from a locally-held root key. A deriver whose identity key is a joint or threshold public key — private half distributed as shares, no local root — is inexpressible when every signature demands the concrete struct, and the downstream workaround was ~912 lines. The trait is object safe (`&self` throughout, no generics, no `Self` returns, no associated types), so callers hold `Arc<dyn KeyDeriverApi + Send + Sync>`; `root_key` stays by reference because `ProtoWallet`'s Schnorr DLEQ proof passes it onward borrowed. Both impls are pure delegation to the existing inherent methods, which are unchanged — zero behaviour change, purely additive.
+
+- **`CachedKeyDeriver::reveal_counterparty_secret` and `reveal_specific_secret`** — the two `KeyDeriverApi` members it was missing, leaving it with five of seven where `KeyDeriver` had all seven. Both delegate uncached to the inner `KeyDeriver`, which already memoizes the counterparty ECDH shared secret these calls depend on; a second cache layer would duplicate its eviction policy for no gain.
+
 ## [0.2.89] - 2026-07-12
 
 ### Added

@@ -146,6 +146,30 @@ impl CachedKeyDeriver {
             .derive_symmetric_key(protocol, key_id, counterparty)
     }
 
+    /// Reveal the counterparty shared secret as a public key point.
+    ///
+    /// Delegates uncached: the inner `KeyDeriver` already memoizes the
+    /// counterparty ECDH shared secret, and a second cache layer here would
+    /// duplicate its eviction policy for no gain.
+    pub fn reveal_counterparty_secret(
+        &self,
+        counterparty: &Counterparty,
+    ) -> Result<PublicKey, WalletError> {
+        self.key_deriver.reveal_counterparty_secret(counterparty)
+    }
+
+    /// Reveal the specific key-association secret (delegates uncached, for the
+    /// same reason as `reveal_counterparty_secret`).
+    pub fn reveal_specific_secret(
+        &self,
+        counterparty: &Counterparty,
+        protocol: &Protocol,
+        key_id: &str,
+    ) -> Result<Vec<u8>, WalletError> {
+        self.key_deriver
+            .reveal_specific_secret(counterparty, protocol, key_id)
+    }
+
     /// Returns the number of entries currently in the cache.
     #[cfg(test)]
     pub(crate) fn cache_len(&self) -> usize {

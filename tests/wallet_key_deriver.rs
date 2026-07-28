@@ -4,10 +4,14 @@
 //! key derivation (public, private, symmetric), shared secret revelation,
 //! specific secret revelation, and comprehensive input validation.
 
+use std::sync::Arc;
+
 use bsv::primitives::hash::sha256_hmac;
 use bsv::primitives::private_key::PrivateKey;
 use bsv::primitives::public_key::PublicKey;
+use bsv::wallet::cached_key_deriver::CachedKeyDeriver;
 use bsv::wallet::key_deriver::KeyDeriver;
+use bsv::wallet::key_deriver_api::KeyDeriverApi;
 use bsv::wallet::types::{anyone_pubkey, Counterparty, CounterpartyType, Protocol};
 
 // ---------------------------------------------------------------------------
@@ -523,5 +527,182 @@ fn should_reject_protocol_name_with_non_ascii_chars() {
     assert!(
         result.is_err(),
         "protocol with invalid characters should be rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 18. CachedKeyDeriver secret revelation (delegates uncached to KeyDeriver)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cached_deriver_should_reveal_the_correct_counterparty_shared_secret() {
+    let root = root_private_key();
+    let ckd = CachedKeyDeriver::new(root.clone(), None);
+    let counterparty_pub = counterparty_private_key().to_public_key();
+    let cp = counterparty_other(&counterparty_pub);
+
+    let revealed = ckd.reveal_counterparty_secret(&cp).unwrap();
+    let expected_point = root.derive_shared_secret(&counterparty_pub).unwrap();
+
+    assert_eq!(revealed.to_der(), expected_point.to_der(true));
+
+    // Repeating must be stable, and must not populate the derived-key cache —
+    // revelation delegates straight through.
+    let revealed_again = ckd.reveal_counterparty_secret(&cp).unwrap();
+    assert_eq!(revealed_again.to_der(), revealed.to_der());
+}
+
+#[test]
+fn cached_deriver_should_not_reveal_shared_secret_for_self() {
+    let root = root_private_key();
+    let root_pub = root.to_public_key();
+    let ckd = CachedKeyDeriver::new(root, None);
+
+    let cp_self = counterparty_self();
+    assert!(
+        ckd.reveal_counterparty_secret(&cp_self).is_err(),
+        "should not reveal shared secret for Self_ counterparty type"
+    );
+
+    let cp_own_pub = counterparty_other(&root_pub);
+    assert!(
+        ckd.reveal_counterparty_secret(&cp_own_pub).is_err(),
+        "should not reveal shared secret when counterparty is own public key"
+    );
+}
+
+#[test]
+fn cached_deriver_should_reveal_the_specific_key_association() {
+    let root = root_private_key();
+    let ckd = CachedKeyDeriver::new(root.clone(), None);
+    let counterparty_pub = counterparty_private_key().to_public_key();
+    let cp = counterparty_other(&counterparty_pub);
+
+    let specific_secret = ckd
+        .reveal_specific_secret(&cp, &test_protocol(), "12345")
+        .unwrap();
+
+    let shared_secret = root.derive_shared_secret(&counterparty_pub).unwrap();
+    let expected = sha256_hmac(&shared_secret.to_der(true), b"0-testprotocol-12345");
+
+    assert_eq!(specific_secret, expected.to_vec());
+}
+
+#[test]
+fn cached_deriver_revelation_should_match_key_deriver() {
+    let kd = KeyDeriver::new(root_private_key());
+    let ckd = CachedKeyDeriver::new(root_private_key(), None);
+    let cp = counterparty_other(&counterparty_private_key().to_public_key());
+
+    assert_eq!(
+        ckd.reveal_counterparty_secret(&cp).unwrap().to_der(),
+        kd.reveal_counterparty_secret(&cp).unwrap().to_der()
+    );
+    assert_eq!(
+        ckd.reveal_specific_secret(&cp, &test_protocol(), "12345")
+            .unwrap(),
+        kd.reveal_specific_secret(&cp, &test_protocol(), "12345")
+            .unwrap()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 19. KeyDeriverApi trait: object safety and delegation fidelity
+// ---------------------------------------------------------------------------
+
+/// Exercises the full seven-member surface behind a trait object. Taking the
+/// deriver as `Arc<dyn KeyDeriverApi + Send + Sync>` is the shape downstream
+/// callers use, so this both proves object safety and pins the erased results
+/// for comparison against the inherent methods.
+fn derive_everything_through_trait_object(
+    deriver: Arc<dyn KeyDeriverApi + Send + Sync>,
+    cp: &Counterparty,
+) -> (String, String, String, String, String, Vec<u8>) {
+    let protocol = test_protocol();
+    (
+        deriver.root_key().to_hex(),
+        deriver.identity_key_hex(),
+        deriver
+            .derive_public_key(&protocol, "12345", cp, false)
+            .unwrap()
+            .to_der_hex(),
+        deriver
+            .derive_private_key(&protocol, "12345", cp)
+            .unwrap()
+            .to_hex(),
+        deriver
+            .derive_symmetric_key(&protocol, "12345", cp)
+            .unwrap()
+            .to_hex(),
+        deriver
+            .reveal_specific_secret(cp, &protocol, "12345")
+            .unwrap(),
+    )
+}
+
+#[test]
+fn key_deriver_api_is_object_safe_for_both_derivers() {
+    let cp = counterparty_other(&counterparty_private_key().to_public_key());
+
+    let via_key_deriver =
+        derive_everything_through_trait_object(Arc::new(KeyDeriver::new(root_private_key())), &cp);
+    let via_cached = derive_everything_through_trait_object(
+        Arc::new(CachedKeyDeriver::new(root_private_key(), None)),
+        &cp,
+    );
+
+    assert_eq!(
+        via_key_deriver, via_cached,
+        "both derivers must agree behind the trait object"
+    );
+}
+
+#[test]
+fn key_deriver_api_matches_inherent_methods() {
+    let cp = counterparty_other(&counterparty_private_key().to_public_key());
+    let protocol = test_protocol();
+
+    // KeyDeriver: trait dispatch must equal the inherent method.
+    let kd = KeyDeriver::new(root_private_key());
+    let inherent = kd
+        .derive_public_key(&protocol, "12345", &cp, false)
+        .unwrap()
+        .to_der_hex();
+    let erased: Arc<dyn KeyDeriverApi + Send + Sync> =
+        Arc::new(KeyDeriver::new(root_private_key()));
+    assert_eq!(
+        KeyDeriverApi::derive_public_key(&*erased, &protocol, "12345", &cp, false)
+            .unwrap()
+            .to_der_hex(),
+        inherent
+    );
+    assert_eq!(erased.identity_key_hex(), kd.identity_key_hex());
+    assert_eq!(erased.root_key().to_hex(), kd.root_key().to_hex());
+    assert_eq!(
+        erased.reveal_counterparty_secret(&cp).unwrap().to_der(),
+        kd.reveal_counterparty_secret(&cp).unwrap().to_der()
+    );
+
+    // CachedKeyDeriver: same, through its own caching path.
+    let ckd = CachedKeyDeriver::new(root_private_key(), None);
+    let inherent_cached = ckd
+        .derive_private_key(&protocol, "12345", &cp)
+        .unwrap()
+        .to_hex();
+    let erased_cached: Arc<dyn KeyDeriverApi + Send + Sync> =
+        Arc::new(CachedKeyDeriver::new(root_private_key(), None));
+    assert_eq!(
+        KeyDeriverApi::derive_private_key(&*erased_cached, &protocol, "12345", &cp)
+            .unwrap()
+            .to_hex(),
+        inherent_cached
+    );
+    assert_eq!(erased_cached.identity_key_hex(), ckd.identity_key_hex());
+    assert_eq!(erased_cached.root_key().to_hex(), ckd.root_key().to_hex());
+    assert_eq!(
+        erased_cached
+            .reveal_specific_secret(&cp, &protocol, "12345")
+            .unwrap(),
+        ckd.reveal_specific_secret(&cp, &protocol, "12345").unwrap()
     );
 }
