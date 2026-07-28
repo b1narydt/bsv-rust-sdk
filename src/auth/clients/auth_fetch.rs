@@ -373,7 +373,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // (d) Serialize the request and register a router entry BEFORE sending
         //     so the dispatcher cannot route a fast response before we wait.
         let request_nonce = crate::primitives::random::random_bytes(32);
-        let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body);
+        let payload = serialize_request(&request_nonce, method, &path, &query, &headers, &body)?;
         let request_nonce_b64 = b64_encode(&request_nonce);
 
         let identity_key = auth_peer
@@ -1182,7 +1182,7 @@ fn serialize_request(
     query: &str,
     headers: &HashMap<String, String>,
     body: &Option<Vec<u8>>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, AuthError> {
     let mut buf = Vec::new();
 
     // Request nonce (32 bytes)
@@ -1211,22 +1211,8 @@ fn serialize_request(
         write_varint_num(&mut buf, -1);
     }
 
-    // Headers -- normalize and sort by key for consistent signing.
-    // Content-type is normalized by stripping parameters (e.g. "; charset=utf-8")
-    // to match the TS SDK behavior in both AuthFetch and middleware.
-    let mut sorted_headers: Vec<(String, String)> = headers
-        .iter()
-        .map(|(k, v)| {
-            let key = k.to_lowercase();
-            let value = if key == "content-type" {
-                v.split(';').next().unwrap_or("").trim().to_string()
-            } else {
-                v.clone()
-            };
-            (key, value)
-        })
-        .collect();
-    sorted_headers.sort_by(|(a, _), (b, _)| a.cmp(b));
+    // Headers -- select, normalize and sort by key for consistent signing.
+    let sorted_headers = signable_request_headers(headers)?;
 
     write_varint_num(&mut buf, sorted_headers.len() as i64);
     for (key, value) in &sorted_headers {
@@ -1250,7 +1236,58 @@ fn serialize_request(
         }
     }
 
-    buf
+    Ok(buf)
+}
+
+/// Select, normalize and sort the request headers that participate in the
+/// BRC-103 signature.
+///
+/// # Why this rejects rather than filters
+///
+/// The signed set is fixed by the protocol: `x-bsv-*` (excluding the
+/// `x-bsv-auth-*` transport headers), `content-type` with its parameters
+/// stripped, and `authorization`. The TS SDK enforces exactly this and
+/// **throws** on anything else (`AuthFetch.ts`, *"Only content-type,
+/// authorization, and x-bsv-* headers are supported"*), and the server
+/// middleware — TS `@bsv/auth-express-middleware` and Rust
+/// `bsv-auth-axum-middleware` alike — reconstructs the preimage over the same
+/// set.
+///
+/// So a header outside the set has exactly one possible outcome: the client
+/// signs a preimage containing it, the server rebuilds one without it, the
+/// signatures differ, and the request fails as `401 Mutual-authentication
+/// failed!`. Silently dropping it would be no better — the caller believes a
+/// header was sent that the server never saw, which for a routing header (a
+/// tenant or vault selector, say) means landing on the wrong resource.
+///
+/// Refusing at the call site turns a misleading auth failure into an accurate
+/// client-side error naming the offending header.
+fn signable_request_headers(
+    headers: &HashMap<String, String>,
+) -> Result<Vec<(String, String)>, AuthError> {
+    let mut included: Vec<(String, String)> = Vec::with_capacity(headers.len());
+    for (k, v) in headers {
+        let key = k.to_lowercase();
+        if key.starts_with("x-bsv-auth") {
+            return Err(AuthError::InvalidMessage(format!(
+                "header '{key}' is reserved for the auth transport and must not be set by callers"
+            )));
+        }
+        if key.starts_with("x-bsv-") || key == "authorization" {
+            included.push((key, v.clone()));
+        } else if key == "content-type" {
+            // Strip parameters (e.g. "; charset=utf-8") so both ends hash the
+            // same bytes.
+            included.push((key, v.split(';').next().unwrap_or("").trim().to_string()));
+        } else {
+            return Err(AuthError::InvalidMessage(format!(
+                "unsupported header '{key}' in an authenticated request: only content-type, \
+                 authorization, and x-bsv-* headers participate in the BRC-103 signature"
+            )));
+        }
+    }
+    included.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(included)
 }
 
 /// Deserialize a response payload from the BRC-31 general message format.
@@ -1501,12 +1538,81 @@ mod tests {
         headers.insert("content-type".to_string(), "application/json".to_string());
         let body = Some(b"{\"key\":\"value\"}".to_vec());
 
-        let payload = serialize_request(&nonce, method, path, query, &headers, &body);
+        let payload = serialize_request(&nonce, method, path, query, &headers, &body).unwrap();
 
         // Verify the nonce is at the start
         assert_eq!(&payload[..32], &nonce);
         // Payload should be non-trivially long
         assert!(payload.len() > 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // BRC-103 signed-header contract (TS parity)
+    //
+    // The signed set is `x-bsv-*` (minus `x-bsv-auth-*`), `content-type` with
+    // parameters stripped, and `authorization` — identical in TS `AuthFetch`,
+    // TS `@bsv/auth-express-middleware`, and Rust `bsv-auth-axum-middleware`.
+    // A client that signs a wider set produces a preimage no server rebuilds,
+    // which surfaces as `401 Mutual-authentication failed!` rather than as
+    // anything pointing at the header.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn signable_headers_accepts_the_protocol_set_and_sorts_it() {
+        let mut headers = HashMap::new();
+        headers.insert("X-BSV-Vault-Id".to_string(), "vault-1".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        );
+        headers.insert("authorization".to_string(), "Bearer t".to_string());
+
+        let got = signable_request_headers(&headers).unwrap();
+
+        // Lower-cased, content-type parameters stripped, sorted by key.
+        assert_eq!(
+            got,
+            vec![
+                ("authorization".to_string(), "Bearer t".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+                ("x-bsv-vault-id".to_string(), "vault-1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn signable_headers_rejects_a_header_outside_the_protocol_set() {
+        // The concrete case this was written for: a vault selector named
+        // `X-Vault-Id` instead of `X-Bsv-Vault-Id`. It cannot be signed, and
+        // dropping it silently would route the request to the wrong vault.
+        let mut headers = HashMap::new();
+        headers.insert("X-Vault-Id".to_string(), "vault-1".to_string());
+
+        let err = signable_request_headers(&headers).unwrap_err().to_string();
+        assert!(
+            err.contains("x-vault-id"),
+            "error must name the header: {err}"
+        );
+        assert!(err.contains("x-bsv-"), "error must state the rule: {err}");
+    }
+
+    #[test]
+    fn signable_headers_rejects_caller_supplied_auth_transport_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("x-bsv-auth-nonce".to_string(), "spoofed".to_string());
+
+        let err = signable_request_headers(&headers).unwrap_err().to_string();
+        assert!(err.contains("reserved"), "got: {err}");
+    }
+
+    #[test]
+    fn serialize_request_refuses_an_unsignable_header() {
+        let mut headers = HashMap::new();
+        headers.insert("x-tenant".to_string(), "acme".to_string());
+        assert!(
+            serialize_request(&[0u8; 32], "POST", "/p", "", &headers, &None).is_err(),
+            "an unsignable header must fail at the client, not as a server 401"
+        );
     }
 
     #[test]

@@ -2529,6 +2529,242 @@ pub trait WalletInterface: Send + Sync {
     async fn get_version(&self, originator: Option<&str>) -> Result<GetVersionResult, WalletError>;
 }
 
+/// Blanket impl so `Arc<W>` is itself a `WalletInterface`.
+///
+/// # Why this exists
+///
+/// In the TS SDK a wallet is passed by reference — `new AuthFetch(wallet)`
+/// imposes nothing on the caller. The Rust translation of that call site is
+/// `AuthFetch<W: WalletInterface + Clone + 'static>`, and the natural wallet to
+/// hand it, [`ProtoWallet`](crate::wallet::proto_wallet::ProtoWallet), is not
+/// `Clone`: its `KeyDeriver` owns an `RwLock` shared-secret cache, and that
+/// type's own documentation says it is *"`Send + Sync`, safe to share via
+/// `Arc`"*. Arc-sharing is the intended mechanism; the `Clone` bound was the
+/// only thing standing between callers and it.
+///
+/// Without this impl every consumer writes the same newtype-over-`Arc` plus a
+/// 28-method delegation block just to satisfy the bound. That happened three
+/// separate times in one downstream repo alone — ~750 lines of pure ceremony,
+/// none of it copy-paste drift, all of it patching this one gap.
+///
+/// With it, `Arc<ProtoWallet>` satisfies `WalletInterface + Clone` directly and
+/// those wrappers delete. No existing impl changes meaning: a type that was
+/// already `WalletInterface + Clone` keeps working exactly as before.
+#[async_trait]
+impl<W: WalletInterface + ?Sized> WalletInterface for std::sync::Arc<W> {
+    async fn create_action(
+        &self,
+        args: CreateActionArgs,
+        originator: Option<&str>,
+    ) -> Result<CreateActionResult, WalletError> {
+        (**self).create_action(args, originator).await
+    }
+
+    async fn sign_action(
+        &self,
+        args: SignActionArgs,
+        originator: Option<&str>,
+    ) -> Result<SignActionResult, WalletError> {
+        (**self).sign_action(args, originator).await
+    }
+
+    async fn abort_action(
+        &self,
+        args: AbortActionArgs,
+        originator: Option<&str>,
+    ) -> Result<AbortActionResult, WalletError> {
+        (**self).abort_action(args, originator).await
+    }
+
+    async fn list_actions(
+        &self,
+        args: ListActionsArgs,
+        originator: Option<&str>,
+    ) -> Result<ListActionsResult, WalletError> {
+        (**self).list_actions(args, originator).await
+    }
+
+    async fn internalize_action(
+        &self,
+        args: InternalizeActionArgs,
+        originator: Option<&str>,
+    ) -> Result<InternalizeActionResult, WalletError> {
+        (**self).internalize_action(args, originator).await
+    }
+
+    async fn list_outputs(
+        &self,
+        args: ListOutputsArgs,
+        originator: Option<&str>,
+    ) -> Result<ListOutputsResult, WalletError> {
+        (**self).list_outputs(args, originator).await
+    }
+
+    async fn relinquish_output(
+        &self,
+        args: RelinquishOutputArgs,
+        originator: Option<&str>,
+    ) -> Result<RelinquishOutputResult, WalletError> {
+        (**self).relinquish_output(args, originator).await
+    }
+
+    async fn get_public_key(
+        &self,
+        args: GetPublicKeyArgs,
+        originator: Option<&str>,
+    ) -> Result<GetPublicKeyResult, WalletError> {
+        (**self).get_public_key(args, originator).await
+    }
+
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        args: RevealCounterpartyKeyLinkageArgs,
+        originator: Option<&str>,
+    ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+        (**self)
+            .reveal_counterparty_key_linkage(args, originator)
+            .await
+    }
+
+    async fn reveal_specific_key_linkage(
+        &self,
+        args: RevealSpecificKeyLinkageArgs,
+        originator: Option<&str>,
+    ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+        (**self).reveal_specific_key_linkage(args, originator).await
+    }
+
+    async fn encrypt(
+        &self,
+        args: EncryptArgs,
+        originator: Option<&str>,
+    ) -> Result<EncryptResult, WalletError> {
+        (**self).encrypt(args, originator).await
+    }
+
+    async fn decrypt(
+        &self,
+        args: DecryptArgs,
+        originator: Option<&str>,
+    ) -> Result<DecryptResult, WalletError> {
+        (**self).decrypt(args, originator).await
+    }
+
+    async fn create_hmac(
+        &self,
+        args: CreateHmacArgs,
+        originator: Option<&str>,
+    ) -> Result<CreateHmacResult, WalletError> {
+        (**self).create_hmac(args, originator).await
+    }
+
+    async fn verify_hmac(
+        &self,
+        args: VerifyHmacArgs,
+        originator: Option<&str>,
+    ) -> Result<VerifyHmacResult, WalletError> {
+        (**self).verify_hmac(args, originator).await
+    }
+
+    async fn create_signature(
+        &self,
+        args: CreateSignatureArgs,
+        originator: Option<&str>,
+    ) -> Result<CreateSignatureResult, WalletError> {
+        (**self).create_signature(args, originator).await
+    }
+
+    async fn verify_signature(
+        &self,
+        args: VerifySignatureArgs,
+        originator: Option<&str>,
+    ) -> Result<VerifySignatureResult, WalletError> {
+        (**self).verify_signature(args, originator).await
+    }
+
+    async fn acquire_certificate(
+        &self,
+        args: AcquireCertificateArgs,
+        originator: Option<&str>,
+    ) -> Result<Certificate, WalletError> {
+        (**self).acquire_certificate(args, originator).await
+    }
+
+    async fn list_certificates(
+        &self,
+        args: ListCertificatesArgs,
+        originator: Option<&str>,
+    ) -> Result<ListCertificatesResult, WalletError> {
+        (**self).list_certificates(args, originator).await
+    }
+
+    async fn prove_certificate(
+        &self,
+        args: ProveCertificateArgs,
+        originator: Option<&str>,
+    ) -> Result<ProveCertificateResult, WalletError> {
+        (**self).prove_certificate(args, originator).await
+    }
+
+    async fn relinquish_certificate(
+        &self,
+        args: RelinquishCertificateArgs,
+        originator: Option<&str>,
+    ) -> Result<RelinquishCertificateResult, WalletError> {
+        (**self).relinquish_certificate(args, originator).await
+    }
+
+    async fn discover_by_identity_key(
+        &self,
+        args: DiscoverByIdentityKeyArgs,
+        originator: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        (**self).discover_by_identity_key(args, originator).await
+    }
+
+    async fn discover_by_attributes(
+        &self,
+        args: DiscoverByAttributesArgs,
+        originator: Option<&str>,
+    ) -> Result<DiscoverCertificatesResult, WalletError> {
+        (**self).discover_by_attributes(args, originator).await
+    }
+
+    async fn is_authenticated(
+        &self,
+        originator: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        (**self).is_authenticated(originator).await
+    }
+
+    async fn wait_for_authentication(
+        &self,
+        originator: Option<&str>,
+    ) -> Result<AuthenticatedResult, WalletError> {
+        (**self).wait_for_authentication(originator).await
+    }
+
+    async fn get_height(&self, originator: Option<&str>) -> Result<GetHeightResult, WalletError> {
+        (**self).get_height(originator).await
+    }
+
+    async fn get_header_for_height(
+        &self,
+        args: GetHeaderArgs,
+        originator: Option<&str>,
+    ) -> Result<GetHeaderResult, WalletError> {
+        (**self).get_header_for_height(args, originator).await
+    }
+
+    async fn get_network(&self, originator: Option<&str>) -> Result<GetNetworkResult, WalletError> {
+        (**self).get_network(originator).await
+    }
+
+    async fn get_version(&self, originator: Option<&str>) -> Result<GetVersionResult, WalletError> {
+        (**self).get_version(originator).await
+    }
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod certificate_serde_tests {
     //! An UNSIGNED certificate must survive a JSON round-trip.
@@ -2680,5 +2916,242 @@ mod review_action_result_tests {
         let r2: ReviewActionResult = serde_json::from_str(&json).unwrap();
         assert_eq!(r2.status, ReviewActionResultStatus::DoubleSpend);
         assert_eq!(r2.competing_txs.unwrap()[0], "ccdd");
+    }
+}
+
+#[cfg(test)]
+mod arc_blanket_impl_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// The property the blanket impl exists for: a bound of
+    /// `WalletInterface + Clone` — which `AuthFetch` and `MessageBoxClient`
+    /// both impose — is satisfiable by `Arc<W>` for a NON-`Clone` `W`.
+    ///
+    /// Before the blanket impl this did not compile, and every consumer wrote
+    /// a newtype-over-`Arc` plus a 28-method delegation block to get here.
+    fn requires_wallet_interface_and_clone<W: WalletInterface + Clone + 'static>(_w: W) {}
+
+    /// A deliberately NON-`Clone` wallet, standing in for `ProtoWallet` (whose
+    /// `KeyDeriver` owns an `RwLock` cache and so cannot derive `Clone`).
+    struct NotClone;
+
+    #[async_trait]
+    impl WalletInterface for NotClone {
+        async fn create_action(
+            &self,
+            _args: CreateActionArgs,
+            _originator: Option<&str>,
+        ) -> Result<CreateActionResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn sign_action(
+            &self,
+            _args: SignActionArgs,
+            _originator: Option<&str>,
+        ) -> Result<SignActionResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn abort_action(
+            &self,
+            _args: AbortActionArgs,
+            _originator: Option<&str>,
+        ) -> Result<AbortActionResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn list_actions(
+            &self,
+            _args: ListActionsArgs,
+            _originator: Option<&str>,
+        ) -> Result<ListActionsResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn internalize_action(
+            &self,
+            _args: InternalizeActionArgs,
+            _originator: Option<&str>,
+        ) -> Result<InternalizeActionResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn list_outputs(
+            &self,
+            _args: ListOutputsArgs,
+            _originator: Option<&str>,
+        ) -> Result<ListOutputsResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn relinquish_output(
+            &self,
+            _args: RelinquishOutputArgs,
+            _originator: Option<&str>,
+        ) -> Result<RelinquishOutputResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn get_public_key(
+            &self,
+            _args: GetPublicKeyArgs,
+            _originator: Option<&str>,
+        ) -> Result<GetPublicKeyResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn reveal_counterparty_key_linkage(
+            &self,
+            _args: RevealCounterpartyKeyLinkageArgs,
+            _originator: Option<&str>,
+        ) -> Result<RevealCounterpartyKeyLinkageResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn reveal_specific_key_linkage(
+            &self,
+            _args: RevealSpecificKeyLinkageArgs,
+            _originator: Option<&str>,
+        ) -> Result<RevealSpecificKeyLinkageResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn encrypt(
+            &self,
+            _args: EncryptArgs,
+            _originator: Option<&str>,
+        ) -> Result<EncryptResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn decrypt(
+            &self,
+            _args: DecryptArgs,
+            _originator: Option<&str>,
+        ) -> Result<DecryptResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn create_hmac(
+            &self,
+            _args: CreateHmacArgs,
+            _originator: Option<&str>,
+        ) -> Result<CreateHmacResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn verify_hmac(
+            &self,
+            _args: VerifyHmacArgs,
+            _originator: Option<&str>,
+        ) -> Result<VerifyHmacResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn create_signature(
+            &self,
+            _args: CreateSignatureArgs,
+            _originator: Option<&str>,
+        ) -> Result<CreateSignatureResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn verify_signature(
+            &self,
+            _args: VerifySignatureArgs,
+            _originator: Option<&str>,
+        ) -> Result<VerifySignatureResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn acquire_certificate(
+            &self,
+            _args: AcquireCertificateArgs,
+            _originator: Option<&str>,
+        ) -> Result<Certificate, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn list_certificates(
+            &self,
+            _args: ListCertificatesArgs,
+            _originator: Option<&str>,
+        ) -> Result<ListCertificatesResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn prove_certificate(
+            &self,
+            _args: ProveCertificateArgs,
+            _originator: Option<&str>,
+        ) -> Result<ProveCertificateResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn relinquish_certificate(
+            &self,
+            _args: RelinquishCertificateArgs,
+            _originator: Option<&str>,
+        ) -> Result<RelinquishCertificateResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn discover_by_identity_key(
+            &self,
+            _args: DiscoverByIdentityKeyArgs,
+            _originator: Option<&str>,
+        ) -> Result<DiscoverCertificatesResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn discover_by_attributes(
+            &self,
+            _args: DiscoverByAttributesArgs,
+            _originator: Option<&str>,
+        ) -> Result<DiscoverCertificatesResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn is_authenticated(
+            &self,
+            _originator: Option<&str>,
+        ) -> Result<AuthenticatedResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn wait_for_authentication(
+            &self,
+            _originator: Option<&str>,
+        ) -> Result<AuthenticatedResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn get_height(
+            &self,
+            _originator: Option<&str>,
+        ) -> Result<GetHeightResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn get_header_for_height(
+            &self,
+            _args: GetHeaderArgs,
+            _originator: Option<&str>,
+        ) -> Result<GetHeaderResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn get_network(
+            &self,
+            _originator: Option<&str>,
+        ) -> Result<GetNetworkResult, WalletError> {
+            Err(WalletError::NotImplemented("test stub".into()))
+        }
+        async fn get_version(
+            &self,
+            _originator: Option<&str>,
+        ) -> Result<GetVersionResult, WalletError> {
+            Ok(GetVersionResult {
+                version: "arc-blanket".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn arc_of_a_non_clone_wallet_satisfies_wallet_interface_plus_clone() {
+        requires_wallet_interface_and_clone(Arc::new(NotClone));
+    }
+
+    #[tokio::test]
+    async fn arc_delegates_to_the_inner_wallet() {
+        let w: Arc<NotClone> = Arc::new(NotClone);
+        // Called through the blanket impl, not through `NotClone` directly.
+        let v = WalletInterface::get_version(&w, None).await.unwrap();
+        assert_eq!(v.version, "arc-blanket");
+    }
+
+    /// `Arc<dyn WalletInterface>` is the shape callers actually want when the
+    /// concrete wallet is chosen at runtime; `?Sized` on the blanket impl is
+    /// what makes it work.
+    #[test]
+    fn arc_dyn_wallet_interface_also_satisfies_the_bound() {
+        let w: Arc<dyn WalletInterface> = Arc::new(NotClone);
+        requires_wallet_interface_and_clone(w);
     }
 }

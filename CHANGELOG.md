@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-07-28
+
+### Fixed
+
+- **`AuthFetch` now enforces the BRC-103 signed-header set, as TS does.** The signed set is fixed by the protocol — `x-bsv-*` (excluding the `x-bsv-auth-*` transport headers), `content-type` with its parameters stripped, and `authorization` — and every other implementation already agreed on it: TS `AuthFetch` filters to exactly that set and **throws** on anything else, TS `@bsv/auth-express-middleware` and Rust `bsv-auth-axum-middleware` both rebuild the signature preimage over the same set. Rust's `AuthFetch` was the sole outlier: it signed *every* header it was handed.
+
+  The consequence was not a dropped header but a broken request. A caller passing, say, `X-Vault-Id` signed a preimage containing it while the server rebuilt one without it, so the signatures could never match and the request failed as `401 Mutual-authentication failed!` — an error naming nothing that would lead anyone to the header. Silently filtering instead would be no better: for a routing header (a tenant or vault selector) the caller would believe it was sent and the request would land on the wrong resource.
+
+  `AuthFetch` now refuses such a request at the call site with an error naming the offending header and stating the rule, and rejects caller-supplied `x-bsv-auth-*` headers outright. **Behaviour change:** a request that previously failed with a server-side 401 now fails locally with `AuthError::InvalidMessage`. No request that previously succeeded is affected — the rejected set is exactly the set that could never have authenticated.
+
+### Added
+
+- **Blanket `impl WalletInterface for Arc<W>`** (including `Arc<dyn WalletInterface>`). In TS a wallet is passed by reference and `new AuthFetch(wallet)` imposes nothing on the caller; the Rust translation is `AuthFetch<W: WalletInterface + Clone + 'static>`, and the natural wallet to hand it — `ProtoWallet` — is not `Clone`, because its `KeyDeriver` owns an `RwLock` shared-secret cache. That type's own docs say it is *"safe to share via `Arc`"*, so `Arc` was always the intended sharing mechanism and the `Clone` bound was the only obstacle.
+
+  Without this, every consumer wrote the same newtype-over-`Arc` plus a 28-method delegation block purely to satisfy the bound — three independent copies in one downstream repo alone, ~750 lines of pure ceremony. `Arc<ProtoWallet>` now satisfies `WalletInterface + Clone` directly. Purely additive: no existing impl changes meaning.
+
 ## [0.2.89] - 2026-07-12
 
 ### Added
