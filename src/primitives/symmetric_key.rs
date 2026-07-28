@@ -112,6 +112,31 @@ impl SymmetricKey {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.key.to_array(Endian::Big, Some(32))
     }
+
+    /// Return the key in the encoding used to KEY an HMAC: **minimal**
+    /// big-endian, so leading zero bytes are absent.
+    ///
+    /// This is not the same as [`Self::to_bytes`], and the difference is
+    /// load-bearing for cross-stack interoperability. TS
+    /// `ProtoWallet.createHmac` keys with `key.toArray()` — no length argument,
+    /// i.e. minimal big-endian — so a symmetric key whose leading byte is zero
+    /// is a **31-byte** HMAC key there. Keying with a fixed 32 bytes produces a
+    /// different digest for roughly one derived key in 256, with no error and no
+    /// crash; it simply fails to verify against a TS peer.
+    ///
+    /// Zero encodes as a single `0x00`, not as an empty slice, matching
+    /// `BigNumber.toArray()`.
+    ///
+    /// AES keying is unaffected — that uses the full 32 bytes
+    /// ([`Self::to_bytes`]), as TS's `('be', 32)` does.
+    pub fn to_hmac_key_bytes(&self) -> Vec<u8> {
+        let minimal = self.key.to_array(Endian::Big, None);
+        if minimal.is_empty() {
+            vec![0u8]
+        } else {
+            minimal
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,5 +295,57 @@ mod tests {
         let ct = key.encrypt_with_iv(plaintext, &iv).unwrap();
         let pt = key.decrypt(&ct).unwrap();
         assert_eq!(pt, plaintext);
+    }
+}
+
+#[cfg(test)]
+mod hmac_keying_tests {
+    use super::*;
+
+    /// The ~1-in-256 case. A key whose leading byte is zero must key an HMAC
+    /// with 31 bytes, not 32 — that is what TS `key.toArray()` produces, and a
+    /// TS peer's `verifyHmac` is the thing this has to satisfy.
+    ///
+    /// A randomly chosen key passes a naive test 255 times out of 256, so this
+    /// pins the case explicitly rather than hoping to stumble on it.
+    #[test]
+    fn a_leading_zero_byte_gives_a_31_byte_hmac_key() {
+        let mut raw = [0x11u8; 32];
+        raw[0] = 0x00;
+        let key = SymmetricKey::from_bytes(&raw).expect("32-byte key");
+
+        assert_eq!(key.to_hmac_key_bytes().len(), 31, "leading zero is dropped");
+        assert_eq!(key.to_bytes().len(), 32, "AES keying keeps all 32 bytes");
+        assert_ne!(
+            key.to_hmac_key_bytes(),
+            key.to_bytes(),
+            "the two encodings must differ here, or this test proves nothing"
+        );
+    }
+
+    #[test]
+    fn several_leading_zeros_are_all_dropped() {
+        let mut raw = [0x22u8; 32];
+        raw[0] = 0;
+        raw[1] = 0;
+        raw[2] = 0;
+        let key = SymmetricKey::from_bytes(&raw).expect("32-byte key");
+        assert_eq!(key.to_hmac_key_bytes().len(), 29);
+    }
+
+    #[test]
+    fn a_key_with_no_leading_zero_is_unchanged() {
+        let raw = [0xABu8; 32];
+        let key = SymmetricKey::from_bytes(&raw).expect("32-byte key");
+        assert_eq!(key.to_hmac_key_bytes(), raw.to_vec());
+        assert_eq!(key.to_hmac_key_bytes(), key.to_bytes());
+    }
+
+    /// `BigNumber.toArray()` renders zero as a single `0x00`, not as an empty
+    /// array. An empty HMAC key is a different digest again.
+    #[test]
+    fn an_all_zero_key_is_one_zero_byte_not_empty() {
+        let key = SymmetricKey::from_bytes(&[0u8; 32]).expect("32-byte key");
+        assert_eq!(key.to_hmac_key_bytes(), vec![0u8]);
     }
 }

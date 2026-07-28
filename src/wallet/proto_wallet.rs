@@ -279,7 +279,10 @@ impl ProtoWallet {
         let sym_key = self
             .key_deriver
             .derive_symmetric_key(protocol, key_id, &effective)?;
-        let key_bytes = sym_key.to_bytes();
+        // Minimal big-endian keying, matching TS `key.toArray()` with no length
+        // argument. A fixed 32 bytes diverges for any key with a leading zero
+        // byte — see SymmetricKey::to_hmac_key_bytes.
+        let key_bytes = sym_key.to_hmac_key_bytes();
         let hmac = sha256_hmac(&key_bytes, data);
         Ok(hmac.to_vec())
     }

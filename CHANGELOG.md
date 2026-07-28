@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `AuthFetch` now refuses such a request at the call site with an error naming the offending header and stating the rule, and rejects caller-supplied `x-bsv-auth-*` headers outright. **Behaviour change:** a request that previously failed with a server-side 401 now fails locally with `AuthError::InvalidMessage`. No request that previously succeeded is affected — the rejected set is exactly the set that could never have authenticated.
 
+### Fixed
+
+- **`ProtoWallet::create_hmac` / `verify_hmac` now key the HMAC with the MINIMAL big-endian encoding of the symmetric key, matching TS.** TS `ProtoWallet.createHmac` keys with `key.toArray()` — no length argument — so a derived symmetric key whose leading byte is zero is a **31-byte** HMAC key there. Rust keyed with a fixed 32 bytes (`SymmetricKey::to_bytes`), so for roughly **one derived key in 256** the two stacks produced different digests: no error, no crash, the HMAC simply failed to verify against a TS peer. That reaches real interop surfaces — BRC-103 nonce verification and MessageBox — so it is a correctness bug, not a cosmetic divergence. New `SymmetricKey::to_hmac_key_bytes()` carries the encoding, including `BigNumber`'s rendering of zero as a single `0x00` rather than an empty slice. AES keying is untouched: that uses the full 32 bytes on both stacks. Found while porting the TS delegated-crypto path to Rust; pinned by a test that constructs a leading-zero key deliberately, since a random key exercises the bug only 1 time in 256.
+
 ### Added
 
 - **Blanket `impl WalletInterface for Arc<W>`** (including `Arc<dyn WalletInterface>`). In TS a wallet is passed by reference and `new AuthFetch(wallet)` imposes nothing on the caller; the Rust translation is `AuthFetch<W: WalletInterface + Clone + 'static>`, and the natural wallet to hand it — `ProtoWallet` — is not `Clone`, because its `KeyDeriver` owns an `RwLock` shared-secret cache. That type's own docs say it is *"safe to share via `Arc`"*, so `Arc` was always the intended sharing mechanism and the `Clone` bound was the only obstacle.
