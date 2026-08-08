@@ -135,10 +135,6 @@ fn validate_basket_name(s: &str) -> Result<(), WalletError> {
     if normalized.starts_with("admin") {
         return Err(invalid("basket", "not starting with 'admin'"));
     }
-    // BRC-100: must not be "default"
-    if normalized == "default" {
-        return Err(invalid("basket", "not 'default'"));
-    }
     // Same correction as `validate_protocol_id`: the reserved namespace is the
     // standalone token "p" (`p <something>`), not every basket whose name happens to
     // begin with the letter p. The bare `starts_with('p')` check rejected ordinary
@@ -148,6 +144,21 @@ fn validate_basket_name(s: &str) -> Result<(), WalletError> {
             "basket",
             "not in the reserved 'p' namespace (a name of the form `p <...>`)",
         ));
+    }
+    Ok(())
+}
+
+/// Validate a basket a `createAction` output claims for deposit.
+///
+/// BRC-100 reserves the name "default" because it is the wallet's own change
+/// basket, so an action may not deposit app outputs into it — but reading it is
+/// how a wallet reports its balance (the reference toolbox's `balanceAndUtxos`
+/// defaults to `listOutputs(basket: "default")`), so the reservation applies
+/// only at this claim site, not in `validate_basket_name`.
+fn validate_output_basket(s: &str) -> Result<(), WalletError> {
+    validate_basket_name(s)?;
+    if normalize_identifier(s) == "default" {
+        return Err(invalid("basket", "not 'default'"));
     }
     Ok(())
 }
@@ -216,7 +227,7 @@ pub fn validate_create_action_args(args: &CreateActionArgs) -> Result<(), Wallet
             validate_tag(tag)?;
         }
         if let Some(ref basket) = output.basket {
-            validate_basket(basket)?;
+            validate_output_basket(basket)?;
         }
     }
 
@@ -258,9 +269,8 @@ pub fn validate_abort_action_args(args: &AbortActionArgs) -> Result<(), WalletEr
 
 /// Validate ListActionsArgs.
 pub fn validate_list_actions_args(args: &ListActionsArgs) -> Result<(), WalletError> {
-    if args.labels.is_empty() {
-        return Err(invalid("labels", "non-empty"));
-    }
+    // An empty label list means "no label filter" — the reference validator maps
+    // `(args.labels ?? [])` and imposes no non-empty rule.
     for label in &args.labels {
         validate_label(label)?;
     }
@@ -616,6 +626,49 @@ mod tests {
         assert!(validate_basket_name("p foo").is_err());
     }
 
+    // ---- "default" is the wallet's change basket: readable, not claimable ---
+    //
+    // BRC-100 reserves the basket name "default" because it is the wallet's own
+    // internal change basket — the reservation stops an action from depositing
+    // app outputs into it. It does NOT make the basket unreadable: the reference
+    // toolbox's `balanceAndUtxos` defaults to `listOutputs(basket: "default")`,
+    // and its validator has no "default" rule at all. Rejecting it on the read
+    // side made the single most common wallet query inexpressible from Rust
+    // (37/160 read-side conformance vectors failed).
+
+    /// THE REGRESSION THIS FIX EXISTS FOR: listOutputs on the change basket.
+    #[test]
+    fn the_default_basket_is_queryable() {
+        validate_basket_name("default")
+            .expect("listOutputs(basket: \"default\") must validate — it is the wallet's own change basket");
+    }
+
+    /// The reservation still holds where it belongs: an action output may not
+    /// claim the change basket for deposit.
+    #[test]
+    fn the_default_basket_is_not_claimable_by_action_outputs() {
+        assert!(validate_output_basket("default").is_err());
+        let args = CreateActionArgs {
+            description: "Valid description text".to_string(),
+            input_beef: None,
+            inputs: vec![],
+            outputs: vec![CreateActionOutput {
+                locking_script: Some(vec![0x51]),
+                satoshis: 1,
+                output_description: "into the change basket".to_string(),
+                basket: Some("default".to_string()),
+                custom_instructions: None,
+                tags: vec![],
+            }],
+            lock_time: None,
+            version: None,
+            labels: vec![],
+            options: None,
+            reference: None,
+        };
+        assert!(validate_create_action_args(&args).is_err());
+    }
+
     fn test_pubkey() -> crate::primitives::public_key::PublicKey {
         let pk = PrivateKey::from_bytes(&{
             let mut buf = [0u8; 32];
@@ -814,8 +867,12 @@ mod tests {
         assert!(validate_list_actions_args(&args).is_ok());
     }
 
+    /// An empty label list means "no label filter", not a malformed query — the
+    /// reference validator maps `(args.labels ?? [])` and never requires one.
+    /// This assertion used to be inverted (`is_err`), pinning the very bug that
+    /// failed conformance vector wallet.brc100.listactions.11.
     #[test]
-    fn test_list_actions_empty_labels() {
+    fn test_list_actions_empty_labels_is_an_unfiltered_query() {
         let args = ListActionsArgs {
             labels: vec![],
             label_query_mode: None,
@@ -829,7 +886,7 @@ mod tests {
             offset: None,
             seek_permission: BooleanDefaultTrue(None),
         };
-        assert!(validate_list_actions_args(&args).is_err());
+        assert!(validate_list_actions_args(&args).is_ok());
     }
 
     #[test]
@@ -933,6 +990,23 @@ mod tests {
             include_tags: BooleanDefaultFalse(None),
             include_labels: BooleanDefaultFalse(None),
             limit: Some(10),
+            offset: None,
+            seek_permission: BooleanDefaultTrue(None),
+        };
+        assert!(validate_list_outputs_args(&args).is_ok());
+    }
+
+    #[test]
+    fn test_list_outputs_default_basket() {
+        let args = ListOutputsArgs {
+            basket: "default".to_string(),
+            tags: vec![],
+            tag_query_mode: None,
+            include: None,
+            include_custom_instructions: BooleanDefaultFalse(None),
+            include_tags: BooleanDefaultFalse(None),
+            include_labels: BooleanDefaultFalse(None),
+            limit: None,
             offset: None,
             seek_permission: BooleanDefaultTrue(None),
         };
