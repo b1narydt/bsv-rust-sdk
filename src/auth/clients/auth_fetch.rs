@@ -117,6 +117,12 @@ pub struct AuthFetchResponse {
     pub headers: HashMap<String, String>,
     /// Response body bytes.
     pub body: Vec<u8>,
+    /// Hex identity key of the server authenticated by the BRC-31 handshake.
+    ///
+    /// `None` is used only for a response deserialized outside an authenticated
+    /// fetch flow.  Normal successful `fetch` calls always populate this,
+    /// allowing callers to pin the peer they expected to contact.
+    pub server_identity_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +446,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                         "general message response shorter than 32-byte nonce prefix".to_string(),
                     ));
                 }
-                deserialize_response(&response_payload[32..])
+                let mut response = deserialize_response(&response_payload[32..])?;
+                response.server_identity_key = Some(identity_key);
+                Ok(response)
             }
             Ok(Err(_)) => {
                 // Sender dropped without sending (dispatcher gone / channel
@@ -1347,6 +1355,7 @@ fn deserialize_response(data: &[u8]) -> Result<AuthFetchResponse, AuthError> {
         status,
         headers,
         body,
+        server_identity_key: None,
     })
 }
 
@@ -1651,6 +1660,7 @@ mod tests {
             status: 404,
             headers: HashMap::new(),
             body: b"not found".to_vec(),
+            server_identity_key: None,
         };
         assert_eq!(response.status, 404);
         assert_eq!(response.body, b"not found");
@@ -1704,6 +1714,7 @@ mod tests {
             status: 402,
             headers,
             body: Vec::new(),
+            server_identity_key: None,
         };
 
         assert!(validate_payment_version(&resp).is_ok());
@@ -1723,6 +1734,7 @@ mod tests {
             status: 402,
             headers,
             body: Vec::new(),
+            server_identity_key: None,
         };
         let err = validate_payment_version(&resp).unwrap_err();
         assert!(
@@ -1740,6 +1752,7 @@ mod tests {
             status: 402,
             headers: HashMap::new(),
             body: Vec::new(),
+            server_identity_key: None,
         };
         let err = parse_satoshis_required(&resp).unwrap_err();
         assert!(matches!(err, AuthError::Payment(_)));
@@ -1757,6 +1770,7 @@ mod tests {
             status: 402,
             headers,
             body: Vec::new(),
+            server_identity_key: None,
         };
         let err = parse_satoshis_required(&resp).unwrap_err();
         assert!(matches!(err, AuthError::Payment(_)));
@@ -1810,6 +1824,7 @@ mod tests {
             status: 402,
             headers,
             body: Vec::new(),
+            server_identity_key: None,
         };
         assert_eq!(
             get_header_ci(&resp, "x-bsv-payment-version"),
