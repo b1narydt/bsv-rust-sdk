@@ -8,21 +8,42 @@ use crate::script::op::Op;
 use crate::script::script_chunk::ScriptChunk;
 
 /// A Bitcoin script represented as a sequence of parsed chunks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Script {
     chunks: Vec<ScriptChunk>,
+    /// Original bytes supplied to `from_binary`/`from_hex`.
+    ///
+    /// Script decoding is intentionally permissive so callers can inspect
+    /// malformed scripts.  Keeping these bytes makes that permissiveness
+    /// lossless: a read-only parse/serialize round trip must never repair a
+    /// truncated or non-canonical push.
+    raw_bytes: Option<Vec<u8>>,
 }
+
+// Script equality has historically meant parsed-chunk equality.  Raw bytes
+// are a serialization cache, not part of the semantic chunk representation.
+impl PartialEq for Script {
+    fn eq(&self, other: &Self) -> bool {
+        self.chunks == other.chunks
+    }
+}
+
+impl Eq for Script {}
 
 impl Script {
     /// Create an empty script.
     pub fn new() -> Self {
-        Script { chunks: Vec::new() }
+        Script {
+            chunks: Vec::new(),
+            raw_bytes: None,
+        }
     }
 
     /// Parse a script from raw binary bytes.
     pub fn from_binary(bytes: &[u8]) -> Self {
         Script {
             chunks: Self::parse_chunks(bytes),
+            raw_bytes: Some(bytes.to_vec()),
         }
     }
 
@@ -111,16 +132,25 @@ impl Script {
             i += 1;
         }
 
-        Script { chunks }
+        Script {
+            chunks,
+            raw_bytes: None,
+        }
     }
 
     /// Create a script from pre-built chunks.
     pub fn from_chunks(chunks: Vec<ScriptChunk>) -> Self {
-        Script { chunks }
+        Script {
+            chunks,
+            raw_bytes: None,
+        }
     }
 
     /// Serialize the script to binary bytes.
     pub fn to_binary(&self) -> Vec<u8> {
+        if let Some(raw_bytes) = &self.raw_bytes {
+            return raw_bytes.clone();
+        }
         let mut out = Vec::new();
         for (i, chunk) in self.chunks.iter().enumerate() {
             let serialized = chunk.serialize();
@@ -191,6 +221,7 @@ impl Script {
         Self::retain_non_matching(&mut result_chunks, target_op, target_len, &target_bytes);
         Script {
             chunks: result_chunks,
+            raw_bytes: None,
         }
     }
 
@@ -213,6 +244,7 @@ impl Script {
         }
 
         Self::retain_non_matching(&mut self.chunks, target_op, target_len, &target_bytes);
+        self.raw_bytes = None;
         self
     }
 
@@ -350,7 +382,10 @@ impl Script {
                 pos = end;
             } else if op_byte == Op::OpPushData1.to_byte() {
                 let push_len = if pos < length { bytes[pos] as usize } else { 0 };
-                pos += 1;
+                // A bare OP_PUSHDATA1 is malformed but must remain safe to
+                // parse.  Match the PUSHDATA2/4 branches by clamping the
+                // length-byte advance to the available input.
+                pos = (pos + 1).min(length);
                 let end = (pos + push_len).min(length);
                 let data = bytes[pos..end].to_vec();
                 chunks.push(ScriptChunk::new_raw(op_byte, Some(data)));
@@ -477,6 +512,22 @@ mod tests {
     }
 
     #[test]
+    fn test_binary_roundtrip_malformed_pushes_is_lossless_and_safe() {
+        // These malformed encodings are accepted by the reference SDKs.  They
+        // must not panic or be silently canonicalized on a read-only round trip.
+        for bytes in [
+            vec![0x4c],                         // bare OP_PUSHDATA1
+            vec![0x4d],                         // bare OP_PUSHDATA2
+            vec![0x4e],                         // bare OP_PUSHDATA4
+            vec![0x4c, 0x05, 0xaa, 0xbb, 0xcc], // PUSHDATA1 declares 5, has 3
+            vec![0x38, 0xaa, 0xbb],             // direct push declares 56, has 2
+        ] {
+            let script = Script::from_binary(&bytes);
+            assert_eq!(script.to_binary(), bytes);
+        }
+    }
+
+    #[test]
     fn test_hex_roundtrip() {
         let hex = "76a914abababababababababababababababababababab88ac";
         let script = Script::from_hex(hex).unwrap();
@@ -584,6 +635,17 @@ mod tests {
         let target = Script::from_binary(&[0x03, 0xaa, 0xbb, 0xcc]);
         let result = script.find_and_delete(&target);
         assert_eq!(result.to_binary(), vec![0x76]); // only OP_DUP remains
+    }
+
+    #[test]
+    fn test_find_and_delete_owned_invalidates_raw_bytes_cache() {
+        let script = Script::from_binary(&[0x51, 0x52]);
+        let target = Script::from_binary(&[0x52]);
+
+        assert_eq!(
+            script.find_and_delete_owned(&target).to_binary(),
+            vec![0x51]
+        );
     }
 
     #[test]
