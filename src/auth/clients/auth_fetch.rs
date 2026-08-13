@@ -109,7 +109,11 @@ pub struct PaymentRetryContext {
 // ---------------------------------------------------------------------------
 
 /// Response from an authenticated HTTP request.
+///
+/// Marked `#[non_exhaustive]` so future response metadata can be added
+/// without a breaking release; construct via `fetch`, not a struct literal.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AuthFetchResponse {
     /// HTTP status code.
     pub status: u16,
