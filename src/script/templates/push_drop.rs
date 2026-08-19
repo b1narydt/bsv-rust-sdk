@@ -803,46 +803,76 @@ mod tests {
         );
     }
 
-    /// The seam this reshape exists for: a caller that already holds a signature
-    /// — an MPC ceremony run ONCE for the whole transaction — reaches the same
-    /// assembly the wallet path reaches by calling [`push_drop_unlocking_script`].
+    /// **The digest is `sha256d(preimage)`, not `sha256(preimage)`.**
+    ///
+    /// The wallet is handed `sha256(preimage)` as `data` and hashes once more
+    /// internally; get that wrong and the signature is over a digest OP_CHECKSIG
+    /// never computes. The expected DER here is derived independently of this
+    /// module — the signing key straight from the deriver, the digest straight
+    /// from the BSV rule — so it cannot agree with a mistake by construction. The
+    /// control at the end proves the two digests really do differ, i.e. that the
+    /// assertion above has something to catch.
     #[tokio::test]
-    async fn a_supplied_signature_and_a_wallet_signature_assemble_identically() {
+    async fn the_wallet_signs_the_double_hashed_preimage() {
+        use crate::primitives::ecdsa::ecdsa_sign;
+        use crate::primitives::hash::hash256;
+        use crate::wallet::key_deriver::KeyDeriver;
+
         let w = wallet();
         let scope = PushDrop::<ProtoWallet>::default_sighash_type();
-        let pd = PushDrop::new(&w, None);
+        let preimage = preimage_under(SIGHASH_ALL | SIGHASH_FORKID);
 
-        let from_wallet = pd
+        let script = PushDrop::new(&w, None)
             .unlock(protocol(), "k", cpty())
-            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .sign(&preimage)
             .await
             .unwrap();
 
-        // The bare DER the wallet produced, recovered from the script the wallet
-        // path built (strip the push opcode and the trailing sighash byte).
-        let assembled = from_wallet.chunks()[0].data.as_ref().unwrap();
-        let bare_der = assembled[..assembled.len() - 1].to_vec();
+        let sk = KeyDeriver::new(PrivateKey::from_bytes(&[0x55u8; 32]).unwrap())
+            .derive_private_key(&protocol(), "k", &cpty())
+            .unwrap();
+        let expected_der = ecdsa_sign(&hash256(preimage.bytes()), sk.bn(), true)
+            .unwrap()
+            .to_der();
 
+        let mut expected = expected_der.clone();
+        expected.push(scope);
         assert_eq!(
-            push_drop_unlocking_script(&bare_der, scope)
-                .unwrap()
-                .to_binary(),
-            from_wallet.to_binary(),
-            "a supplied signature must assemble byte-identically to a wallet-signed one"
+            script.chunks()[0].data.as_ref().unwrap(),
+            &expected,
+            "the script must be one push of DER-over-sha256d(preimage) ++ the sighash byte"
         );
 
-        // ... and identically to what the OLD hand-rolled assembly produced:
-        // DER ++ sighash, as one push chunk.
-        let mut hand_rolled = bare_der.clone();
-        hand_rolled.push(scope);
-        let hand_rolled = UnlockingScript::from_script(Script::from_chunks(vec![
-            ScriptChunk::new_raw(hand_rolled.len() as u8, Some(hand_rolled)),
-        ]));
-        assert_eq!(
-            from_wallet.to_binary(),
-            hand_rolled.to_binary(),
-            "the reshape must not change the bytes for a canonical DER signature"
+        // Control: the single-hash digest yields a DIFFERENT signature, so the
+        // assertion above is not satisfied by both.
+        let single_hashed = ecdsa_sign(&sha256(preimage.bytes()), sk.bn(), true)
+            .unwrap()
+            .to_der();
+        assert_ne!(expected_der, single_hashed);
+    }
+
+    /// **The assembly stamps the scope it is given, not a constant.**
+    ///
+    /// Every other test in this file signs under `SIGHASH_ALL | SIGHASH_FORKID`,
+    /// so a `0x41` written into the assembly in place of the argument would pass
+    /// all of them. The expected script is composed HERE from a fixed DER vector
+    /// and the scope byte, for several scopes.
+    #[test]
+    fn assembly_stamps_the_scope_it_is_given_not_a_constant() {
+        let der = hex_to_bytes(
+            "30440220111111111111111111111111111111111111111111111111111111111111111102202222222222222222222222222222222222222222222222222222222222222222",
         );
+
+        // ALL|FORKID, NONE|FORKID, SINGLE|FORKID, ALL|FORKID|ANYONECANPAY, and a
+        // bare ALL with no FORKID bit.
+        for scope in [0x41u8, 0x42, 0x43, 0xc1, 0x01] {
+            let script = push_drop_unlocking_script(&der, scope).unwrap();
+            assert_eq!(
+                script.to_hex(),
+                format!("47{}{scope:02x}", bytes_to_hex(&der)),
+                "scope {scope:#04x} must reach the script"
+            );
+        }
     }
 
     /// Parity with TS: `Signature.fromDER` → `TransactionSignature.toChecksigFormat`.
