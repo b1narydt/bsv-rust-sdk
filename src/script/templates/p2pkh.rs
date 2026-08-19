@@ -7,15 +7,17 @@
 use crate::primitives::ecdsa::ecdsa_sign;
 use crate::primitives::hash::hash256;
 use crate::primitives::private_key::PrivateKey;
-use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
 use crate::primitives::utils::base58_check_decode;
 use crate::script::error::ScriptError;
 use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
 use crate::script::script::Script;
 use crate::script::script_chunk::ScriptChunk;
+use async_trait::async_trait;
+
 use crate::script::templates::{ScriptTemplateLock, ScriptTemplateUnlock};
 use crate::script::unlocking_script::UnlockingScript;
+use crate::transaction::sighash_preimage::SighashPreimage;
 
 /// P2PKH script template for creating standard pay-to-public-key-hash scripts.
 ///
@@ -28,8 +30,6 @@ pub struct P2PKH {
     pub public_key_hash: Option<[u8; 20]>,
     /// The private key for unlocking (signing).
     pub private_key: Option<PrivateKey>,
-    /// Sighash scope for signing (default: SIGHASH_ALL | SIGHASH_FORKID).
-    pub sighash_type: u32,
 }
 
 impl P2PKH {
@@ -38,7 +38,6 @@ impl P2PKH {
         P2PKH {
             public_key_hash: Some(hash),
             private_key: None,
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         }
     }
 
@@ -74,15 +73,17 @@ impl P2PKH {
         P2PKH {
             public_key_hash: Some(hash),
             private_key: Some(key),
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         }
     }
 
     /// Create an unlocking script from a sighash preimage.
     ///
-    /// Signs the SHA-256 hash of the preimage with the private key and
-    /// produces: `<signature_DER + sighash_byte> <compressed_pubkey>`
-    pub fn unlock(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// Signs the double-SHA-256 of the preimage with the private key and
+    /// produces: `<signature_DER + sighash_byte> <compressed_pubkey>`.
+    ///
+    /// The sighash byte comes from the preimage's own scope — the template holds
+    /// none, so it cannot advertise a scope the signature did not commit to.
+    pub fn unlock(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError> {
         let key = self
             .private_key
             .as_ref()
@@ -90,7 +91,7 @@ impl P2PKH {
 
         // Double-hash the preimage (hash256 = sha256(sha256(x))) to match
         // what OP_CHECKSIG uses for verification.
-        let msg_hash = hash256(preimage);
+        let msg_hash = hash256(preimage.bytes());
 
         // Sign the 32-byte hash directly
         let sig = ecdsa_sign(&msg_hash, key.bn(), true)
@@ -98,7 +99,7 @@ impl P2PKH {
 
         // Build checksig format: DER + sighash byte
         let mut sig_bytes = sig.to_der();
-        sig_bytes.push(self.sighash_type as u8);
+        sig_bytes.push(preimage.scope() as u8);
 
         // Get compressed public key
         let pubkey = key.to_public_key();
@@ -146,8 +147,11 @@ impl ScriptTemplateLock for P2PKH {
     }
 }
 
+#[async_trait]
 impl ScriptTemplateUnlock for P2PKH {
-    fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// Signs with the local key, so there is nothing to await — the `async` is
+    /// the trait's, so that wallet-backed templates can reach a remote signer.
+    async fn sign(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError> {
         self.unlock(preimage)
     }
 
@@ -159,6 +163,8 @@ impl ScriptTemplateUnlock for P2PKH {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
+    use crate::transaction::sighash_preimage::test_support::preimage_under;
     fn bytes_to_hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -226,8 +232,8 @@ mod tests {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
 
-        let preimage = b"test sighash preimage";
-        let unlock_script = p2pkh.unlock(preimage).unwrap();
+        let preimage = preimage_under(SIGHASH_ALL | SIGHASH_FORKID);
+        let unlock_script = p2pkh.unlock(&preimage).unwrap();
 
         assert_eq!(
             unlock_script.chunks().len(),
@@ -315,7 +321,6 @@ mod tests {
         let p2pkh = P2PKH {
             public_key_hash: None,
             private_key: None,
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         };
         assert!(p2pkh.lock().is_err());
     }
@@ -328,20 +333,25 @@ mod tests {
     fn test_p2pkh_unlock_error_no_key() {
         let hash = [0; 20];
         let p2pkh = P2PKH::from_public_key_hash(hash);
-        assert!(p2pkh.unlock(b"test").is_err());
+        assert!(p2pkh
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .is_err());
     }
 
     // -----------------------------------------------------------------------
     // P2PKH: ScriptTemplateUnlock trait
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_p2pkh_trait_sign() {
+    #[tokio::test]
+    async fn test_p2pkh_trait_sign() {
         let key = PrivateKey::from_hex("ff").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
 
         // Use trait method
-        let unlock_script = p2pkh.sign(b"sighash data").unwrap();
+        let unlock_script = p2pkh
+            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .await
+            .unwrap();
         assert_eq!(unlock_script.chunks().len(), 2);
     }
 
@@ -351,6 +361,26 @@ mod tests {
         let p2pkh = P2PKH::from_private_key(key);
         let len = p2pkh.estimate_length().unwrap();
         assert!((100..=120).contains(&len));
+    }
+
+    /// P2PKH still works when driven the way `Transaction::sign` drives it —
+    /// through `&dyn ScriptTemplateUnlock`, which is why the trait is
+    /// `#[async_trait]` rather than a native `async fn` in trait.
+    #[tokio::test]
+    async fn test_p2pkh_through_a_trait_object() {
+        let key = PrivateKey::from_hex("ff").unwrap();
+        let p2pkh = P2PKH::from_private_key(key);
+        let as_dyn: &dyn ScriptTemplateUnlock = &p2pkh;
+        assert_eq!(
+            as_dyn
+                .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+                .await
+                .unwrap()
+                .chunks()
+                .len(),
+            2
+        );
+        assert!((100..=120).contains(&as_dyn.estimate_length().unwrap()));
     }
 
     // -----------------------------------------------------------------------

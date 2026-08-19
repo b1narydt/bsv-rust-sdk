@@ -9,14 +9,16 @@ use crate::primitives::big_number::BigNumber;
 use crate::primitives::ecdsa::ecdsa_sign_with_k;
 use crate::primitives::hash::sha256;
 use crate::primitives::private_key::PrivateKey;
-use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
 use crate::script::error::ScriptError;
 use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
 use crate::script::script::Script;
 use crate::script::script_chunk::ScriptChunk;
+use async_trait::async_trait;
+
 use crate::script::templates::{ScriptTemplateLock, ScriptTemplateUnlock};
 use crate::script::unlocking_script::UnlockingScript;
+use crate::transaction::sighash_preimage::SighashPreimage;
 
 /// The type of hash applied to the R-value before comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +52,6 @@ pub struct RPuzzle {
     pub k_value: Option<BigNumber>,
     /// Private key for signing with known k.
     pub private_key: Option<PrivateKey>,
-    /// Sighash scope for signing.
-    pub sighash_type: u32,
 }
 
 impl RPuzzle {
@@ -65,7 +65,6 @@ impl RPuzzle {
             value,
             k_value: None,
             private_key: None,
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         }
     }
 
@@ -79,7 +78,6 @@ impl RPuzzle {
             value,
             k_value: Some(k),
             private_key: Some(key),
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         }
     }
 
@@ -87,7 +85,7 @@ impl RPuzzle {
     ///
     /// Signs with the known k-value to produce a signature whose R-value
     /// matches the puzzle's expected value.
-    pub fn unlock(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    pub fn unlock(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError> {
         let key = self.private_key.as_ref().ok_or_else(|| {
             ScriptError::InvalidScript("RPuzzle: no private key for unlock".into())
         })?;
@@ -96,12 +94,12 @@ impl RPuzzle {
             .as_ref()
             .ok_or_else(|| ScriptError::InvalidScript("RPuzzle: no k-value for unlock".into()))?;
 
-        let msg_hash = sha256(preimage);
+        let msg_hash = sha256(preimage.bytes());
         let sig = ecdsa_sign_with_k(&msg_hash, key.bn(), k, true)
             .map_err(|e| ScriptError::InvalidSignature(format!("ECDSA sign with k failed: {e}")))?;
 
         let mut sig_bytes = sig.to_der();
-        sig_bytes.push(self.sighash_type as u8);
+        sig_bytes.push(preimage.scope() as u8);
 
         let chunks = vec![ScriptChunk::new_raw(sig_bytes.len() as u8, Some(sig_bytes))];
 
@@ -189,8 +187,11 @@ impl ScriptTemplateLock for RPuzzle {
     }
 }
 
+#[async_trait]
 impl ScriptTemplateUnlock for RPuzzle {
-    fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// Signs with the local key, so there is nothing to await — the `async` is
+    /// the trait's, so that wallet-backed templates can reach a remote signer.
+    async fn sign(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError> {
         self.unlock(preimage)
     }
 
@@ -202,6 +203,8 @@ impl ScriptTemplateUnlock for RPuzzle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
+    use crate::transaction::sighash_preimage::test_support::preimage_under;
     use crate::primitives::base_point::BasePoint;
     use crate::primitives::big_number::Endian;
     use crate::primitives::hash::sha256;
@@ -309,7 +312,7 @@ mod tests {
         // Use raw R-value as the puzzle value
         let rp = RPuzzle::from_k(RPuzzleType::Raw, r_bytes, k, key);
 
-        let unlock_script = rp.unlock(b"test preimage").unwrap();
+        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
 
         let sig_data = unlock_script.chunks()[0].data.as_ref().unwrap();
@@ -345,7 +348,7 @@ mod tests {
         );
 
         // Unlock should produce a valid signature
-        let unlock_script = rp.unlock(b"test roundtrip").unwrap();
+        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
 
         // Extract R from the produced signature's DER encoding
@@ -406,7 +409,7 @@ mod tests {
         assert_eq!(embedded_hash, &r_hash.to_vec());
 
         // Unlock should work
-        let unlock_script = rp.unlock(b"sha256 test").unwrap();
+        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
     }
 
@@ -423,7 +426,9 @@ mod tests {
     #[test]
     fn test_rpuzzle_unlock_no_key() {
         let rp = RPuzzle::from_value(RPuzzleType::Raw, vec![0xaa; 32]);
-        assert!(rp.unlock(b"test").is_err());
+        assert!(rp
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .is_err());
     }
 
     #[test]
@@ -433,9 +438,10 @@ mod tests {
             value: vec![0xaa; 32],
             k_value: None,
             private_key: Some(PrivateKey::from_hex("1").unwrap()),
-            sighash_type: SIGHASH_ALL | SIGHASH_FORKID,
         };
-        assert!(rp.unlock(b"test").is_err());
+        assert!(rp
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -446,6 +452,27 @@ mod tests {
     fn test_rpuzzle_estimate_length() {
         let rp = RPuzzle::from_value(RPuzzleType::Raw, vec![0xaa; 32]);
         assert_eq!(rp.estimate_unlock_length(), 74);
+    }
+
+    /// R-Puzzle still signs through the async trait, including as a trait object.
+    #[tokio::test]
+    async fn test_rpuzzle_through_the_async_trait() {
+        let key = PrivateKey::from_hex("1").unwrap();
+        let k = BigNumber::from_number(42);
+        let r_bytes = BasePoint::instance()
+            .mul(&k)
+            .get_x()
+            .to_array(Endian::Big, Some(32));
+        let rp = RPuzzle::from_k(RPuzzleType::Raw, r_bytes, k, key);
+
+        let as_dyn: &dyn ScriptTemplateUnlock = &rp;
+        assert_eq!(as_dyn.estimate_length().unwrap(), 74);
+        // Byte-identical to the inherent `unlock`, reached through the trait object.
+        let preimage = preimage_under(SIGHASH_ALL | SIGHASH_FORKID);
+        assert_eq!(
+            as_dyn.sign(&preimage).await.unwrap().to_binary(),
+            rp.unlock(&preimage).unwrap().to_binary()
+        );
     }
 
     // -----------------------------------------------------------------------

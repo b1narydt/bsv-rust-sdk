@@ -8,6 +8,7 @@ use crate::primitives::transaction_signature::{
 };
 use crate::script::locking_script::LockingScript;
 use crate::script::templates::ScriptTemplateUnlock;
+use crate::transaction::sighash_preimage::SighashPreimage;
 use crate::transaction::error::TransactionError;
 use crate::transaction::merkle_path::MerklePath;
 use crate::transaction::transaction_input::TransactionInput;
@@ -373,7 +374,14 @@ impl Transaction {
     /// Compute the BIP143/ForkID sighash preimage for the input at `input_index`.
     ///
     /// This is the standard BSV post-fork sighash format. The `scope` flags
-    /// should include SIGHASH_FORKID for normal BSV transactions.
+    /// should include SIGHASH_FORKID for normal BSV transactions; this format
+    /// implies it, so the bit is set for you and the returned
+    /// [`SighashPreimage`] reports the EFFECTIVE scope.
+    ///
+    /// The result carries the scope alongside the bytes because a signature
+    /// commits to it twice — once inside the preimage, once as the byte appended
+    /// to the DER in the unlocking script — and the two must be the same value.
+    /// See [`SighashPreimage`].
     ///
     /// Parameters:
     /// - `input_index`: index of the input being signed
@@ -386,7 +394,7 @@ impl Transaction {
         scope: u32,
         source_satoshis: u64,
         source_locking_script: &LockingScript,
-    ) -> Result<Vec<u8>, TransactionError> {
+    ) -> Result<SighashPreimage, TransactionError> {
         if input_index >= self.inputs.len() {
             return Err(TransactionError::InvalidSighash(format!(
                 "input_index {} out of range (tx has {} inputs)",
@@ -471,10 +479,14 @@ impl Transaction {
         // 9. nLockTime (4 bytes LE)
         preimage.extend_from_slice(&self.lock_time.to_le_bytes());
 
-        // 10. sighash type (4 bytes LE) -- scope with FORKID bit
-        preimage.extend_from_slice(&(scope | SIGHASH_FORKID).to_le_bytes());
+        // 10. sighash type (4 bytes LE) -- scope with FORKID bit.
+        // This is the EFFECTIVE scope, and it is what the returned value reports:
+        // a template that stamped the caller's un-ORed `scope` into the script
+        // would name a different message than the one signed here.
+        let effective_scope = scope | SIGHASH_FORKID;
+        preimage.extend_from_slice(&effective_scope.to_le_bytes());
 
-        Ok(preimage)
+        Ok(SighashPreimage::new(preimage, effective_scope))
     }
 
     /// Compute the legacy OTDA sighash preimage for the input at `input_index`.
@@ -598,10 +610,22 @@ impl Transaction {
     ///
     /// Computes the sighash preimage (BIP143/ForkID format) and passes it to the
     /// template's sign() method, then sets the resulting unlocking script on the input.
-    pub fn sign(
+    ///
+    /// `async` because [`ScriptTemplateUnlock::sign`] is: a template may reach a
+    /// key that is not local — a wallet, an MPC vault, an HSM.
+    ///
+    /// `scope` is named ONCE, here. The [`SighashPreimage`] handed to the template
+    /// carries it, so the byte the template appends to the DER and the scope the
+    /// preimage was computed under are the same value by construction; the
+    /// template holds no scope of its own to disagree with.
+    /// `+ Sync` is on the trait OBJECT, not the trait: the reference is held
+    /// across the `.await`, and `&T` is `Send` only when `T: Sync`. Requiring it
+    /// of every implementor would exclude templates that are perfectly usable
+    /// single-threaded.
+    pub async fn sign(
         &mut self,
         input_index: usize,
-        template: &dyn ScriptTemplateUnlock,
+        template: &(dyn ScriptTemplateUnlock + Sync),
         scope: u32,
         source_satoshis: u64,
         source_locking_script: &LockingScript,
@@ -610,6 +634,7 @@ impl Transaction {
             self.sighash_preimage(input_index, scope, source_satoshis, source_locking_script)?;
         let unlocking_script = template
             .sign(&preimage)
+            .await
             .map_err(|e| TransactionError::SigningFailed(format!("{e}")))?;
         self.inputs[input_index].unlocking_script = Some(unlocking_script);
         Ok(())
@@ -627,9 +652,9 @@ impl Transaction {
     /// Each input must have its `source_transaction` set so that the source
     /// output's satoshis and locking script can be resolved. If you need
     /// different templates or scopes per input, use the single-input `sign()`.
-    pub fn sign_all_inputs(
+    pub async fn sign_all_inputs(
         &mut self,
-        template: &dyn ScriptTemplateUnlock,
+        template: &(dyn ScriptTemplateUnlock + Sync),
         scope: u32,
     ) -> Result<(), TransactionError> {
         let num_inputs = self.inputs.len();
@@ -665,6 +690,7 @@ impl Transaction {
                 self.sighash_preimage(i, scope, source_satoshis, &source_locking_script)?;
             let unlocking_script = template
                 .sign(&preimage)
+                .await
                 .map_err(|e| TransactionError::SigningFailed(format!("input {i}: {e}")))?;
             self.inputs[i].unlocking_script = Some(unlocking_script);
         }
@@ -1035,8 +1061,8 @@ mod tests {
 
     // -- Transaction signing tests --------------------------------------------
 
-    #[test]
-    fn test_sign_p2pkh() {
+    #[tokio::test]
+    async fn test_sign_p2pkh() {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh_lock = P2PKH::from_private_key(key.clone());
         let p2pkh_unlock = P2PKH::from_private_key(key.clone());
@@ -1061,6 +1087,7 @@ mod tests {
         // Sign the input
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
         tx.sign(0, &p2pkh_unlock, scope, 100000, &lock_script)
+            .await
             .expect("signing should succeed");
 
         // Verify unlocking script is set
@@ -1090,8 +1117,31 @@ mod tests {
         assert_eq!(pubkey_data.len(), 33);
     }
 
+    /// `Transaction::sign`'s future must be `Send`.
+    ///
+    /// A wallet signs from inside an `#[async_trait]` method, whose future is
+    /// `Send`; awaiting a non-`Send` future there does not compile. `sign` holds
+    /// its template across the await, and that reference is `Send` only if the
+    /// trait object is `Sync` — which is why `sign` asks for
+    /// `&(dyn ScriptTemplateUnlock + Sync)`. A downstream crate found this the
+    /// hard way when the trait first went async; it is pinned here now.
     #[test]
-    fn test_sign_and_verify_round_trip() {
+    fn signing_futures_are_send() {
+        fn require_send<T: Send>(_: &T) {}
+
+        let p2pkh = P2PKH::from_private_key(PrivateKey::from_hex("1").unwrap());
+        let lock_script = p2pkh.lock().unwrap();
+        let scope = SIGHASH_ALL | SIGHASH_FORKID;
+
+        let mut tx = Transaction::new();
+        require_send(&tx.sign(0, &p2pkh, scope, 1, &lock_script));
+
+        let mut tx = Transaction::new();
+        require_send(&tx.sign_all_inputs(&p2pkh, scope));
+    }
+
+    #[tokio::test]
+    async fn test_sign_and_verify_round_trip() {
         use crate::script::spend::{Spend, SpendParams};
 
         let key = PrivateKey::from_hex("abcdef01").unwrap();
@@ -1117,6 +1167,7 @@ mod tests {
 
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
         tx.sign(0, &p2pkh, scope, source_satoshis, &lock_script)
+            .await
             .expect("signing should succeed");
 
         // Now verify with Spend

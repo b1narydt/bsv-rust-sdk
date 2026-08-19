@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-19
+
+### Fixed
+
+- **The sighash scope can no longer disagree with itself.** A signature commits to the scope twice — in the trailing four bytes of the preimage that is hashed and signed, and as the byte appended to the DER in the unlocking script — and a verifier recomputes the preimage from the byte in the script. This SDK let the two be set independently: `Transaction::sign` took a `scope` and computed the preimage under it, while `PushDrop::unlock` captured a `sighash_type` of its own and stamped *that* into the script (`P2PKH` and `RPuzzle` carried the same loose field). A mismatched pair compiled, signed, and produced a transaction the network rejects. `sighash_preimage` also ORed in `SIGHASH_FORKID` for the preimage while templates stamped the un-ORed value, so even a plain `SIGHASH_ALL` caller was split.
+
+  `Transaction::sighash_preimage` now returns **`SighashPreimage`**, carrying the bytes and the effective scope serialized into them; its constructor is visible only inside `crate::transaction`. `ScriptTemplateUnlock::sign` takes `&SighashPreimage`, templates append `preimage.scope() as u8`, and no template stores a scope at all. One value, reachable only through the object built from it. `SighashPreimage` derefs to `[u8]`, so `hash256(&preimage)`-style callers are unaffected.
+
+  TS achieves the same by computing `computeSignatureScope(signOutputs, anyoneCanPay)` once inside `sign` and feeding both halves (`PushDrop.ts:220,226,243`); Go likewise (`pushdrop.go:200-213,229`). This port's `sign` receives a preimage rather than a transaction, so the scope rides along with it. **`PushDrop::unlock` deliberately does not take TS's `signOutputs`/`anyoneCanPay` pair** — that would put a scope back on the template. `PushDrop::default_sighash_type()` is the same value TS's defaults compute.
+
+### Removed
+
+- **`PushDropSigner`, `PushDrop::unlock_with_signature`, `PushDropUnlock::from_signature`** — the supplied-signature seam made `sign(preimage)` silently discard its argument and emit a script with no binding between the signature and the transaction. Neither reference SDK has such an arm. Its intended consumer (an MPC box whose ceremony runs once for the whole transaction) never used it: it calls the public **`push_drop_unlocking_script`** directly, which stays.
+- **`P2PKH::sighash_type` and `RPuzzle::sighash_type` fields** — the scope now arrives with the preimage.
+
+### Changed
+
+- **`PushDrop::unlock` defers signing, as TS does.** It signed on the spot through `wallet.create_signature`; TS's `PushDrop.unlock` returns `{ sign, estimateLength }` and signs nothing until the transaction machinery asks. Signing on the spot locked out the callers that need PushDrop most — a wallet with no local key (an MPC vault, an HSM) produces a signature by running a ceremony ONCE for the whole transaction, so `unlock` would convene a second one at the wrong moment. Such callers hand-rolled the one-push script assembly instead, duplicating it per site. `unlock` is now synchronous and returns **`PushDropUnlock`**, which implements `ScriptTemplateUnlock` (`sign(&preimage)`, `estimate_length() == 73`); a caller that only wants the bytes calls the public `push_drop_unlocking_script` directly. **Breaking:** `unlock` loses its `preimage` and `sighash_type` arguments, is no longer `async`, and returns `PushDropUnlock` rather than `UnlockingScript`.
+
+- **`ScriptTemplateUnlock::sign` is `async`, and `Transaction::{sign, sign_all_inputs}` are `async` in consequence.** TS's unlocker signs through a `Promise` because signing is not always a local computation. Rust's synchronous trait meant `PushDropUnlock`'s wallet arm — which awaits `create_signature` — had to REFUSE inside `sign()` and be driven through a separate `sign_async`, so a wallet-arm unlocker handed to `Transaction::sign` failed at runtime: a compile-time error wearing a runtime costume, and two signing entry points where TS has one. There is now exactly one. `#[async_trait]` rather than a native `async fn` in trait, because `Transaction::sign` drives templates as `&dyn ScriptTemplateUnlock` and native async fns are not dyn-compatible; `async-trait` was already a hard dependency, so no new one. P2PKH and R-Puzzle sign with a local key, so their futures never yield. **Breaking:** callers of `Transaction::{sign, sign_all_inputs}` add `.await`; `PushDropUnlock::sign_async` and `PushDropUnlock::unlocking_script` are gone, both replaced by the trait's `sign`.
+
+- **PushDrop normalises DER as TS does.** The bare DER is now PARSED and RE-SERIALIZED (`Signature::from_der` → `TransactionSignature::to_checksig_format`), where the old code appended the sighash byte to whatever the signer returned. For canonical DER — what `create_signature` and an MPC ceremony both produce — the bytes are unchanged; non-canonical input is now refused at assembly, naming PushDrop, instead of being relayed into a transaction that fails later somewhere unhelpful. `S` is untouched: TS's `toChecksigFormat` does not force low-S either.
+
+- **`ScriptTemplateUnlock::estimate_length` is synchronous.** An estimate is arithmetic over the template's own fields; Go's is `EstimateLength() uint32`, and TS's returns a Promise only because `Transaction.fee()` awaits it while passing `(tx, inputIndex)` — parameters this port does not take. `sign` stays `async`.
+- **`ScriptTemplateUnlock` implementors must be `Sync`, and `Transaction::sign` takes `&(dyn ScriptTemplateUnlock + Sync)`.** This is fallout from `sign` going async: `Transaction::sign` holds its template across an `.await`, and `&T` is `Send` only when `T: Sync`. The bound is written at that one call site rather than as a supertrait, so it does not leak into `Box<dyn ScriptTemplateUnlock>` or into generic code over `T: ScriptTemplateUnlock` — but it is unavoidable wherever `sign` is implemented, because `#[async_trait]` boxes `sign`'s future as `+ Send` and that future captures `&self`. A template holding an `Rc` or a `RefCell` cannot implement `sign` no matter what the supertrait list says.
+- **`P2PKH::unlock` and `RPuzzle::unlock`** take `&SighashPreimage` instead of `&[u8]`.
+
+### Compatibility
+
+This release pairs with a **`bsv-wallet-toolbox`** release: published 0.7.1's `signer/complete_signed.rs` calls `Transaction::sign`, which is `async` as of this version, so 0.7.1 does not compile against it.
+
+## [0.4.0] - 2026-08-13
+
+### Fixed
+
+- **`Script` preserves the bytes it was parsed from.** Script decoding is deliberately permissive so that callers can inspect malformed scripts, but `to_binary()` re-serialized from the parsed chunks — so a read-only parse/serialize round trip silently REPAIRED a truncated or non-canonical push, and the bytes that went back out were not the bytes that came in. `Script::from_binary`/`from_hex` now retain the original bytes and `to_binary()` returns them verbatim; any mutation (`from_chunks`, chunk removal, …) drops that cache and falls back to re-serializing. `PartialEq`/`Eq` are hand-written over the chunks alone, keeping equality's historical meaning: the raw bytes are a serialization cache, not part of the semantic representation.
+
+- **`ProtoWallet` wraps the key deriver, not its root key.** *(breaking)* TS builds its wallet from the deriver — `new ProtoWallet(args.keyDeriver)` — and its constructor accepts either a root key or a `KeyDeriverApi`. The Rust port reached past the interface and rebuilt from `root_key()`, which silently discarded two things the deriver carries: an identity that differs from the root, and derive operations that deliberately fail. For a threshold wallet — identity `Q`, no local private key, a throwaway root that exists only to satisfy construction — `get_public_key { identity_key: true }` returned the THROWAWAY's public key instead of `Q`, and real derivations answered with throwaway-derived keys instead of erroring. No error, no crash: a certificate acquired that way is bound to a key that differs on every construction and that nobody controls. `ProtoWallet`'s field is now `Arc<dyn KeyDeriverApi>` and `from_key_deriver` takes one. Every `ProtoWallet` operation already went through trait-shaped methods, so nothing changes for a concrete deriver.
+
+### Added
+
+- **`AuthFetchResponse::server_identity_key`** — the hex identity key of the server authenticated by the BRC-31 handshake, so a caller can pin the peer it expected to contact rather than trusting the URL it dialled. Populated on every successful authenticated `fetch`; `None` only for a response deserialized outside that flow.
+
 ## [0.3.4] - 2026-07-28
 
 ### Fixed

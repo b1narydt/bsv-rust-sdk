@@ -14,7 +14,8 @@ use bsv::transaction::transaction::Transaction;
 use bsv::transaction::transaction_input::TransactionInput;
 use bsv::transaction::transaction_output::TransactionOutput;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     // 1. Set up the sender key and simulated funding UTXO
     // -----------------------------------------------------------------------
@@ -81,7 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sighash_type,
         source_satoshis,
         &source_locking_script,
-    )?;
+    )
+    .await?;
 
     // -----------------------------------------------------------------------
     // 5. Serialize and display
