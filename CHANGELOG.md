@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-19
+
+### Fixed
+
+- **The sighash scope can no longer disagree with itself.** A signature commits to the scope twice — in the trailing four bytes of the preimage that is hashed and signed, and as the byte appended to the DER in the unlocking script — and a verifier recomputes the preimage from the byte in the script. This SDK let the two be set independently: `Transaction::sign` took a `scope` and computed the preimage under it, while `PushDrop::unlock` captured a `sighash_type` of its own and stamped *that* into the script (`P2PKH` and `RPuzzle` carried the same loose field). A mismatched pair compiled, signed, and produced a transaction the network rejects. `sighash_preimage` also ORed in `SIGHASH_FORKID` for the preimage while templates stamped the un-ORed value, so even a plain `SIGHASH_ALL` caller was split.
+
+  `Transaction::sighash_preimage` now returns **`SighashPreimage`**, carrying the bytes and the effective scope serialized into them; its constructor is visible only inside `crate::transaction`. `ScriptTemplateUnlock::sign` takes `&SighashPreimage`, templates append `preimage.scope() as u8`, and no template stores a scope at all. One value, reachable only through the object built from it. `SighashPreimage` derefs to `[u8]`, so `hash256(&preimage)`-style callers are unaffected.
+
+  TS achieves the same by computing `computeSignatureScope(signOutputs, anyoneCanPay)` once inside `sign` and feeding both halves (`PushDrop.ts:220,226,243`); Go likewise (`pushdrop.go:200-213,229`). This port's `sign` receives a preimage rather than a transaction, so the scope rides along with it. **`PushDrop::unlock` deliberately does not take TS's `signOutputs`/`anyoneCanPay` pair** — that would put a scope back on the template. `PushDrop::default_sighash_type()` is the same value TS's defaults compute.
+
+### Removed
+
+- **`PushDropSigner`, `PushDrop::unlock_with_signature`, `PushDropUnlock::from_signature`** — the supplied-signature seam made `sign(preimage)` silently discard its argument and emit a script with no binding between the signature and the transaction. Neither reference SDK has such an arm. Its intended consumer (an MPC box whose ceremony runs once for the whole transaction) never used it: it calls the public **`push_drop_unlocking_script`** directly, which stays.
+- **`P2PKH::sighash_type` and `RPuzzle::sighash_type` fields** — the scope now arrives with the preimage.
+
+### Changed
+
+- **`ScriptTemplateUnlock::estimate_length` is synchronous.** An estimate is arithmetic over the template's own fields; Go's is `EstimateLength() uint32`, and TS's returns a Promise only because `Transaction.fee()` awaits it while passing `(tx, inputIndex)` — parameters this port does not take. `sign` stays `async`.
+- **`ScriptTemplateUnlock` no longer requires `Send + Sync`.** The requirement belonged to one method: `Transaction::sign` holds its template across an `.await`, so it now takes `&(dyn ScriptTemplateUnlock + Sync)`. (Note that `#[async_trait]` still boxes `sign`'s future as `+ Send`, which independently forces `Self: Sync` on every implementor.)
+- **`P2PKH::unlock` and `RPuzzle::unlock`** take `&SighashPreimage` instead of `&[u8]`.
+
+### Compatibility
+
+This release pairs with a **`bsv-wallet-toolbox`** release: published 0.7.1's `signer/complete_signed.rs` calls `Transaction::sign`, which is `async` as of this version, so 0.7.1 does not compile against it.
+
 ## [0.3.4] - 2026-07-28
 
 ### Fixed

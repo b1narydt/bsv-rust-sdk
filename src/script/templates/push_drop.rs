@@ -210,6 +210,15 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
     /// The scope is NOT a parameter here. It is named once, at
     /// [`Transaction::sign`](crate::transaction::Transaction::sign), and arrives
     /// bound to the preimage it produced — see [`SighashPreimage`].
+    ///
+    /// TS takes `signOutputs: 'all'|'none'|'single'` and `anyoneCanPay: boolean`
+    /// at this point and folds them into a scope inside `sign`. This port does not
+    /// copy that pair, deliberately: taking it here would put a scope back on the
+    /// template, which is the second opinion [`SighashPreimage`] exists to delete.
+    /// The scope is a `u32` of the exported `SIGHASH_*` constants, as everywhere
+    /// else in this SDK, and TS's defaults are
+    /// [`PushDrop::default_sighash_type`] — the same `SIGHASH_ALL | SIGHASH_FORKID`
+    /// value `signOutputs='all', anyoneCanPay=false` computes.
     pub fn unlock(
         &self,
         protocol_id: Protocol,
