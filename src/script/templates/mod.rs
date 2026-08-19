@@ -10,8 +10,8 @@ pub mod r_puzzle;
 
 pub use p2pkh::P2PKH;
 pub use push_drop::{
-    decode as decode_push_drop, push_drop_unlocking_script, LockPosition, PushDrop,
-    PushDropData, PushDropSigner, PushDropUnlock,
+    decode as decode_push_drop, push_drop_unlocking_script, LockPosition, PushDrop, PushDropData,
+    PushDropUnlock,
 };
 pub use r_puzzle::RPuzzle;
 

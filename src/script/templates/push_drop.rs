@@ -200,10 +200,12 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
     /// Deferral is not a style choice. A wallet with no local key — an MPC vault,
     /// an HSM — produces a signature by running a ceremony, once, for the WHOLE
     /// transaction. An `unlock` that signed on the spot would convene a second
-    /// ceremony at the wrong moment. Such a caller runs its ceremony, then hands
-    /// the resulting DER to [`PushDrop::unlock_with_signature`], and the
-    /// unlocking script is assembled by the SAME code that assembles the
-    /// wallet-signed one.
+    /// ceremony at the wrong moment.
+    ///
+    /// A caller that ALREADY holds the DER — because its ceremony ran once for
+    /// the whole transaction — wants no unlocker at all: it calls
+    /// [`push_drop_unlocking_script`] directly, which is the same function this
+    /// unlocker ends at.
     pub fn unlock(
         &self,
         protocol_id: Protocol,
@@ -212,26 +214,13 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
         sighash_type: u8,
     ) -> PushDropUnlock<'a, W> {
         PushDropUnlock {
-            signer: PushDropSigner::Wallet {
-                wallet: self.wallet,
-                originator: self.originator.clone(),
-                protocol_id,
-                key_id: key_id.to_string(),
-                counterparty,
-            },
+            wallet: self.wallet,
+            originator: self.originator.clone(),
+            protocol_id,
+            key_id: key_id.to_string(),
+            counterparty,
             sighash_type,
         }
-    }
-
-    /// The deferred unlocker for a signature that already exists.
-    ///
-    /// `bare_der` is the DER-encoded ECDSA signature over `sha256d(preimage)` —
-    /// exactly what `createSignature` returns, and exactly what an MPC ceremony
-    /// yields. No wallet is consulted; no ceremony is convened. Available as an
-    /// associated function on `PushDrop` for symmetry with [`Self::unlock`], and
-    /// as [`PushDropUnlock::from_signature`] for callers that hold no template.
-    pub fn unlock_with_signature(bare_der: Vec<u8>, sighash_type: u8) -> PushDropUnlock<'a, W> {
-        PushDropUnlock::from_signature(bare_der, sighash_type)
     }
 
     /// The default sighash scope: `SIGHASH_ALL | SIGHASH_FORKID`.
@@ -245,106 +234,54 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
     }
 }
 
-/// Where a [`PushDropUnlock`] gets its DER signature.
-///
-/// This is the pluggable seam. TS hard-codes `this.wallet.createSignature` inside
-/// the `sign` callback; Rust names the alternative, because the callers that most
-/// need PushDrop — MPC- and HSM-backed wallets — cannot produce a signature by
-/// calling a method, and must not be forced to hand-roll the script assembly to
-/// use one they already have.
-pub enum PushDropSigner<'a, W: WalletInterface + ?Sized> {
-    /// Ask the wallet when `sign` is called. This is TS's behaviour.
-    ///
-    /// The wallet call is `async`, and so is [`ScriptTemplateUnlock::sign`] —
-    /// which is why this arm is resolved there and nowhere else.
-    Wallet {
-        /// The wallet that produces the signature.
-        wallet: &'a W,
-        /// Originator passed through on the wallet request.
-        originator: Option<String>,
-        /// Protocol the signing key is derived under.
-        protocol_id: Protocol,
-        /// Key ID the signing key is derived under.
-        key_id: String,
-        /// Counterparty the signing key is derived against.
-        counterparty: Counterparty,
-    },
-    /// A bare DER signature over `sha256d(preimage)`, produced elsewhere.
-    Signature(Vec<u8>),
-}
-
 /// The deferred unlocker returned by [`PushDrop::unlock`].
 ///
 /// TS's `{ sign, estimateLength }`, as a type. `estimate_length` answers 73 like
-/// every port; `sign` assembles the one-push unlocking script from a DER
-/// signature and the sighash byte.
+/// every port; `sign` asks the wallet for a signature over the sighash and
+/// assembles the one-push unlocking script.
 pub struct PushDropUnlock<'a, W: WalletInterface + ?Sized> {
-    /// Where the signature comes from.
-    pub signer: PushDropSigner<'a, W>,
+    /// The wallet that produces the signature.
+    pub wallet: &'a W,
+    /// Originator passed through on the wallet request.
+    pub originator: Option<String>,
+    /// Protocol the signing key is derived under.
+    pub protocol_id: Protocol,
+    /// Key ID the signing key is derived under.
+    pub key_id: String,
+    /// Counterparty the signing key is derived against.
+    pub counterparty: Counterparty,
     /// The sighash scope byte appended to the signature.
     pub sighash_type: u8,
 }
 
-impl<'a, W: WalletInterface + ?Sized> PushDropUnlock<'a, W> {
-    /// An unlocker over a signature that already exists (see
-    /// [`PushDrop::unlock_with_signature`]).
-    pub fn from_signature(bare_der: Vec<u8>, sighash_type: u8) -> Self {
-        Self {
-            signer: PushDropSigner::Signature(bare_der),
-            sighash_type,
-        }
-    }
-}
-
 #[async_trait]
 impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W> {
-    /// **The one entry point.** Both arms end at the same assembly.
-    ///
-    /// On the wallet arm the wallet is handed `sha256(preimage)` as `data` and
-    /// hashes once more internally, so the signed digest is `sha256d(preimage)` —
-    /// the BSV sighash. (An older revision signed a SINGLE sha256 of the
-    /// preimage, which is not a valid BSV sighash.)
-    ///
-    /// On the supplied-signature arm `preimage` is unused: the signature this
-    /// unlocker holds is already over it. That arm exists so an MPC- or
-    /// HSM-backed caller — which produced its DER in a ceremony run ONCE for the
-    /// whole transaction — can hand this unlocker to
-    /// [`crate::transaction::Transaction::sign`] like any other template, instead
-    /// of restating the script format itself.
+    /// The wallet is handed `sha256(preimage)` as `data` and hashes once more
+    /// internally, so the signed digest is `sha256d(preimage)` — the BSV sighash.
+    /// (An older revision signed a SINGLE sha256 of the preimage, which is not a
+    /// valid BSV sighash.)
     async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
-        let bare_der = match &self.signer {
-            PushDropSigner::Signature(der) => der.clone(),
-            PushDropSigner::Wallet {
-                wallet,
-                originator,
-                protocol_id,
-                key_id,
-                counterparty,
-            } => {
-                let preimage_hash = sha256(preimage);
-                wallet
-                    .create_signature(
-                        CreateSignatureArgs {
-                            protocol_id: protocol_id.clone(),
-                            key_id: key_id.clone(),
-                            counterparty: counterparty.clone(),
-                            data: Some(preimage_hash.to_vec()),
-                            hash_to_directly_sign: None,
-                            privileged: false,
-                            privileged_reason: None,
-                            seek_permission: None,
-                        },
-                        originator.as_deref(),
-                    )
-                    .await
-                    .map_err(|e| {
-                        ScriptError::InvalidScript(format!(
-                            "PushDrop unlock: createSignature: {e}"
-                        ))
-                    })?
-                    .signature
-            }
-        };
+        let preimage_hash = sha256(preimage);
+        let bare_der = self
+            .wallet
+            .create_signature(
+                CreateSignatureArgs {
+                    protocol_id: self.protocol_id.clone(),
+                    key_id: self.key_id.clone(),
+                    counterparty: self.counterparty.clone(),
+                    data: Some(preimage_hash.to_vec()),
+                    hash_to_directly_sign: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                self.originator.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                ScriptError::InvalidScript(format!("PushDrop unlock: createSignature: {e}"))
+            })?
+            .signature;
         push_drop_unlocking_script(&bare_der, self.sighash_type)
     }
 
@@ -769,8 +706,8 @@ mod tests {
     }
 
     /// The seam this reshape exists for: a caller that already holds a signature
-    /// — an MPC ceremony run ONCE for the whole transaction — must reach the same
-    /// assembly the wallet path reaches, byte for byte, without a wallet call.
+    /// — an MPC ceremony run ONCE for the whole transaction — reaches the same
+    /// assembly the wallet path reaches by calling [`push_drop_unlocking_script`].
     #[tokio::test]
     async fn a_supplied_signature_and_a_wallet_signature_assemble_identically() {
         let w = wallet();
@@ -788,9 +725,10 @@ mod tests {
         let assembled = from_wallet.chunks()[0].data.as_ref().unwrap();
         let bare_der = assembled[..assembled.len() - 1].to_vec();
 
-        let supplied = PushDrop::<ProtoWallet>::unlock_with_signature(bare_der.clone(), scope);
         assert_eq!(
-            supplied.sign(b"ignored").await.unwrap().to_binary(),
+            push_drop_unlocking_script(&bare_der, scope)
+                .unwrap()
+                .to_binary(),
             from_wallet.to_binary(),
             "a supplied signature must assemble byte-identically to a wallet-signed one"
         );
@@ -840,7 +778,8 @@ mod tests {
 
     #[tokio::test]
     async fn estimate_length_is_73_like_every_other_port() {
-        let unlocker = PushDrop::<ProtoWallet>::unlock_with_signature(vec![0x30], 0x41);
+        let w = wallet();
+        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
         assert_eq!(unlocker.estimate_length().await.unwrap(), 73);
         assert_eq!(PushDrop::<ProtoWallet>::estimate_unlock_length(), 73);
     }
