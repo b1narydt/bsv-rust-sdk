@@ -155,7 +155,7 @@ impl ScriptTemplateUnlock for P2PKH {
         self.unlock(preimage)
     }
 
-    async fn estimate_length(&self) -> Result<usize, ScriptError> {
+    fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(self.estimate_unlock_length())
     }
 }
@@ -355,11 +355,11 @@ mod tests {
         assert_eq!(unlock_script.chunks().len(), 2);
     }
 
-    #[tokio::test]
-    async fn test_p2pkh_trait_estimate_length() {
+    #[test]
+    fn test_p2pkh_trait_estimate_length() {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
-        let len = p2pkh.estimate_length().await.unwrap();
+        let len = p2pkh.estimate_length().unwrap();
         assert!((100..=120).contains(&len));
     }
 
@@ -380,7 +380,7 @@ mod tests {
                 .len(),
             2
         );
-        assert!((100..=120).contains(&as_dyn.estimate_length().await.unwrap()));
+        assert!((100..=120).contains(&as_dyn.estimate_length().unwrap()));
     }
 
     // -----------------------------------------------------------------------

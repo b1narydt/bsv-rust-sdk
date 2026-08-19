@@ -285,7 +285,7 @@ impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W>
         push_drop_unlocking_script(&bare_der, preimage.scope() as u8)
     }
 
-    async fn estimate_length(&self) -> Result<usize, ScriptError> {
+    fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(73)
     }
 }
@@ -904,11 +904,11 @@ mod tests {
         assert!(push_drop_unlocking_script(&[0xde, 0xad, 0xbe, 0xef], 0x41).is_err());
     }
 
-    #[tokio::test]
-    async fn estimate_length_is_73_like_every_other_port() {
+    #[test]
+    fn estimate_length_is_73_like_every_other_port() {
         let w = wallet();
         let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty());
-        assert_eq!(unlocker.estimate_length().await.unwrap(), 73);
+        assert_eq!(unlocker.estimate_length().unwrap(), 73);
         assert_eq!(PushDrop::<ProtoWallet>::estimate_unlock_length(), 73);
     }
 
@@ -940,7 +940,7 @@ mod tests {
             .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
             .await
             .is_ok());
-        assert_eq!(as_dyn.estimate_length().await.unwrap(), 73);
+        assert_eq!(as_dyn.estimate_length().unwrap(), 73);
     }
 
     #[test]

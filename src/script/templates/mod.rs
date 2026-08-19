@@ -61,5 +61,10 @@ pub trait ScriptTemplateUnlock: Send + Sync {
     async fn sign(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError>;
 
     /// Estimate the byte length of the unlocking script (for fee calculation).
-    async fn estimate_length(&self) -> Result<usize, ScriptError>;
+    ///
+    /// Synchronous: an estimate is arithmetic over the template's own fields, and
+    /// no port awaits anything to produce it — Go's is `EstimateLength() uint32`.
+    /// TS's returns a Promise only because `Transaction.fee()` awaits it while
+    /// passing `(tx, inputIndex)`, parameters this port does not take.
+    fn estimate_length(&self) -> Result<usize, ScriptError>;
 }

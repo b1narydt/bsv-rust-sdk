@@ -195,7 +195,7 @@ impl ScriptTemplateUnlock for RPuzzle {
         self.unlock(preimage)
     }
 
-    async fn estimate_length(&self) -> Result<usize, ScriptError> {
+    fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(self.estimate_unlock_length())
     }
 }
@@ -466,7 +466,7 @@ mod tests {
         let rp = RPuzzle::from_k(RPuzzleType::Raw, r_bytes, k, key);
 
         let as_dyn: &dyn ScriptTemplateUnlock = &rp;
-        assert_eq!(as_dyn.estimate_length().await.unwrap(), 74);
+        assert_eq!(as_dyn.estimate_length().unwrap(), 74);
         // Byte-identical to the inherent `unlock`, reached through the trait object.
         let preimage = preimage_under(SIGHASH_ALL | SIGHASH_FORKID);
         assert_eq!(
