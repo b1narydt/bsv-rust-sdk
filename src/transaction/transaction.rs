@@ -1096,6 +1096,29 @@ mod tests {
         assert_eq!(pubkey_data.len(), 33);
     }
 
+    /// `Transaction::sign`'s future must be `Send`.
+    ///
+    /// A wallet signs from inside an `#[async_trait]` method, whose future is
+    /// `Send`; awaiting a non-`Send` future there does not compile. `sign` holds
+    /// `&dyn ScriptTemplateUnlock` across the await, and that reference is `Send`
+    /// only if the trait object is `Sync` — which is why `ScriptTemplateUnlock`
+    /// requires `Send + Sync`. A downstream crate found this the hard way when
+    /// the trait first went async; it is pinned here now.
+    #[test]
+    fn signing_futures_are_send() {
+        fn require_send<T: Send>(_: &T) {}
+
+        let p2pkh = P2PKH::from_private_key(PrivateKey::from_hex("1").unwrap());
+        let lock_script = p2pkh.lock().unwrap();
+        let scope = SIGHASH_ALL | SIGHASH_FORKID;
+
+        let mut tx = Transaction::new();
+        require_send(&tx.sign(0, &p2pkh, scope, 1, &lock_script));
+
+        let mut tx = Transaction::new();
+        require_send(&tx.sign_all_inputs(&p2pkh, scope));
+    }
+
     #[tokio::test]
     async fn test_sign_and_verify_round_trip() {
         use crate::script::spend::{Spend, SpendParams};

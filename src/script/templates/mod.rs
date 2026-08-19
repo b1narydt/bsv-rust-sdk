@@ -40,8 +40,17 @@ pub trait ScriptTemplateLock {
 /// than a native `async fn` in trait because [`crate::transaction::Transaction`]
 /// drives templates as `&dyn ScriptTemplateUnlock`, and native async fns are not
 /// dyn-compatible.
+///
+/// `Send + Sync` are supertraits — as on [`crate::wallet::interfaces::WalletInterface`]
+/// — because [`crate::transaction::Transaction::sign`] takes `&dyn
+/// ScriptTemplateUnlock` and holds it across an `.await`. Without `Sync` on the
+/// trait object that reference is not `Send`, so the whole `Transaction::sign`
+/// future is not `Send`, and it cannot be awaited from any `#[async_trait]`
+/// method — which is where wallets actually sign. Every template in this crate
+/// is plain data or a borrow of a `WalletInterface`, so all of them already
+/// qualify.
 #[async_trait]
-pub trait ScriptTemplateUnlock {
+pub trait ScriptTemplateUnlock: Send + Sync {
     /// Sign a transaction input and produce an unlocking script.
     ///
     /// The `preimage` is the sighash preimage bytes that the caller computes
