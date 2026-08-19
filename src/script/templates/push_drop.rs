@@ -39,6 +39,7 @@ use async_trait::async_trait;
 
 use crate::script::templates::ScriptTemplateUnlock;
 use crate::script::unlocking_script::UnlockingScript;
+use crate::transaction::sighash_preimage::SighashPreimage;
 use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInterface};
 use crate::wallet::types::{Counterparty, Protocol};
 
@@ -206,12 +207,14 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
     /// the whole transaction — wants no unlocker at all: it calls
     /// [`push_drop_unlocking_script`] directly, which is the same function this
     /// unlocker ends at.
+    /// The scope is NOT a parameter here. It is named once, at
+    /// [`Transaction::sign`](crate::transaction::Transaction::sign), and arrives
+    /// bound to the preimage it produced — see [`SighashPreimage`].
     pub fn unlock(
         &self,
         protocol_id: Protocol,
         key_id: &str,
         counterparty: Counterparty,
-        sighash_type: u8,
     ) -> PushDropUnlock<'a, W> {
         PushDropUnlock {
             wallet: self.wallet,
@@ -219,7 +222,6 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
             protocol_id,
             key_id: key_id.to_string(),
             counterparty,
-            sighash_type,
         }
     }
 
@@ -250,8 +252,6 @@ pub struct PushDropUnlock<'a, W: WalletInterface + ?Sized> {
     pub key_id: String,
     /// Counterparty the signing key is derived against.
     pub counterparty: Counterparty,
-    /// The sighash scope byte appended to the signature.
-    pub sighash_type: u8,
 }
 
 #[async_trait]
@@ -260,8 +260,8 @@ impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W>
     /// internally, so the signed digest is `sha256d(preimage)` — the BSV sighash.
     /// (An older revision signed a SINGLE sha256 of the preimage, which is not a
     /// valid BSV sighash.)
-    async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
-        let preimage_hash = sha256(preimage);
+    async fn sign(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError> {
+        let preimage_hash = sha256(preimage.bytes());
         let bare_der = self
             .wallet
             .create_signature(
@@ -282,7 +282,7 @@ impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W>
                 ScriptError::InvalidScript(format!("PushDrop unlock: createSignature: {e}"))
             })?
             .signature;
-        push_drop_unlocking_script(&bare_der, self.sighash_type)
+        push_drop_unlocking_script(&bare_der, preimage.scope() as u8)
     }
 
     async fn estimate_length(&self) -> Result<usize, ScriptError> {
@@ -521,6 +521,7 @@ fn decode_field(chunk: &ScriptChunk) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::sighash_preimage::test_support::preimage_under;
     use crate::primitives::private_key::PrivateKey;
     use crate::wallet::proto_wallet::ProtoWallet;
 
@@ -685,13 +686,8 @@ mod tests {
     async fn unlock_produces_a_der_signature_with_the_sighash_byte() {
         let w = wallet();
         let sig = PushDrop::new(&w, None)
-            .unlock(
-                protocol(),
-                "k",
-                cpty(),
-                PushDrop::<ProtoWallet>::default_sighash_type(),
-            )
-            .sign(b"preimage")
+            .unlock(protocol(), "k", cpty())
+            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
             .await
             .unwrap();
 
@@ -705,6 +701,108 @@ mod tests {
         );
     }
 
+    /// **The regression test for the split sighash scope.**
+    ///
+    /// Before [`SighashPreimage`], `Transaction::sign` computed the preimage under
+    /// a `scope` argument while `PushDrop::unlock` captured a `sighash_type` of its
+    /// own, and NOTHING bound the two. Signing under one scope while the template
+    /// stamped another compiled, signed, and produced a script the network
+    /// rejects. The template now holds no scope to disagree with.
+    ///
+    /// Both halves are checked against values derived OUTSIDE this module: the
+    /// signing key straight from the deriver, the digest straight from the BSV
+    /// rule (`hash256` of the preimage), the scope a non-default one so a
+    /// hard-coded `0x41` cannot pass.
+    #[tokio::test]
+    async fn the_scope_reaches_both_halves_of_the_signature() {
+        use crate::primitives::ecdsa::ecdsa_sign;
+        use crate::primitives::hash::hash256;
+        use crate::primitives::transaction_signature::SIGHASH_NONE;
+        use crate::transaction::{Transaction, TransactionInput, TransactionOutput};
+        use crate::wallet::key_deriver::KeyDeriver;
+
+        let w = wallet();
+        let pd = PushDrop::new(&w, None);
+        let lock = pd
+            .lock(
+                vec![b"field".to_vec()],
+                protocol(),
+                "k",
+                cpty(),
+                false,
+                false,
+                LockPosition::Before,
+            )
+            .await
+            .unwrap();
+
+        // NOT the default scope: SIGHASH_NONE | SIGHASH_FORKID == 0x42.
+        let scope = SIGHASH_NONE | SIGHASH_FORKID;
+        assert_ne!(scope as u8, PushDrop::<ProtoWallet>::default_sighash_type());
+
+        let mut tx = Transaction::new();
+        tx.add_input(TransactionInput {
+            source_transaction: None,
+            source_txid: Some("cd".repeat(32)),
+            source_output_index: 0,
+            unlocking_script: None,
+            sequence: 0xffff_ffff,
+        });
+        tx.add_output(TransactionOutput {
+            satoshis: Some(900),
+            locking_script: lock.clone(),
+            change: false,
+        });
+
+        let unlocker = pd.unlock(protocol(), "k", cpty());
+        tx.sign(0, &unlocker, scope, 1_000, &lock)
+            .await
+            .expect("signing should succeed");
+
+        let script_sig = tx.inputs[0]
+            .unlocking_script
+            .as_ref()
+            .unwrap()
+            .chunks()[0]
+            .data
+            .clone()
+            .unwrap();
+        let (der, sighash_byte) = script_sig.split_at(script_sig.len() - 1);
+
+        // (a) the script advertises the scope the caller named.
+        assert_eq!(
+            sighash_byte[0], scope as u8,
+            "the script's sighash byte must be the scope Transaction::sign was given"
+        );
+
+        // (b) the signature commits to the preimage computed under that SAME scope.
+        let preimage = tx.sighash_preimage(0, scope, 1_000, &lock).unwrap();
+        assert_eq!(preimage.scope(), scope, "the preimage reports its own scope");
+        let sk = KeyDeriver::new(PrivateKey::from_bytes(&[0x55u8; 32]).unwrap())
+            .derive_private_key(&protocol(), "k", &cpty())
+            .unwrap();
+        let expected = ecdsa_sign(&hash256(preimage.bytes()), sk.bn(), true)
+            .unwrap()
+            .to_der();
+        assert_eq!(
+            der, &expected[..],
+            "the signature must be over the preimage its own sighash byte names"
+        );
+
+        // ... and NOT over the preimage under the scope the template used to hold.
+        let default_scope = tx
+            .sighash_preimage(0, SIGHASH_ALL | SIGHASH_FORKID, 1_000, &lock)
+            .unwrap();
+        let wrong = ecdsa_sign(&hash256(default_scope.bytes()), sk.bn(), true)
+            .unwrap()
+            .to_der();
+        assert_ne!(
+            der,
+            &wrong[..],
+            "the two scopes must actually produce different signatures, or this proves nothing"
+        );
+    }
+
     /// The seam this reshape exists for: a caller that already holds a signature
     /// — an MPC ceremony run ONCE for the whole transaction — reaches the same
     /// assembly the wallet path reaches by calling [`push_drop_unlocking_script`].
@@ -715,8 +813,8 @@ mod tests {
         let pd = PushDrop::new(&w, None);
 
         let from_wallet = pd
-            .unlock(protocol(), "k", cpty(), scope)
-            .sign(b"preimage")
+            .unlock(protocol(), "k", cpty())
+            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
             .await
             .unwrap();
 
@@ -779,7 +877,7 @@ mod tests {
     #[tokio::test]
     async fn estimate_length_is_73_like_every_other_port() {
         let w = wallet();
-        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
+        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty());
         assert_eq!(unlocker.estimate_length().await.unwrap(), 73);
         assert_eq!(PushDrop::<ProtoWallet>::estimate_unlock_length(), 73);
     }
@@ -791,8 +889,11 @@ mod tests {
     #[tokio::test]
     async fn the_wallet_arm_signs_through_the_trait_method() {
         let w = wallet();
-        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
-        let script = unlocker.sign(b"preimage").await.expect("wallet arm signs");
+        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty());
+        let script = unlocker
+            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .await
+            .expect("wallet arm signs");
         let data = script.chunks()[0].data.as_ref().unwrap();
         assert_eq!(data[0], 0x30, "DER sequence");
         assert_eq!(*data.last().unwrap(), 0x41, "sighash byte");
@@ -803,9 +904,12 @@ mod tests {
     #[tokio::test]
     async fn the_wallet_arm_signs_through_a_trait_object() {
         let w = wallet();
-        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
+        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty());
         let as_dyn: &dyn ScriptTemplateUnlock = &unlocker;
-        assert!(as_dyn.sign(b"preimage").await.is_ok());
+        assert!(as_dyn
+            .sign(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .await
+            .is_ok());
         assert_eq!(as_dyn.estimate_length().await.unwrap(), 73);
     }
 

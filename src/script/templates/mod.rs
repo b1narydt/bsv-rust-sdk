@@ -19,6 +19,7 @@ use async_trait::async_trait;
 
 use crate::script::error::ScriptError;
 use crate::script::{LockingScript, UnlockingScript};
+use crate::transaction::sighash_preimage::SighashPreimage;
 
 /// Trait for creating locking scripts (analogous to TS SDK ScriptTemplate).
 ///
@@ -32,14 +33,14 @@ pub trait ScriptTemplateLock {
 ///
 /// Implementors produce an UnlockingScript and can estimate its byte length
 /// for fee calculation purposes.
-/// Both methods are `async`, matching TS, whose `sign` and `estimateLength` both
-/// return a `Promise`. Signing is not always a local computation: a wallet-backed
-/// template — MPC vault, HSM, remote signer — reaches the key over the network.
-/// A synchronous `sign` forces such a template to refuse at RUNTIME, which is a
-/// compile-time error wearing a runtime costume. `#[async_trait]` is used rather
-/// than a native `async fn` in trait because [`crate::transaction::Transaction`]
-/// drives templates as `&dyn ScriptTemplateUnlock`, and native async fns are not
-/// dyn-compatible.
+///
+/// `sign` is `async`, matching TS, whose `sign` returns a `Promise`. Signing is
+/// not always a local computation: a wallet-backed template — MPC vault, HSM,
+/// remote signer — reaches the key over the network. A synchronous `sign` forces
+/// such a template to refuse at RUNTIME, which is a compile-time error wearing a
+/// runtime costume. `#[async_trait]` is used rather than a native `async fn` in
+/// trait because [`crate::transaction::Transaction`] drives templates as
+/// `&dyn ScriptTemplateUnlock`, and native async fns are not dyn-compatible.
 ///
 /// `Send + Sync` are supertraits — as on [`crate::wallet::interfaces::WalletInterface`]
 /// — because [`crate::transaction::Transaction::sign`] takes `&dyn
@@ -53,9 +54,11 @@ pub trait ScriptTemplateLock {
 pub trait ScriptTemplateUnlock: Send + Sync {
     /// Sign a transaction input and produce an unlocking script.
     ///
-    /// The `preimage` is the sighash preimage bytes that the caller computes
-    /// from the transaction context. The template signs this directly.
-    async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError>;
+    /// `preimage` carries both the sighash preimage bytes and the scope they were
+    /// computed under. Implementors that append a sighash byte to a DER signature
+    /// MUST take it from [`SighashPreimage::scope`] — storing a scope of their own
+    /// is how a signature ends up committing to one scope and advertising another.
+    async fn sign(&self, preimage: &SighashPreimage) -> Result<UnlockingScript, ScriptError>;
 
     /// Estimate the byte length of the unlocking script (for fee calculation).
     async fn estimate_length(&self) -> Result<usize, ScriptError>;

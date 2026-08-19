@@ -8,6 +8,7 @@ use crate::primitives::transaction_signature::{
 };
 use crate::script::locking_script::LockingScript;
 use crate::script::templates::ScriptTemplateUnlock;
+use crate::transaction::sighash_preimage::SighashPreimage;
 use crate::transaction::error::TransactionError;
 use crate::transaction::merkle_path::MerklePath;
 use crate::transaction::transaction_input::TransactionInput;
@@ -373,7 +374,14 @@ impl Transaction {
     /// Compute the BIP143/ForkID sighash preimage for the input at `input_index`.
     ///
     /// This is the standard BSV post-fork sighash format. The `scope` flags
-    /// should include SIGHASH_FORKID for normal BSV transactions.
+    /// should include SIGHASH_FORKID for normal BSV transactions; this format
+    /// implies it, so the bit is set for you and the returned
+    /// [`SighashPreimage`] reports the EFFECTIVE scope.
+    ///
+    /// The result carries the scope alongside the bytes because a signature
+    /// commits to it twice — once inside the preimage, once as the byte appended
+    /// to the DER in the unlocking script — and the two must be the same value.
+    /// See [`SighashPreimage`].
     ///
     /// Parameters:
     /// - `input_index`: index of the input being signed
@@ -386,7 +394,7 @@ impl Transaction {
         scope: u32,
         source_satoshis: u64,
         source_locking_script: &LockingScript,
-    ) -> Result<Vec<u8>, TransactionError> {
+    ) -> Result<SighashPreimage, TransactionError> {
         if input_index >= self.inputs.len() {
             return Err(TransactionError::InvalidSighash(format!(
                 "input_index {} out of range (tx has {} inputs)",
@@ -471,10 +479,14 @@ impl Transaction {
         // 9. nLockTime (4 bytes LE)
         preimage.extend_from_slice(&self.lock_time.to_le_bytes());
 
-        // 10. sighash type (4 bytes LE) -- scope with FORKID bit
-        preimage.extend_from_slice(&(scope | SIGHASH_FORKID).to_le_bytes());
+        // 10. sighash type (4 bytes LE) -- scope with FORKID bit.
+        // This is the EFFECTIVE scope, and it is what the returned value reports:
+        // a template that stamped the caller's un-ORed `scope` into the script
+        // would name a different message than the one signed here.
+        let effective_scope = scope | SIGHASH_FORKID;
+        preimage.extend_from_slice(&effective_scope.to_le_bytes());
 
-        Ok(preimage)
+        Ok(SighashPreimage::new(preimage, effective_scope))
     }
 
     /// Compute the legacy OTDA sighash preimage for the input at `input_index`.
@@ -601,6 +613,11 @@ impl Transaction {
     ///
     /// `async` because [`ScriptTemplateUnlock::sign`] is: a template may reach a
     /// key that is not local — a wallet, an MPC vault, an HSM.
+    ///
+    /// `scope` is named ONCE, here. The [`SighashPreimage`] handed to the template
+    /// carries it, so the byte the template appends to the DER and the scope the
+    /// preimage was computed under are the same value by construction; the
+    /// template holds no scope of its own to disagree with.
     pub async fn sign(
         &mut self,
         input_index: usize,

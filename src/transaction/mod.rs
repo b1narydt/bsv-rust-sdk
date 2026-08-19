@@ -13,6 +13,7 @@ pub mod chaintrackers;
 pub mod error;
 pub mod fee_model;
 pub mod merkle_path;
+pub mod sighash_preimage;
 #[allow(clippy::module_inception)]
 pub mod transaction;
 pub mod transaction_input;
@@ -26,6 +27,7 @@ pub use chain_tracker::ChainTracker;
 pub use error::TransactionError;
 pub use fee_model::{FeeModel, SatoshisPerKilobyte};
 pub use merkle_path::{MerklePath, MerklePathLeaf};
+pub use sighash_preimage::SighashPreimage;
 pub use transaction::Transaction;
 pub use transaction_input::TransactionInput;
 pub use transaction_output::TransactionOutput;
