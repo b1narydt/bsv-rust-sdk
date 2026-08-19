@@ -15,6 +15,8 @@ use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
 use crate::script::script::Script;
 use crate::script::script_chunk::ScriptChunk;
+use async_trait::async_trait;
+
 use crate::script::templates::{ScriptTemplateLock, ScriptTemplateUnlock};
 use crate::script::unlocking_script::UnlockingScript;
 
@@ -189,12 +191,15 @@ impl ScriptTemplateLock for RPuzzle {
     }
 }
 
+#[async_trait]
 impl ScriptTemplateUnlock for RPuzzle {
-    fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// Signs with the local key, so there is nothing to await — the `async` is
+    /// the trait's, so that wallet-backed templates can reach a remote signer.
+    async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
         self.unlock(preimage)
     }
 
-    fn estimate_length(&self) -> Result<usize, ScriptError> {
+    async fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(self.estimate_unlock_length())
     }
 }
@@ -446,6 +451,26 @@ mod tests {
     fn test_rpuzzle_estimate_length() {
         let rp = RPuzzle::from_value(RPuzzleType::Raw, vec![0xaa; 32]);
         assert_eq!(rp.estimate_unlock_length(), 74);
+    }
+
+    /// R-Puzzle still signs through the async trait, including as a trait object.
+    #[tokio::test]
+    async fn test_rpuzzle_through_the_async_trait() {
+        let key = PrivateKey::from_hex("1").unwrap();
+        let k = BigNumber::from_number(42);
+        let r_bytes = BasePoint::instance()
+            .mul(&k)
+            .get_x()
+            .to_array(Endian::Big, Some(32));
+        let rp = RPuzzle::from_k(RPuzzleType::Raw, r_bytes, k, key);
+
+        let as_dyn: &dyn ScriptTemplateUnlock = &rp;
+        assert_eq!(as_dyn.estimate_length().await.unwrap(), 74);
+        // Byte-identical to the inherent `unlock`, reached through the trait object.
+        assert_eq!(
+            as_dyn.sign(b"test preimage").await.unwrap().to_binary(),
+            rp.unlock(b"test preimage").unwrap().to_binary()
+        );
     }
 
     // -----------------------------------------------------------------------

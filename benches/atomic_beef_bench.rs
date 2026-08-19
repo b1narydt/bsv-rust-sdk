@@ -19,6 +19,24 @@ use bsv::transaction::transaction::Transaction;
 use bsv::transaction::transaction_input::TransactionInput;
 use bsv::transaction::transaction_output::TransactionOutput;
 
+/// Resolve a future that is ready on the first poll, without a runtime.
+///
+/// [`bsv::script::templates::ScriptTemplateUnlock`] is async so that
+/// wallet-backed templates can reach a key that is not local. P2PKH's key IS
+/// local, so its future never yields and one poll finishes it. Standing up a
+/// tokio runtime per signature would put the runtime inside the measurement.
+fn now_or_never<F: std::future::Future>(fut: F) -> F::Output {
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(value) => value,
+        std::task::Poll::Pending => {
+            panic!("a local-key template must resolve without yielding")
+        }
+    }
+}
+
+
 const SCOPE: u32 = SIGHASH_ALL | SIGHASH_FORKID;
 const CHAIN_DEPTH: usize = 200;
 
@@ -86,9 +104,7 @@ fn build_chain(depth: usize) -> (Vec<Transaction>, String, MerklePath) {
 
         let source_satoshis = tx.outputs[0].satoshis.unwrap();
         let source_ls = tx.outputs[0].locking_script.clone();
-        new_tx
-            .sign(0, &p2pkh, SCOPE, source_satoshis, &source_ls)
-            .unwrap();
+        now_or_never(new_tx.sign(0, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
 
         tx = new_tx;
         all_txs.push(tx.clone());

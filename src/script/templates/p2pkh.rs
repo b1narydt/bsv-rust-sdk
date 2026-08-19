@@ -14,6 +14,8 @@ use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
 use crate::script::script::Script;
 use crate::script::script_chunk::ScriptChunk;
+use async_trait::async_trait;
+
 use crate::script::templates::{ScriptTemplateLock, ScriptTemplateUnlock};
 use crate::script::unlocking_script::UnlockingScript;
 
@@ -146,12 +148,15 @@ impl ScriptTemplateLock for P2PKH {
     }
 }
 
+#[async_trait]
 impl ScriptTemplateUnlock for P2PKH {
-    fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// Signs with the local key, so there is nothing to await — the `async` is
+    /// the trait's, so that wallet-backed templates can reach a remote signer.
+    async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
         self.unlock(preimage)
     }
 
-    fn estimate_length(&self) -> Result<usize, ScriptError> {
+    async fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(self.estimate_unlock_length())
     }
 }
@@ -335,22 +340,34 @@ mod tests {
     // P2PKH: ScriptTemplateUnlock trait
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_p2pkh_trait_sign() {
+    #[tokio::test]
+    async fn test_p2pkh_trait_sign() {
         let key = PrivateKey::from_hex("ff").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
 
         // Use trait method
-        let unlock_script = p2pkh.sign(b"sighash data").unwrap();
+        let unlock_script = p2pkh.sign(b"sighash data").await.unwrap();
         assert_eq!(unlock_script.chunks().len(), 2);
     }
 
-    #[test]
-    fn test_p2pkh_trait_estimate_length() {
+    #[tokio::test]
+    async fn test_p2pkh_trait_estimate_length() {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh = P2PKH::from_private_key(key);
-        let len = p2pkh.estimate_length().unwrap();
+        let len = p2pkh.estimate_length().await.unwrap();
         assert!((100..=120).contains(&len));
+    }
+
+    /// P2PKH still works when driven the way `Transaction::sign` drives it —
+    /// through `&dyn ScriptTemplateUnlock`, which is why the trait is
+    /// `#[async_trait]` rather than a native `async fn` in trait.
+    #[tokio::test]
+    async fn test_p2pkh_through_a_trait_object() {
+        let key = PrivateKey::from_hex("ff").unwrap();
+        let p2pkh = P2PKH::from_private_key(key);
+        let as_dyn: &dyn ScriptTemplateUnlock = &p2pkh;
+        assert_eq!(as_dyn.sign(b"sighash data").await.unwrap().chunks().len(), 2);
+        assert!((100..=120).contains(&as_dyn.estimate_length().await.unwrap()));
     }
 
     // -----------------------------------------------------------------------

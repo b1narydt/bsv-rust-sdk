@@ -598,7 +598,10 @@ impl Transaction {
     ///
     /// Computes the sighash preimage (BIP143/ForkID format) and passes it to the
     /// template's sign() method, then sets the resulting unlocking script on the input.
-    pub fn sign(
+    ///
+    /// `async` because [`ScriptTemplateUnlock::sign`] is: a template may reach a
+    /// key that is not local — a wallet, an MPC vault, an HSM.
+    pub async fn sign(
         &mut self,
         input_index: usize,
         template: &dyn ScriptTemplateUnlock,
@@ -610,6 +613,7 @@ impl Transaction {
             self.sighash_preimage(input_index, scope, source_satoshis, source_locking_script)?;
         let unlocking_script = template
             .sign(&preimage)
+            .await
             .map_err(|e| TransactionError::SigningFailed(format!("{e}")))?;
         self.inputs[input_index].unlocking_script = Some(unlocking_script);
         Ok(())
@@ -627,7 +631,7 @@ impl Transaction {
     /// Each input must have its `source_transaction` set so that the source
     /// output's satoshis and locking script can be resolved. If you need
     /// different templates or scopes per input, use the single-input `sign()`.
-    pub fn sign_all_inputs(
+    pub async fn sign_all_inputs(
         &mut self,
         template: &dyn ScriptTemplateUnlock,
         scope: u32,
@@ -665,6 +669,7 @@ impl Transaction {
                 self.sighash_preimage(i, scope, source_satoshis, &source_locking_script)?;
             let unlocking_script = template
                 .sign(&preimage)
+                .await
                 .map_err(|e| TransactionError::SigningFailed(format!("input {i}: {e}")))?;
             self.inputs[i].unlocking_script = Some(unlocking_script);
         }
@@ -1035,8 +1040,8 @@ mod tests {
 
     // -- Transaction signing tests --------------------------------------------
 
-    #[test]
-    fn test_sign_p2pkh() {
+    #[tokio::test]
+    async fn test_sign_p2pkh() {
         let key = PrivateKey::from_hex("1").unwrap();
         let p2pkh_lock = P2PKH::from_private_key(key.clone());
         let p2pkh_unlock = P2PKH::from_private_key(key.clone());
@@ -1061,6 +1066,7 @@ mod tests {
         // Sign the input
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
         tx.sign(0, &p2pkh_unlock, scope, 100000, &lock_script)
+            .await
             .expect("signing should succeed");
 
         // Verify unlocking script is set
@@ -1090,8 +1096,8 @@ mod tests {
         assert_eq!(pubkey_data.len(), 33);
     }
 
-    #[test]
-    fn test_sign_and_verify_round_trip() {
+    #[tokio::test]
+    async fn test_sign_and_verify_round_trip() {
         use crate::script::spend::{Spend, SpendParams};
 
         let key = PrivateKey::from_hex("abcdef01").unwrap();
@@ -1117,6 +1123,7 @@ mod tests {
 
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
         tx.sign(0, &p2pkh, scope, source_satoshis, &lock_script)
+            .await
             .expect("signing should succeed");
 
         // Now verify with Spend

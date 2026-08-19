@@ -20,6 +20,24 @@ use bsv::transaction::transaction::Transaction;
 use bsv::transaction::transaction_input::TransactionInput;
 use bsv::transaction::transaction_output::TransactionOutput;
 
+/// Resolve a future that is ready on the first poll, without a runtime.
+///
+/// [`bsv::script::templates::ScriptTemplateUnlock`] is async so that
+/// wallet-backed templates can reach a key that is not local. P2PKH's key IS
+/// local, so its future never yields and one poll finishes it. Standing up a
+/// tokio runtime per signature would put the runtime inside the measurement.
+fn now_or_never<F: std::future::Future>(fut: F) -> F::Output {
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(value) => value,
+        std::task::Poll::Pending => {
+            panic!("a local-key template must resolve without yielding")
+        }
+    }
+}
+
+
 const SCOPE: u32 = SIGHASH_ALL | SIGHASH_FORKID;
 
 /// Create a MerklePath with the standard 2-level structure used in the TS benchmarks.
@@ -83,9 +101,7 @@ fn deep_chain_sign(depth: usize) {
 
         let source_satoshis = tx.outputs[0].satoshis.unwrap();
         let source_ls = tx.outputs[0].locking_script.clone();
-        new_tx
-            .sign(0, &p2pkh, SCOPE, source_satoshis, &source_ls)
-            .unwrap();
+        now_or_never(new_tx.sign(0, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
 
         tx = new_tx;
     }
@@ -133,8 +149,7 @@ fn wide_transaction_sign(input_count: usize) {
     for i in 0..input_count {
         let source_satoshis = source_txs[i].outputs[0].satoshis.unwrap();
         let source_ls = source_txs[i].outputs[0].locking_script.clone();
-        tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)
-            .unwrap();
+        now_or_never(tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
     }
 
     let _ = tx.to_bytes().unwrap();
@@ -181,8 +196,7 @@ fn large_tx_sign(input_count: usize, output_count: usize) {
     for i in 0..input_count {
         let source_satoshis = source_txs[i].outputs[0].satoshis.unwrap();
         let source_ls = source_txs[i].outputs[0].locking_script.clone();
-        tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)
-            .unwrap();
+        now_or_never(tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
     }
 
     let _ = tx.to_bytes().unwrap();
@@ -233,8 +247,7 @@ fn nested_inputs_sign(depth: usize, fan_out: usize) {
             let source_satoshis = tx.outputs[0].satoshis.unwrap();
             let source_ls = tx.outputs[0].locking_script.clone();
             for i in 0..fan_out {
-                new_tx
-                    .sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)
+                now_or_never(new_tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls))
                     .unwrap();
             }
 
@@ -274,13 +287,13 @@ fn bench_transaction(c: &mut Criterion) {
             locking_script: locking_script.clone(),
             change: false,
         });
-        tx.sign(
+        now_or_never(tx.sign(
             0,
             &p2pkh,
             SCOPE,
             50000,
             &source_tx.outputs[0].locking_script,
-        )
+        ))
         .unwrap();
 
         let bytes = tx.to_bytes().unwrap();

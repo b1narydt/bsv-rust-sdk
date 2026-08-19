@@ -35,6 +35,8 @@ use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
 use crate::script::script::Script;
 use crate::script::script_chunk::ScriptChunk;
+use async_trait::async_trait;
+
 use crate::script::templates::ScriptTemplateUnlock;
 use crate::script::unlocking_script::UnlockingScript;
 use crate::wallet::interfaces::{CreateSignatureArgs, GetPublicKeyArgs, WalletInterface};
@@ -253,8 +255,8 @@ impl<'a, W: WalletInterface + ?Sized> PushDrop<'a, W> {
 pub enum PushDropSigner<'a, W: WalletInterface + ?Sized> {
     /// Ask the wallet when `sign` is called. This is TS's behaviour.
     ///
-    /// The wallet call is `async`, and [`ScriptTemplateUnlock::sign`] is not, so
-    /// this arm is resolved through [`PushDropUnlock::sign_async`].
+    /// The wallet call is `async`, and so is [`ScriptTemplateUnlock::sign`] —
+    /// which is why this arm is resolved there and nowhere else.
     Wallet {
         /// The wallet that produces the signature.
         wallet: &'a W,
@@ -292,32 +294,24 @@ impl<'a, W: WalletInterface + ?Sized> PushDropUnlock<'a, W> {
             sighash_type,
         }
     }
+}
 
-    /// The unlocking script for a signature this unlocker already holds.
+#[async_trait]
+impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W> {
+    /// **The one entry point.** Both arms end at the same assembly.
     ///
-    /// The MPC/HSM path: the ceremony ran once for the whole transaction, the
-    /// caller has the DER, and no wallet call may happen here. Errors on the
-    /// wallet arm, where the signature does not exist yet — use
-    /// [`Self::sign_async`].
-    pub fn unlocking_script(&self) -> Result<UnlockingScript, ScriptError> {
-        match &self.signer {
-            PushDropSigner::Signature(der) => push_drop_unlocking_script(der, self.sighash_type),
-            PushDropSigner::Wallet { .. } => Err(ScriptError::InvalidScript(
-                "PushDrop unlock: this unlocker signs through a wallet, which is async — call \
-                 sign_async(preimage), or build one over a signature you already hold with \
-                 PushDrop::unlock_with_signature"
-                    .into(),
-            )),
-        }
-    }
-
-    /// Assemble the unlocking script, resolving a wallet signer if there is one.
+    /// On the wallet arm the wallet is handed `sha256(preimage)` as `data` and
+    /// hashes once more internally, so the signed digest is `sha256d(preimage)` —
+    /// the BSV sighash. (An older revision signed a SINGLE sha256 of the
+    /// preimage, which is not a valid BSV sighash.)
     ///
-    /// The wallet is handed `sha256(preimage)` as `data` and hashes once more
-    /// internally, so the signed digest is `sha256d(preimage)` — the BSV sighash.
-    /// (An older revision signed a SINGLE sha256 of the preimage, which is not a
-    /// valid BSV sighash.)
-    pub async fn sign_async(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
+    /// On the supplied-signature arm `preimage` is unused: the signature this
+    /// unlocker holds is already over it. That arm exists so an MPC- or
+    /// HSM-backed caller — which produced its DER in a ceremony run ONCE for the
+    /// whole transaction — can hand this unlocker to
+    /// [`crate::transaction::Transaction::sign`] like any other template, instead
+    /// of restating the script format itself.
+    async fn sign(&self, preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
         let bare_der = match &self.signer {
             PushDropSigner::Signature(der) => der.clone(),
             PushDropSigner::Wallet {
@@ -353,21 +347,8 @@ impl<'a, W: WalletInterface + ?Sized> PushDropUnlock<'a, W> {
         };
         push_drop_unlocking_script(&bare_der, self.sighash_type)
     }
-}
 
-impl<W: WalletInterface + ?Sized> ScriptTemplateUnlock for PushDropUnlock<'_, W> {
-    /// Assemble the unlocking script from an already-available signature.
-    ///
-    /// `preimage` is unused: the signature this unlocker holds is already over
-    /// it. The argument stays because the trait is the seam
-    /// [`crate::transaction::Transaction::sign`] drives, and the wallet arm needs
-    /// it — which is also why the wallet arm refuses here rather than blocking on
-    /// an async call from inside a synchronous trait method.
-    fn sign(&self, _preimage: &[u8]) -> Result<UnlockingScript, ScriptError> {
-        self.unlocking_script()
-    }
-
-    fn estimate_length(&self) -> Result<usize, ScriptError> {
+    async fn estimate_length(&self) -> Result<usize, ScriptError> {
         Ok(73)
     }
 }
@@ -773,7 +754,7 @@ mod tests {
                 cpty(),
                 PushDrop::<ProtoWallet>::default_sighash_type(),
             )
-            .sign_async(b"preimage")
+            .sign(b"preimage")
             .await
             .unwrap();
 
@@ -798,7 +779,7 @@ mod tests {
 
         let from_wallet = pd
             .unlock(protocol(), "k", cpty(), scope)
-            .sign_async(b"preimage")
+            .sign(b"preimage")
             .await
             .unwrap();
 
@@ -808,15 +789,10 @@ mod tests {
         let bare_der = assembled[..assembled.len() - 1].to_vec();
 
         let supplied = PushDrop::<ProtoWallet>::unlock_with_signature(bare_der.clone(), scope);
-        // Both the sync trait method and the async resolver reach the same bytes.
         assert_eq!(
-            supplied.sign(b"ignored").unwrap().to_binary(),
+            supplied.sign(b"ignored").await.unwrap().to_binary(),
             from_wallet.to_binary(),
             "a supplied signature must assemble byte-identically to a wallet-signed one"
-        );
-        assert_eq!(
-            supplied.sign_async(b"ignored").await.unwrap().to_binary(),
-            from_wallet.to_binary()
         );
 
         // ... and identically to what the OLD hand-rolled assembly produced:
@@ -862,21 +838,36 @@ mod tests {
         assert!(push_drop_unlocking_script(&[0xde, 0xad, 0xbe, 0xef], 0x41).is_err());
     }
 
-    #[test]
-    fn estimate_length_is_73_like_every_other_port() {
+    #[tokio::test]
+    async fn estimate_length_is_73_like_every_other_port() {
         let unlocker = PushDrop::<ProtoWallet>::unlock_with_signature(vec![0x30], 0x41);
-        assert_eq!(unlocker.estimate_length().unwrap(), 73);
+        assert_eq!(unlocker.estimate_length().await.unwrap(), 73);
         assert_eq!(PushDrop::<ProtoWallet>::estimate_unlock_length(), 73);
     }
 
-    /// The wallet arm cannot run inside a synchronous trait method, and says so
-    /// instead of blocking an async runtime.
-    #[test]
-    fn the_wallet_arm_refuses_the_synchronous_trait_method() {
+    /// The point of the async trait: the wallet arm SIGNS through `sign()` —
+    /// there is no second entry point and no runtime refusal. Before the trait
+    /// was async this same call returned an error telling the caller to go use
+    /// `sign_async` instead.
+    #[tokio::test]
+    async fn the_wallet_arm_signs_through_the_trait_method() {
         let w = wallet();
         let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
-        let err = unlocker.sign(b"preimage").unwrap_err().to_string();
-        assert!(err.contains("sign_async"), "unexpected error: {err}");
+        let script = unlocker.sign(b"preimage").await.expect("wallet arm signs");
+        let data = script.chunks()[0].data.as_ref().unwrap();
+        assert_eq!(data[0], 0x30, "DER sequence");
+        assert_eq!(*data.last().unwrap(), 0x41, "sighash byte");
+    }
+
+    /// The wallet arm is reachable through `&dyn ScriptTemplateUnlock` — the way
+    /// `Transaction::sign` drives it — which a synchronous trait could not do.
+    #[tokio::test]
+    async fn the_wallet_arm_signs_through_a_trait_object() {
+        let w = wallet();
+        let unlocker = PushDrop::new(&w, None).unlock(protocol(), "k", cpty(), 0x41);
+        let as_dyn: &dyn ScriptTemplateUnlock = &unlocker;
+        assert!(as_dyn.sign(b"preimage").await.is_ok());
+        assert_eq!(as_dyn.estimate_length().await.unwrap(), 73);
     }
 
     #[test]

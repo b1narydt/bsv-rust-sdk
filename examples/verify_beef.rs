@@ -21,7 +21,8 @@ use bsv::transaction::transaction::Transaction;
 use bsv::transaction::transaction_input::TransactionInput;
 use bsv::transaction::transaction_output::TransactionOutput;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     // 1. Build a simple transaction to wrap in BEEF
     // -----------------------------------------------------------------------
@@ -57,7 +58,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sighash_type,
         source_satoshis,
         &source_locking_script,
-    )?;
+    )
+    .await?;
 
     let original_txid = tx.id()?;
     println!("Original transaction ID: {original_txid}");
