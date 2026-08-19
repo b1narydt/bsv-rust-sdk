@@ -42,16 +42,25 @@ pub trait ScriptTemplateLock {
 /// trait because [`crate::transaction::Transaction`] drives templates as
 /// `&dyn ScriptTemplateUnlock`, and native async fns are not dyn-compatible.
 ///
-/// `Send + Sync` are supertraits — as on [`crate::wallet::interfaces::WalletInterface`]
-/// — because [`crate::transaction::Transaction::sign`] takes `&dyn
-/// ScriptTemplateUnlock` and holds it across an `.await`. Without `Sync` on the
-/// trait object that reference is not `Send`, so the whole `Transaction::sign`
-/// future is not `Send`, and it cannot be awaited from any `#[async_trait]`
-/// method — which is where wallets actually sign. Every template in this crate
-/// is plain data or a borrow of a `WalletInterface`, so all of them already
-/// qualify.
+/// The trait carries NO supertraits, as in TS (`ScriptTemplateUnlock.sign`) and
+/// Go (`UnlockingScriptTemplate.Sign`), which require nothing of implementors.
+/// [`crate::transaction::Transaction::sign`] holds its template across an
+/// `.await`, and `&T` is `Send` only when `T: Sync`, so it asks for
+/// `&(dyn ScriptTemplateUnlock + Sync)` at that ONE call site — the constraint is
+/// written where it is needed rather than levied on everyone, and it no longer
+/// leaks into `Box<dyn ScriptTemplateUnlock>` or into generic code over
+/// `T: ScriptTemplateUnlock`.
+///
+/// Be aware of what this does NOT buy, though: `#[async_trait]` boxes `sign`'s
+/// future as `+ Send`, and that future captures `&self`, so EVERY implementor
+/// still has to be `Sync` — a template holding an `Rc` or a `RefCell` cannot
+/// implement `sign` no matter what the supertrait list says. Admitting one would
+/// mean `#[async_trait(?Send)]`, which makes `Transaction::sign`'s own future
+/// non-`Send` and breaks the wallets that await it from inside their own
+/// `#[async_trait]` methods. The requirement is real; it just comes from the
+/// desugaring, not from here.
 #[async_trait]
-pub trait ScriptTemplateUnlock: Send + Sync {
+pub trait ScriptTemplateUnlock {
     /// Sign a transaction input and produce an unlocking script.
     ///
     /// `preimage` carries both the sighash preimage bytes and the scope they were

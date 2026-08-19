@@ -618,10 +618,14 @@ impl Transaction {
     /// carries it, so the byte the template appends to the DER and the scope the
     /// preimage was computed under are the same value by construction; the
     /// template holds no scope of its own to disagree with.
+    /// `+ Sync` is on the trait OBJECT, not the trait: the reference is held
+    /// across the `.await`, and `&T` is `Send` only when `T: Sync`. Requiring it
+    /// of every implementor would exclude templates that are perfectly usable
+    /// single-threaded.
     pub async fn sign(
         &mut self,
         input_index: usize,
-        template: &dyn ScriptTemplateUnlock,
+        template: &(dyn ScriptTemplateUnlock + Sync),
         scope: u32,
         source_satoshis: u64,
         source_locking_script: &LockingScript,
@@ -650,7 +654,7 @@ impl Transaction {
     /// different templates or scopes per input, use the single-input `sign()`.
     pub async fn sign_all_inputs(
         &mut self,
-        template: &dyn ScriptTemplateUnlock,
+        template: &(dyn ScriptTemplateUnlock + Sync),
         scope: u32,
     ) -> Result<(), TransactionError> {
         let num_inputs = self.inputs.len();
@@ -1117,10 +1121,10 @@ mod tests {
     ///
     /// A wallet signs from inside an `#[async_trait]` method, whose future is
     /// `Send`; awaiting a non-`Send` future there does not compile. `sign` holds
-    /// `&dyn ScriptTemplateUnlock` across the await, and that reference is `Send`
-    /// only if the trait object is `Sync` — which is why `ScriptTemplateUnlock`
-    /// requires `Send + Sync`. A downstream crate found this the hard way when
-    /// the trait first went async; it is pinned here now.
+    /// its template across the await, and that reference is `Send` only if the
+    /// trait object is `Sync` — which is why `sign` asks for
+    /// `&(dyn ScriptTemplateUnlock + Sync)`. A downstream crate found this the
+    /// hard way when the trait first went async; it is pinned here now.
     #[test]
     fn signing_futures_are_send() {
         fn require_send<T: Send>(_: &T) {}
