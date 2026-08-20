@@ -174,8 +174,17 @@ impl LookupResolver {
 
     /// Resolve competent hosts for a service.
     async fn resolve_hosts(&self, service: &str) -> Result<Vec<String>, ServicesError> {
-        // SLAP service queries go directly to trackers.
-        if service == "ls_slap" {
+        // SHIP and SLAP service queries go directly to the trackers: they ARE
+        // the bootstrap oracles (TS `LookupResolver` resolves both against its
+        // tracker set). Routing `ls_ship` through SLAP discovery instead asks
+        // the network who hosts it — on mainnet that returns a single
+        // third-party registration, and every SHIP host-discovery (so every
+        // TopicBroadcaster submit) then lives or dies on that one stranger's
+        // uptime. Observed live 2026-08-19: the sole discovered host answered
+        // HTTP 500 and every broadcast failed with "All hosts failed for
+        // lookup service: ls_ship" while all four trackers served `ls_ship`
+        // correctly the whole time.
+        if service == "ls_slap" || service == "ls_ship" {
             return Ok(if self.network == Network::Local {
                 vec!["http://localhost:8080".to_string()]
             } else {
@@ -530,5 +539,22 @@ mod tests {
         assert_eq!(config.network, Network::Mainnet);
         assert_eq!(config.cache_ttl_ms, 300_000);
         assert_eq!(config.cache_max_entries, 128);
+    }
+
+    /// SHIP and SLAP both bootstrap at the trackers. Routing `ls_ship`
+    /// through SLAP discovery makes every TopicBroadcaster submit depend on
+    /// whatever single host happens to hold the network's `ls_ship`
+    /// registration (observed live: one third-party host, answering 500).
+    #[tokio::test]
+    async fn ship_and_slap_resolve_to_the_trackers_not_slap_discovery() {
+        let resolver = LookupResolver::new(LookupResolverConfig {
+            network: Network::Mainnet,
+            ..Default::default()
+        });
+        let trackers = Network::Mainnet.default_slap_trackers();
+        for service in ["ls_ship", "ls_slap"] {
+            let hosts = resolver.resolve_hosts(service).await.unwrap();
+            assert_eq!(hosts, trackers, "{service} must resolve to the trackers");
+        }
     }
 }
