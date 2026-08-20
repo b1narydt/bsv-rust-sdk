@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-19
+
+### Fixed
+
+- **`ls_ship` bootstraps at the SLAP trackers, like `ls_slap`.** The resolver
+  routed `ls_ship` through SLAP discovery — asking the network who hosts it —
+  which on mainnet returns a single third-party registration, so every SHIP
+  host-discovery (and therefore every `TopicBroadcaster` submit) lived or died
+  on one stranger's uptime. Observed live 2026-08-19: the sole discovered host
+  answered HTTP 500 and every broadcast failed with "All hosts failed for
+  lookup service: ls_ship" while all four trackers served `ls_ship` correctly
+  the whole time. TS `LookupResolver` resolves both SHIP and SLAP against its
+  tracker set; now this SDK does too. Found by the PARAGON enterprise box's
+  overlay-advert publish (rust-mpc#326).
+
 ## [0.5.0] - 2026-08-19
 
 ### Fixed
