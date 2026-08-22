@@ -1,0 +1,117 @@
+{
+  "id": "transaction.beef.invalid",
+  "name": "BEEF negative corpus (structural rejection)",
+  "brc": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "version": "1.0.0",
+  "reference_impl": "@bsv/sdk@2.3.1",
+  "parity_class": "required",
+  "generator": "conformance/vectors/beef/generator/generate_all.mjs (session scratchpad beef-vectors/, vendored alongside the vectors)",
+  "sdk_version": "2.3.1",
+  "generated_from": "TS @bsv/sdk (normative)",
+  "brc_refs": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "vectors": [
+    {
+      "id": "transaction.beef.invalid.1",
+      "name": "missing ancestor",
+      "beef_hex": "0200beef0001000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expect_reject_rule": "missing-input",
+      "ts_verdict": {
+        "parses": true,
+        "valid": false,
+        "roots": {}
+      },
+      "notes": "C spends A but A is absent and there is no bump. verifyValid must be false (sortTxs reports the missing input)."
+    },
+    {
+      "id": "transaction.beef.invalid.2",
+      "name": "bump index names non-leaf",
+      "beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011201010001000000010200000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac00000000",
+      "expect_reject_rule": "bump-leaf-mismatch",
+      "ts_verdict": {
+        "parses": true,
+        "valid": false,
+        "roots": {
+          "800000": "0803343ed63b5a71a95e2c0ce55c15b442ad1d8c7fe0dd5c453bc523b5728b7c"
+        }
+      },
+      "notes": "B claims bumpIndex 0 but bump 0 has no level-0 leaf with B's txid. TS rejects in verifyBumpIndexLeaves. Note the tx still parses and even sorts as \"proven\" — the rejection happens at verification, not parse."
+    },
+    {
+      "id": "transaction.beef.invalid.3",
+      "name": "duplicate txid",
+      "beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "expect_reject_rule": "duplicate-txid",
+      "ts_verdict": {
+        "parses": true,
+        "valid": false,
+        "roots": {}
+      },
+      "notes": "Same transaction serialized twice. Unreachable through the TS merge API (mergeRawTx replaces by txid) — hand-built bytes. verifyValid must be false."
+    },
+    {
+      "id": "transaction.beef.invalid.4",
+      "name": "txid-only spliced into V1",
+      "beef_hex": "0100beef00015ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b072",
+      "expect_reject_rule": "v1-cannot-express-txid-only",
+      "ts_verdict": {
+        "parses": false,
+        "parse_error": "Serialized transaction exceeds available BEEF data"
+      },
+      "notes": "BRC-62 V1 has no txid-only format (that is the BRC-96 V2 extension). These bytes put a bare 32-byte txid where V1 expects a raw transaction. TS verdict (parse error or misparse) recorded as truth."
+    },
+    {
+      "id": "transaction.beef.invalid.5",
+      "name": "mismatched per-height roots",
+      "beef_hex": "0200beef02fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d0112fe00350c00010200025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b07201007feb5ccebc4e4540769307d14794318bc5c87e9bd2a6811e115a24e184376ab502010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000010101000000010200000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac00000000",
+      "expect_reject_rule": "conflicting-roots-same-height",
+      "ts_verdict": {
+        "parses": true,
+        "valid": false,
+        "roots": {
+          "800000": "0803343ed63b5a71a95e2c0ce55c15b442ad1d8c7fe0dd5c453bc523b5728b7c"
+        }
+      },
+      "notes": "Two bumps at the same block height compute different merkle roots. TS accepts the first root seen for a height and rejects any bump whose root disagrees (confirmComputedRoot)."
+    },
+    {
+      "id": "transaction.beef.invalid.6",
+      "name": "trailing garbage bytes",
+      "beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011201010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000deadbeef",
+      "expect_reject_rule": "trailing-data",
+      "ts_verdict": {
+        "parses": true,
+        "valid": true,
+        "roots": {
+          "800000": "0803343ed63b5a71a95e2c0ce55c15b442ad1d8c7fe0dd5c453bc523b5728b7c"
+        }
+      },
+      "notes": "TS has TWO parsers with different verdicts, both recorded: Beef.fromBinary/fromString is a prefix parser and silently IGNORES trailing bytes (parses + verifies valid); Beef.fromBinaryView enforces exact framing and throws. Rust implementers should match the strict (fromBinaryView) behavior for wire acceptance and note the lenient path exists in TS.",
+      "ts_accepts": true,
+      "ts_from_binary_view_error": "Serialized BEEF contains trailing data"
+    },
+    {
+      "id": "transaction.beef.invalid.7",
+      "name": "atomic subject absent",
+      "beef_hex": "010101015ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b0720200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011201010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "expect_reject_rule": "atomic-subject-missing",
+      "ts_verdict": {
+        "parses": true,
+        "valid": false,
+        "roots": {},
+        "atomic_txid": "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b",
+        "is_atomic": false
+      },
+      "notes": "ATOMIC_BEEF prefix names subject B but the inner beef only contains A. Parses fine; verifyValid must be false (isAtomic check on atomicTxid fails before structural checks)."
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "id": "transaction.beef.atomic_closure",
+  "name": "BRC-95 Atomic BEEF dependency-closure serialization",
+  "brc": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "version": "1.0.0",
+  "reference_impl": "@bsv/sdk@2.3.1",
+  "parity_class": "required",
+  "generator": "conformance/vectors/beef/generator/generate_all.mjs (session scratchpad beef-vectors/, vendored alongside the vectors)",
+  "sdk_version": "2.3.1",
+  "generated_from": "TS @bsv/sdk (normative)",
+  "brc_refs": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "vectors": [
+    {
+      "id": "transaction.beef.atomic_closure.1",
+      "name": "single tx with bump",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011201010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "subject_txid": "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+      "notes": "Minimal atomic BEEF: subject is directly proven; expected output = ATOMIC prefix + subject txid (reversed on wire) + V2 beef with 1 bump, 1 tx.",
+      "expected_atomic_hex": "01010101b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011201010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 1
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.2",
+      "name": "two-tx chain canonical order",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "subject_txid": "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+      "notes": "Subject C spends proven ancestor A; closure = {A, C}. Ancestor serialized before dependent.",
+      "expected_atomic_hex": "01010101ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 2
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.3",
+      "name": "unsorted input ancestor after subject",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "subject_txid": "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+      "notes": "Input bytes deliberately place the dependent C before its ancestor A. TS derives the closure from txids (not array position) and re-sorts before serializing, so the expected atomic output is byte-identical to the canonical-order case.",
+      "expected_atomic_hex": "01010101ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 2
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.4",
+      "name": "unrelated transactions dropped",
+      "input_beef_hex": "0200beef02fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d0112fe01350c00010200025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b07201004ec2d14589589d240b1238920d96066164d5927301a0f1230e659a32040133cf03010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000010101000000010200000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "subject_txid": "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+      "notes": "Input carries unrelated proven tx B and its bump. BRC-95 closure for subject C = {A, C}; B and its bump must not appear in the atomic output.",
+      "expected_atomic_hex": "01010101ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 2
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.5",
+      "name": "bump prune and reindex",
+      "input_beef_hex": "0200beef02fe02350c0001020002b386cee19c47d83eeca86a0f79126d482e802485a2aff97763cdc29165f4c2080100293b36b5fc13d1272de4bddb9b84f2c68b082d6f3431877b26dbecfc84c4db33fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010300000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a9147dd65592d0ab2fe0d0257d571abf032cd9db93dc88ac00000000010101000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "subject_txid": "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+      "notes": "Input bumps: [bumpU (index 0, unreferenced by closure), bumpA (index 1)]. TS prunes the unreferenced bump and re-derives indexes: in the atomic output A references bump index 0.",
+      "expected_atomic_hex": "01010101ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 2
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.6",
+      "name": "subject is txid-only",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011202025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b072010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "subject_txid": "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b",
+      "notes": "TS behavior (captured as truth): a txid-only subject IS serializable as atomic. Closure = just the txid-only entry (dependency walk stops at txid-only); output = ATOMIC prefix + txid + V2 beef with 0 bumps and 1 TXID_ONLY tx. isAtomic()=true but verifyValid(false)=false (txid-only not allowed); verifyValid(true)=true.",
+      "expected_atomic_hex": "010101015ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b0720200beef0001025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b072",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": false,
+        "bump_count": 0,
+        "tx_count": 1,
+        "verify_valid_allow_txid_only": true
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.7",
+      "name": "three-deep chain",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "subject_txid": "8df6030105407c761ec636ac6d3fb81bf57f364b457e4542dbdc7899daf284e5",
+      "notes": "Subject D -> C -> A(proven). Closure = all three, topologically sorted ancestors-first.",
+      "expected_atomic_hex": "01010101e584f2da9978dcdb42457e454b367ff51bb83f6dac36c61e767c40050103f68d0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 3
+      }
+    },
+    {
+      "id": "transaction.beef.atomic_closure.8",
+      "name": "diamond dependency",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011204010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0120030000000000001976a914185140bb54704a9e735016faa7a8dbee4449bddc88ac00000000000100000002ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffffbb1046325477d6963b0273aa500b1d4eb574b1cdd838ee328006759a0c3bfa720000000048483045022100cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0220dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd01ffffffff01bc020000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "subject_txid": "5727670fc01385dc00f991a94764d0bb18b97457a69c41cd1936766296c664bb",
+      "notes": "E spends both C and C2, which both spend A. Closure = {A, C, C2, E}; shared ancestor A appears exactly once.",
+      "expected_atomic_hex": "01010101bb64c69662763619cd419ca65774b918bbd06447a991f900dc8513c00f6727570200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011204010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0120030000000000001976a914185140bb54704a9e735016faa7a8dbee4449bddc88ac00000000000100000002ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffffbb1046325477d6963b0273aa500b1d4eb574b1cdd838ee328006759a0c3bfa720000000048483045022100cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0220dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd01ffffffff01bc020000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 4
+      }
+    }
+  ]
+}

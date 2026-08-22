@@ -1,0 +1,75 @@
+{
+  "id": "transaction.beef.spend_closure",
+  "name": "Spend closure (rust-mpc#352 regression shape)",
+  "brc": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "version": "1.0.0",
+  "reference_impl": "@bsv/sdk@2.3.1",
+  "parity_class": "required",
+  "generator": "conformance/vectors/beef/generator/generate_all.mjs (session scratchpad beef-vectors/, vendored alongside the vectors)",
+  "sdk_version": "2.3.1",
+  "generated_from": "TS @bsv/sdk (normative)",
+  "brc_refs": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "vectors": [
+    {
+      "id": "transaction.beef.spend_closure.1",
+      "name": "parent proven with bump",
+      "input_beef_hex": "0200beef01fe00350c0001020002e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea3010010e04b8809d7465307e200f62956e49ead59e10180d5844aeb26c628560b7ca102010001000000010500000000000000000000000000000000000000000000000000000000000000000000000151ffffffff02000000000000000015006a1270617261676f6e2d746f6b656e2d6d696e74b0040000000000001976a9144747e8746cddb33b0f7f95a90f89f89fb387cbb688ac00000000000100000001e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea30100000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff014c040000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "subject_txid": "e1611a81ff32e1321168b9db3092da41f0e2314d1ef558ee12b5442e699664c4",
+      "notes": "Parent is a minted-token-shaped tx (OP_RETURN + P2PKH outputs) with a BUMP; child spends parent P2PKH output (vout 1). Expected Atomic BEEF for the child = {parent, child} closure. graph_route replays the same expectation through Transaction.sourceTransaction/merklePath + mergeTransaction (the #352 call shape).",
+      "expected_atomic_hex": "01010101c46496692e44b512ee58f51e4d31e2f041da9230dbb9681132e132ff811a61e10200beef01fe00350c0001020002e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea3010010e04b8809d7465307e200f62956e49ead59e10180d5844aeb26c628560b7ca102010001000000010500000000000000000000000000000000000000000000000000000000000000000000000151ffffffff02000000000000000015006a1270617261676f6e2d746f6b656e2d6d696e74b0040000000000001976a9144747e8746cddb33b0f7f95a90f89f89fb387cbb688ac00000000000100000001e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea30100000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff014c040000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 2
+      },
+      "graph_route": {
+        "matches_expected": true
+      }
+    },
+    {
+      "id": "transaction.beef.spend_closure.2",
+      "name": "parent unproven grandparent proven",
+      "input_beef_hex": "0200beef01fe01350c0001020002f91f01befaa4e86d6c10830aa6b7df5686c10e0924b69f90806aac7f0e29dd01010028d82f90cac55206067650e7e9eed6f9fa2f5b4fa69ab57865dece0b7b4ce2fe03010001000000010600000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01d0070000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000000100000001f91f01befaa4e86d6c10830aa6b7df5686c10e0924b69f90806aac7f0e29dd010000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff01dc050000000000001976a9144747e8746cddb33b0f7f95a90f89f89fb387cbb688ac000000000001000000018fc443dd99c3fa9a3127fff730ba7af608420814efb78c6977f3373594f69f110000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0178050000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "subject_txid": "bc23fb56160df00e8953f5048f26e4fba54aa2da128f5c3c18c3ea023b180c8c",
+      "notes": "3-deep chain: grandparent proven by BUMP, parent unproven, child spends parent. Closure must include all three transactions and the single bump.",
+      "expected_atomic_hex": "010101018c0c183b02eac3183c5c8f12daa24aa5fbe4268f04f553890ef00d1656fb23bc0200beef01fe01350c0001020002f91f01befaa4e86d6c10830aa6b7df5686c10e0924b69f90806aac7f0e29dd01010028d82f90cac55206067650e7e9eed6f9fa2f5b4fa69ab57865dece0b7b4ce2fe03010001000000010600000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01d0070000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000000100000001f91f01befaa4e86d6c10830aa6b7df5686c10e0924b69f90806aac7f0e29dd010000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff01dc050000000000001976a9144747e8746cddb33b0f7f95a90f89f89fb387cbb688ac000000000001000000018fc443dd99c3fa9a3127fff730ba7af608420814efb78c6977f3373594f69f110000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0178050000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": true,
+        "bump_count": 1,
+        "tx_count": 3
+      },
+      "graph_route": {
+        "matches_expected": true
+      }
+    },
+    {
+      "id": "transaction.beef.spend_closure.3",
+      "name": "parent missing",
+      "input_beef_hex": "0200beef0001000100000001e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea30100000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff014c040000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "subject_txid": "e1611a81ff32e1321168b9db3092da41f0e2314d1ef558ee12b5442e699664c4",
+      "notes": "TS behavior captured as truth: toBinaryAtomic does NOT error when the subject's parent is absent — it emits an atomic BEEF containing only the child (the dependency walk simply finds nothing to include). The result claims atomicity (isAtomic=true: every contained tx is in the subject's graph) but verifyValid=false (missing input, no proof). Rust must not treat toBinaryAtomic success as proof of a complete closure. graph_route: mergeTransaction of a child with no sourceTransaction likewise merges only the child.",
+      "expected_atomic_hex": "01010101c46496692e44b512ee58f51e4d31e2f041da9230dbb9681132e132ff811a61e10200beef0001000100000001e11312cdd72d31a06aeb804419b496009a9c6cf4a9e2e4dd774c810cff647ea30100000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff014c040000000000001976a9147fda9cf020c16cacf529c87d8de89bfc70b8c9cb88ac00000000",
+      "expected_verdict": {
+        "is_atomic": true,
+        "verify_valid": false,
+        "bump_count": 0,
+        "tx_count": 1
+      },
+      "graph_route": {
+        "matches_expected": true
+      }
+    }
+  ]
+}

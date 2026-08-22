@@ -1,0 +1,15 @@
+{
+  "generator": "conformance/vectors/beef/generator/generate_all.mjs (session scratchpad beef-vectors/, vendored alongside the vectors)",
+  "sdk_version": "2.3.1",
+  "generated_from": "TS @bsv/sdk (normative)",
+  "brc_refs": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "surprises": [
+    "invalid corpus case \"trailing garbage bytes\" is ACCEPTED by TS verifyValid \u2014 recorded as truth",
+    "beef_merge.json expected_merged_hex is NOT serialize-stable under TS itself (parse->toBinary shifts txid-only placement); consumers must compare merge results STRUCTURALLY (tx set, bump set, category), never byte-equal"
+  ]
+}

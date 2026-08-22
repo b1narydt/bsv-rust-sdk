@@ -1,0 +1,120 @@
+{
+  "id": "transaction.beef.sort_order",
+  "name": "BEEF sortTxs ordering and partition results",
+  "brc": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "version": "1.0.0",
+  "reference_impl": "@bsv/sdk@2.3.1",
+  "parity_class": "required",
+  "generator": "conformance/vectors/beef/generator/generate_all.mjs (session scratchpad beef-vectors/, vendored alongside the vectors)",
+  "sdk_version": "2.3.1",
+  "generated_from": "TS @bsv/sdk (normative)",
+  "brc_refs": [
+    "BRC-62",
+    "BRC-74",
+    "BRC-95",
+    "BRC-96"
+  ],
+  "vectors": [
+    {
+      "id": "transaction.beef.sort_order.1",
+      "name": "already sorted chain",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_serialized_hex_after_sort": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "sort_result": {
+        "missingInputs": [],
+        "notValid": [],
+        "txidOnly": [],
+        "valid": [
+          "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+          "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+          "8df6030105407c761ec636ac6d3fb81bf57f364b457e4542dbdc7899daf284e5"
+        ],
+        "withMissingInputs": []
+      },
+      "notes": "Input already in dependency order; sort is a no-op on the byte level."
+    },
+    {
+      "id": "transaction.beef.sort_order.2",
+      "name": "reversed chain",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "expected_serialized_hex_after_sort": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "sort_result": {
+        "missingInputs": [],
+        "notValid": [],
+        "txidOnly": [],
+        "valid": [
+          "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+          "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+          "8df6030105407c761ec636ac6d3fb81bf57f364b457e4542dbdc7899daf284e5"
+        ],
+        "withMissingInputs": []
+      },
+      "notes": "Input in exactly reversed dependency order (D, C, A). Sorted output places proven A first, then C, then D."
+    },
+    {
+      "id": "transaction.beef.sort_order.3",
+      "name": "missing input",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac000000000001000000015ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b0720000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff01f4010000000000001976a9145dedfbf9ea599dd4e3ca6a80b333c472fd0b3f6988ac00000000",
+      "expected_serialized_hex_after_sort": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d0112030001000000015ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b0720000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff01f4010000000000001976a9145dedfbf9ea599dd4e3ca6a80b333c472fd0b3f6988ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "sort_result": {
+        "missingInputs": [
+          "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b"
+        ],
+        "notValid": [],
+        "txidOnly": [],
+        "valid": [
+          "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+          "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae"
+        ],
+        "withMissingInputs": [
+          "813278c32d66006e9772d728429bdcf670e2da0bdbc15c97703cfe34ab486566"
+        ]
+      },
+      "notes": "Third tx spends absent parent B. sort_result.missingInputs names the absent parent txid; withMissingInputs names the orphan tx. TS serializes unsortable txs FIRST, then sorted valid txs."
+    },
+    {
+      "id": "transaction.beef.sort_order.4",
+      "name": "txid-only entry",
+      "input_beef_hex": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b072000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "expected_serialized_hex_after_sort": "0200beef01fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d011203025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b072010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "sort_result": {
+        "missingInputs": [],
+        "notValid": [],
+        "txidOnly": [
+          "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b"
+        ],
+        "valid": [
+          "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+          "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b",
+          "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae"
+        ],
+        "withMissingInputs": []
+      },
+      "notes": "BRC-96 txid-only entry sorts into the txidOnly partition (after unsortable, before proven/sorted). txid-only with no inputs is treated as valid for ordering purposes."
+    },
+    {
+      "id": "transaction.beef.sort_order.5",
+      "name": "interleaved proven families",
+      "input_beef_hex": "0200beef02fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d0112fe01350c00010200025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b07201004ec2d14589589d240b1238920d96066164d5927301a0f1230e659a32040133cf04000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000010101000000010200000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000",
+      "expected_serialized_hex_after_sort": "0200beef02fe00350c0001020002b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf92010097c28a5f10d86426c044e5a1353ba2d0874604c3ebe8ea7cf47c4bf72a5d0112fe01350c00010200025ba4d651cf4b1ac12c4b3d046aa2e1cd284f1f7b263e262cb99741697020b07201004ec2d14589589d240b1238920d96066164d5927301a0f1230e659a32040133cf04010101000000010200000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac00000000010001000000010100000000000000000000000000000000000000000000000000000000000000000000000151ffffffff01e8030000000000001976a914751e76e8199196d454941c45d1b3a323f1433bd688ac00000000000100000001b677a38b2b9f66a72de8be9f8f78940a48d2dac77050443f51aef19c0fffaf920000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0184030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000000100000001ae38b44c007b818c771fb3b5c45dbfcabe92e283d5fb2cc09becdd3399439a520000000048483045022100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01ffffffff0152030000000000001976a914b46abf4d9e1746e33bcc39cea3de876c29c4adf388ac00000000",
+      "sort_result": {
+        "missingInputs": [],
+        "notValid": [],
+        "txidOnly": [],
+        "valid": [
+          "72b02070694197b92c263e267b1f4f28cde1a26a043d4b2cc11a4bcf51d6a45b",
+          "92afff0f9cf1ae513f445070c7dad2480a94788f9fbee82da7669f2b8ba377b6",
+          "529a439933ddec9bc02cfbd583e292becabf5dc4b5b31f778c817b004cb438ae",
+          "8df6030105407c761ec636ac6d3fb81bf57f364b457e4542dbdc7899daf284e5"
+        ],
+        "withMissingInputs": []
+      },
+      "notes": "Two independent proven roots (A, B) with a dependent chain on A, interleaved. Pins the exact deterministic order TS emits after sort."
+    }
+  ]
+}
