@@ -110,44 +110,31 @@ fn validate_protocol_id(protocol: &crate::wallet::types::Protocol) -> Result<(),
     Ok(())
 }
 
+/// Basket names validate to REFERENCE parity (the TS SDK's `validateBasket` →
+/// `validateIdentifier(s, 'basket', 1, 300)`): trim, lowercase, 1..=300 bytes —
+/// and nothing else.
+///
+/// Everything this function used to add on top — the `[a-z0-9 ]` charset, the
+/// consecutive-space rule, the `basket` suffix, the `admin` prefix, the `p `
+/// namespace — exists in NO other implementation's argument validation: the TS
+/// SDK accepts `atlas-conformance`, `admin tools` and `my-basket` at this
+/// layer, and reserved-name enforcement (admin baskets, special operations)
+/// lives in the permission/storage layers that own those reservations. Each
+/// extra rule here made this SDK refuse wire traffic every other wallet
+/// already speaks — the same defect the `p`-prefix correction above fixed for
+/// protocols (rust-mpc#300: `listOutputs {basket: "atlas-conformance"}`
+/// answered 400 where the reference answers 200).
+///
+/// The ONE local reservation kept is `default`: the toolbox's own change
+/// basket, which an action must not claim deposits into. It is a
+/// toolbox-integrity rule, not BRC-100 grammar, and it is documented as such.
 fn validate_basket_name(s: &str) -> Result<(), WalletError> {
     let normalized = normalize_identifier(s);
-    validate_string_length(&normalized, "basket", 5, 300)?;
-    // BRC-100: must only contain lowercase letters, numbers, and spaces
-    if !normalized
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ')
-    {
-        return Err(invalid(
-            "basket",
-            "only lowercase letters, numbers, and spaces",
-        ));
-    }
-    // BRC-100: must not contain consecutive spaces
-    if normalized.contains("  ") {
-        return Err(invalid("basket", "free of consecutive spaces"));
-    }
-    // BRC-100: must not end with "basket"
-    if normalized.ends_with("basket") {
-        return Err(invalid("basket", "not ending with 'basket'"));
-    }
-    // BRC-100: must not start with "admin"
-    if normalized.starts_with("admin") {
-        return Err(invalid("basket", "not starting with 'admin'"));
-    }
-    // BRC-100: must not be "default"
+    validate_string_length(&normalized, "basket", 1, 300)?;
+    // Toolbox integrity (NOT reference grammar): "default" is the wallet's own
+    // change basket; claiming it names storage the wallet manages itself.
     if normalized == "default" {
         return Err(invalid("basket", "not 'default'"));
-    }
-    // Same correction as `validate_protocol_id`: the reserved namespace is the
-    // standalone token "p" (`p <something>`), not every basket whose name happens to
-    // begin with the letter p. The bare `starts_with('p')` check rejected ordinary
-    // names — "payments", "presigs" — for no reason any other implementation shares.
-    if normalized == "p" || normalized.starts_with("p ") {
-        return Err(invalid(
-            "basket",
-            "not in the reserved 'p' namespace (a name of the form `p <...>`)",
-        ));
     }
     Ok(())
 }
@@ -605,15 +592,35 @@ mod tests {
         assert!(validate_protocol_id(&proto("p 1 bar")).is_err());
     }
 
-    /// Same correction on baskets.
+    /// Basket names are validated to REFERENCE parity: everything the TS SDK's
+    /// `validateIdentifier(s, 'basket', 1, 300)` accepts is accepted here —
+    /// hyphens included (the rust-mpc#300 conformance basket), short names,
+    /// `admin`-prefixed and `p`-namespace names whose reservations belong to
+    /// the permission layer, not to argument grammar.
     #[test]
-    fn basket_names_beginning_with_the_letter_p_are_allowed() {
-        for name in ["payments", "presigs", "paragon tokens"] {
+    fn basket_names_validate_to_reference_parity() {
+        for name in [
+            "payments",
+            "presigs",
+            "paragon tokens",
+            "atlas-conformance",
+            "todo tokens",
+            "x",
+            "p foo",
+            "admin tools",
+            "my basket",
+            "two  spaces",
+        ] {
             validate_basket_name(name)
                 .unwrap_or_else(|e| panic!("{name:?} must be a valid basket, got: {e}"));
         }
-        // ...and the reserved namespace still is not.
-        assert!(validate_basket_name("p foo").is_err());
+        // The bounds the reference DOES state still hold…
+        assert!(validate_basket_name("").is_err(), "1..=300 bytes");
+        assert!(validate_basket_name(&"x".repeat(301)).is_err());
+        // …and the one local toolbox-integrity reservation: the wallet's own
+        // change basket is not claimable, however it is spelled on the wire.
+        assert!(validate_basket_name("default").is_err());
+        assert!(validate_basket_name("  Default ").is_err());
     }
 
     fn test_pubkey() -> crate::primitives::public_key::PublicKey {
