@@ -96,18 +96,21 @@ impl BeefParty {
         Ok(pruned)
     }
 
-    /// Merge another Beef into this BeefParty's beef.
-    ///
-    /// Routes through `Beef::merge_beef`, so bumps dedupe by (height, root)
-    /// and every merged transaction's `bump_index` is re-derived against
-    /// this beef's bumps array. Copying `other`'s entries verbatim would
-    /// carry `bump_index` values that point into `other`'s array, not ours.
+    /// Merge another Beef into this BeefParty's beef through
+    /// `Beef::merge_beef`: bumps dedupe by (height, root) and every merged
+    /// transaction's `bump_index` is re-derived against this beef's bumps,
+    /// since an index is only meaningful within the array it came from.
     pub fn merge(&mut self, other: &Beef) -> Result<(), TransactionError> {
         self.beef.merge_beef(other)
     }
 
     /// Merge a beef received from `party`, recording every transaction the
     /// beef proves (or chains to a proof) as known to that party.
+    ///
+    /// `other` is read, not reordered: TS `mergeBeefFromParty` collects the
+    /// known txids through `getValidTxids`, which sorts the incoming beef in
+    /// place. The merged bytes are the same either way; only `other.txs`'s
+    /// array order differs afterwards.
     pub fn merge_beef_from_party(
         &mut self,
         party: &str,

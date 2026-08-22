@@ -418,11 +418,9 @@ impl Beef {
         })
     }
 
-    /// True iff some txid appears more than once in `txs`.
-    ///
-    /// Unreachable through the merge API (which replaces by txid) but a
-    /// hand-built or hostile serialization can carry one; `verify_valid`
-    /// rejects it.
+    /// True iff some txid appears more than once in `txs`. The merge API
+    /// replaces by txid, so only a serialization can carry a duplicate;
+    /// `verify_valid` rejects it.
     pub fn has_duplicate_txids(&self) -> bool {
         let mut seen = HashSet::new();
         self.txs.iter().any(|btx| !seen.insert(btx.txid.as_str()))
@@ -773,6 +771,9 @@ impl Beef {
 
     /// Txids of every transaction that has a proof, is an input-less
     /// txid-only entry, or chains back to one (the `valid` partition).
+    ///
+    /// Does not reorder `txs`; TS `getValidTxids` sorts in place as a side
+    /// effect.
     pub fn get_valid_txids(&self) -> Vec<String> {
         self.compute_sort_order().1.valid
     }
@@ -944,7 +945,8 @@ impl Beef {
     // Validation
     // ------------------------------------------------------------------
 
-    /// Structural validity (no merkle-root confirmation), sorting first.
+    /// Structural validity (no merkle-root confirmation), evaluated over the
+    /// dependency order without reordering `txs`.
     ///
     /// Valid iff: an Atomic subject, if recorded, closes over every
     /// transaction; no txid repeats; every transaction has a proof or
@@ -957,6 +959,11 @@ impl Beef {
     /// `roots` carries the per-height merkle roots for a chain tracker to
     /// confirm. Errors come only from malformed merkle paths whose root
     /// cannot be computed at all.
+    ///
+    /// This does not mutate the beef. TS `verifyValid` calls `sortTxs()` on
+    /// the way in, so a TS caller's next `toBinary` emits sorted bytes; a
+    /// parsed beef verified here still serializes in its parsed order
+    /// until something is merged or [`Beef::sort_txs`] is called.
     pub fn verify_valid(
         &self,
         allow_txid_only: bool,
@@ -1048,7 +1055,8 @@ impl Beef {
         Ok(r)
     }
 
-    /// [`Beef::verify_valid`] reduced to its verdict.
+    /// [`Beef::verify_valid`] reduced to its verdict. Does not reorder `txs`
+    /// (TS `isValid` does, through `sortTxs`).
     pub fn is_valid(&self, allow_txid_only: bool) -> Result<bool, TransactionError> {
         Ok(self.verify_valid(allow_txid_only)?.valid)
     }
