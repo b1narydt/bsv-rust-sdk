@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-22
+
 ### Fixed
 
 - **`Beef::to_binary_atomic` emits the BRC-95 dependency closure, byte-exact with TS.** It truncated `txs` after the subject in insertion order — keeping unrelated transactions that happened to precede the subject, silently dropping an ancestor merged after it, and carrying every bump whether referenced or not (the rust-mpc#352 shape; rust-wallet-toolbox's `serialize_beef_atomic` now delegates here). The walk now follows `input_txids` from the subject (derived from txids, not array position, so an unsorted beef gives the same bytes as a sorted one), stops at bump-proven or txid-only entries, drops everything else, prunes unreferenced bumps and re-indexes the survivors in first-use order, and writes the inner BEEF in dependency order. Byte-exact against every case of `test-vectors/beef_atomic_closure.json` and `beef_spend_closure.json`. Success is not a completeness guarantee: a subject whose parent is absent serializes as an Atomic BEEF of just the subject (TS does the same); `verify_valid` on the result is what reports the gap. (#44)
