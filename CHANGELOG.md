@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `proto_wallet::RevealSpecificResult::counterparty` and `wallet::interfaces::RevealSpecificKeyLinkageResult::counterparty` now use `Counterparty` instead of `PublicKey`, so reveal-specific results can preserve every legal BRC-100 `WalletCounterparty`. Serde encodes the field as the string `"self"`, the string `"anyone"`, or the 33-byte compressed public key as hex. Callers that previously used or matched the `PublicKey` directly must now match `counterparty.counterparty_type` and read `counterparty.public_key` for the `CounterpartyType::Other` case.
 - **Breaking:** `Beef` carries a private field (the TS `needsSort` flag), so it can no longer be built with a struct literal — use `Beef::new(version)` and assign `bumps`/`txs` or use the merge API. Known literal sites: rust-mpc `mpc-cosigner-core/src/ops/revocation_proof.rs` (tests) and `bins/enterprise-wallet/tests/enterprise_box_e2e.rs`. (#44)
 - **Breaking:** `Beef::sort_txs` returns `BeefSortResult` instead of `()`; callers that ignore the value keep compiling. (#44)
 - `BeefTx::from_tx` identifies an input by hashing its `source_transaction` when `source_txid` is absent (TS `materializeSourceTXIDs`). (#44)
