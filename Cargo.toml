@@ -98,6 +98,10 @@ name = "wallet_client_action"
 required-features = ["network"]
 
 [[example]]
+name = "overlay_probe"
+required-features = ["network"]
+
+[[example]]
 name = "token_lifecycle"
 required-features = ["network"]
 

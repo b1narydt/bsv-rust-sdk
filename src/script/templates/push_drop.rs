@@ -27,9 +27,7 @@
 use crate::primitives::hash::sha256;
 use crate::primitives::public_key::PublicKey;
 use crate::primitives::signature::Signature;
-use crate::primitives::transaction_signature::{
-    TransactionSignature, SIGHASH_ALL, SIGHASH_FORKID,
-};
+use crate::primitives::transaction_signature::{TransactionSignature, SIGHASH_ALL, SIGHASH_FORKID};
 use crate::script::error::ScriptError;
 use crate::script::locking_script::LockingScript;
 use crate::script::op::Op;
@@ -530,8 +528,8 @@ fn decode_field(chunk: &ScriptChunk) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::sighash_preimage::test_support::preimage_under;
     use crate::primitives::private_key::PrivateKey;
+    use crate::transaction::sighash_preimage::test_support::preimage_under;
     use crate::wallet::proto_wallet::ProtoWallet;
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -768,11 +766,7 @@ mod tests {
             .await
             .expect("signing should succeed");
 
-        let script_sig = tx.inputs[0]
-            .unlocking_script
-            .as_ref()
-            .unwrap()
-            .chunks()[0]
+        let script_sig = tx.inputs[0].unlocking_script.as_ref().unwrap().chunks()[0]
             .data
             .clone()
             .unwrap();
@@ -786,7 +780,11 @@ mod tests {
 
         // (b) the signature commits to the preimage computed under that SAME scope.
         let preimage = tx.sighash_preimage(0, scope, 1_000, &lock).unwrap();
-        assert_eq!(preimage.scope(), scope, "the preimage reports its own scope");
+        assert_eq!(
+            preimage.scope(),
+            scope,
+            "the preimage reports its own scope"
+        );
         let sk = KeyDeriver::new(PrivateKey::from_bytes(&[0x55u8; 32]).unwrap())
             .derive_private_key(&protocol(), "k", &cpty())
             .unwrap();
@@ -794,7 +792,8 @@ mod tests {
             .unwrap()
             .to_der();
         assert_eq!(
-            der, &expected[..],
+            der,
+            &expected[..],
             "the signature must be over the preimage its own sighash byte names"
         );
 

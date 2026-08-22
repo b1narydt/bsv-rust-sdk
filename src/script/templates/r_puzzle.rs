@@ -203,15 +203,11 @@ impl ScriptTemplateUnlock for RPuzzle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
-    use crate::transaction::sighash_preimage::test_support::preimage_under;
     use crate::primitives::base_point::BasePoint;
     use crate::primitives::big_number::Endian;
     use crate::primitives::hash::sha256;
-
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
+    use crate::primitives::transaction_signature::{SIGHASH_ALL, SIGHASH_FORKID};
+    use crate::transaction::sighash_preimage::test_support::preimage_under;
 
     // -----------------------------------------------------------------------
     // RPuzzle lock: Raw type produces correct extraction opcodes
@@ -312,7 +308,9 @@ mod tests {
         // Use raw R-value as the puzzle value
         let rp = RPuzzle::from_k(RPuzzleType::Raw, r_bytes, k, key);
 
-        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
+        let unlock_script = rp
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
 
         let sig_data = unlock_script.chunks()[0].data.as_ref().unwrap();
@@ -348,7 +346,9 @@ mod tests {
         );
 
         // Unlock should produce a valid signature
-        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
+        let unlock_script = rp
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
 
         // Extract R from the produced signature's DER encoding
@@ -409,7 +409,9 @@ mod tests {
         assert_eq!(embedded_hash, &r_hash.to_vec());
 
         // Unlock should work
-        let unlock_script = rp.unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID)).unwrap();
+        let unlock_script = rp
+            .unlock(&preimage_under(SIGHASH_ALL | SIGHASH_FORKID))
+            .unwrap();
         assert_eq!(unlock_script.chunks().len(), 1);
     }
 

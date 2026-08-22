@@ -36,7 +36,6 @@ fn now_or_never<F: std::future::Future>(fut: F) -> F::Output {
     }
 }
 
-
 const SCOPE: u32 = SIGHASH_ALL | SIGHASH_FORKID;
 const CHAIN_DEPTH: usize = 200;
 
@@ -114,10 +113,11 @@ fn build_chain(depth: usize) -> (Vec<Transaction>, String, MerklePath) {
     (all_txs, final_txid, merkle_path)
 }
 
-/// Build a Beef struct from a chain of transactions in Atomic BEEF format.
-fn build_atomic_beef(all_txs: &[Transaction], final_txid: &str, merkle_path: &MerklePath) -> Beef {
+/// Build a Beef holding the whole chain; `to_binary_atomic(final_txid)`
+/// frames it as Atomic BEEF (the prefix is a serialization choice, not
+/// beef state).
+fn build_chain_beef(all_txs: &[Transaction], merkle_path: &MerklePath) -> Beef {
     let mut beef = Beef::new(BEEF_V1);
-    beef.atomic_txid = Some(final_txid.to_string());
 
     // Add the merkle path for the base (proven) transaction
     beef.bumps.push(merkle_path.clone());
@@ -137,12 +137,10 @@ fn bench_atomic_beef(c: &mut Criterion) {
     // Build the chain once (expensive setup)
     let (all_txs, final_txid, merkle_path) = build_chain(CHAIN_DEPTH);
 
-    // Build atomic BEEF
-    let beef = build_atomic_beef(&all_txs, &final_txid, &merkle_path);
+    let beef = build_chain_beef(&all_txs, &merkle_path);
 
     // Serialize once for setup
-    let mut serialized = Vec::new();
-    beef.to_binary(&mut serialized).unwrap();
+    let serialized = beef.to_binary_atomic(&final_txid).unwrap();
 
     // Correctness: round-trip preserves data
     {
@@ -160,8 +158,7 @@ fn bench_atomic_beef(c: &mut Criterion) {
         );
 
         // Re-serialize and compare bytes
-        let mut reserialized = Vec::new();
-        deserialized.to_binary(&mut reserialized).unwrap();
+        let reserialized = deserialized.to_binary_atomic(&final_txid).unwrap();
         assert_eq!(
             serialized, reserialized,
             "double round-trip must produce identical bytes"
@@ -173,11 +170,7 @@ fn bench_atomic_beef(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("to_atomic_beef", |b| {
-        b.iter(|| {
-            let mut buf = Vec::with_capacity(serialized.len());
-            beef.to_binary(&mut buf).unwrap();
-            buf
-        })
+        b.iter(|| beef.to_binary_atomic(&final_txid).unwrap())
     });
 
     group.bench_function("from_atomic_beef", |b| {

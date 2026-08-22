@@ -54,13 +54,6 @@ fn self_counterparty() -> Counterparty {
     }
 }
 
-fn anyone_counterparty() -> Counterparty {
-    Counterparty {
-        counterparty_type: CounterpartyType::Anyone,
-        public_key: None,
-    }
-}
-
 fn uninit_counterparty() -> Counterparty {
     Counterparty {
         counterparty_type: CounterpartyType::Uninitialized,
@@ -812,7 +805,7 @@ fn fails_constant_time_hmac_validation_for_wrong_same_length_hmac() {
 
     // Create a wrong HMAC with same length
     let mut wrong = correct_hmac.clone();
-    wrong[0] = (wrong[0].wrapping_add(1)) & 0xff;
+    wrong[0] = wrong[0].wrapping_add(1);
 
     let valid = counterparty_wallet
         .verify_hmac_sync(

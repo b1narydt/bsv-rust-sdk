@@ -127,7 +127,10 @@ impl WalletInterface for MockWallet {
             encrypted_linkage_proof: vec![10, 11],
             prover: pk.clone(),
             verifier: pk.clone(),
-            counterparty: pk,
+            counterparty: Counterparty {
+                counterparty_type: CounterpartyType::Other,
+                public_key: Some(pk),
+            },
             protocol_id: Protocol {
                 security_level: 2,
                 protocol: "test".to_string(),
@@ -287,7 +290,7 @@ impl WalletInterface for MockWallet {
 
     async fn get_header_for_height(
         &self,
-        args: GetHeaderArgs,
+        _args: GetHeaderArgs,
         _originator: Option<&str>,
     ) -> Result<GetHeaderResult, WalletError> {
         Ok(GetHeaderResult {

@@ -2287,8 +2287,9 @@ pub struct RevealSpecificKeyLinkageResult {
     pub prover: PublicKey,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,
-    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
-    pub counterparty: PublicKey,
+    /// The counterparty exactly as supplied, encoded as `"self"`, `"anyone"`,
+    /// or compressed public-key hex.
+    pub counterparty: Counterparty,
     #[cfg_attr(feature = "serde", serde(rename = "protocolID"))]
     pub protocol_id: Protocol,
     #[cfg_attr(feature = "serde", serde(rename = "keyID"))]
@@ -2835,6 +2836,69 @@ mod certificate_serde_tests {
         assert_eq!(back.revocation_outpoint, cert.revocation_outpoint);
         assert_eq!(back.fields, cert.fields);
         assert_eq!(back.signature, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod reveal_specific_key_linkage_serde_tests {
+    use super::*;
+    use crate::primitives::private_key::PrivateKey;
+    use crate::wallet::types::CounterpartyType;
+
+    // Produced by @bsv/sdk 2.4.1 under Node 22 from
+    // `JSON.parse(JSON.stringify(await new ProtoWallet(new PrivateKey(42))
+    //   .revealSpecificKeyLinkage(...))).counterparty` for PrivateKey(44).
+    const TYPESCRIPT_CONCRETE_COUNTERPARTY: &str =
+        "025d045857332d5b9e541514731622af8d60c180165d971a61e06b70a9b3834765";
+
+    fn result_with_counterparty(counterparty: Counterparty) -> RevealSpecificKeyLinkageResult {
+        RevealSpecificKeyLinkageResult {
+            encrypted_linkage: vec![1, 2, 3],
+            encrypted_linkage_proof: vec![4, 5, 6],
+            prover: PrivateKey::from_hex("2a").unwrap().to_public_key(),
+            verifier: PrivateKey::from_hex("2b").unwrap().to_public_key(),
+            counterparty,
+            protocol_id: Protocol {
+                security_level: 2,
+                protocol: "counterparty serde parity".to_string(),
+            },
+            key_id: "wire-round-trip".to_string(),
+            proof_type: 0,
+        }
+    }
+
+    fn assert_typescript_counterparty_round_trip(counterparty: Counterparty, expected: &str) {
+        let encoded = serde_json::to_value(result_with_counterparty(counterparty)).unwrap();
+        assert_eq!(encoded["counterparty"], expected);
+
+        let decoded: RevealSpecificKeyLinkageResult = serde_json::from_value(encoded).unwrap();
+        let reencoded = serde_json::to_value(decoded).unwrap();
+        assert_eq!(reencoded["counterparty"], expected);
+    }
+
+    #[test]
+    fn counterparty_serde_matches_real_typescript_output() {
+        assert_typescript_counterparty_round_trip(
+            Counterparty {
+                counterparty_type: CounterpartyType::Self_,
+                public_key: None,
+            },
+            "self",
+        );
+        assert_typescript_counterparty_round_trip(
+            Counterparty {
+                counterparty_type: CounterpartyType::Anyone,
+                public_key: None,
+            },
+            "anyone",
+        );
+        assert_typescript_counterparty_round_trip(
+            Counterparty {
+                counterparty_type: CounterpartyType::Other,
+                public_key: Some(PublicKey::from_string(TYPESCRIPT_CONCRETE_COUNTERPARTY).unwrap()),
+            },
+            TYPESCRIPT_CONCRETE_COUNTERPARTY,
+        );
     }
 }
 

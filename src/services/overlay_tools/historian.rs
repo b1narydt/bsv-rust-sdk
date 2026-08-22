@@ -61,8 +61,9 @@ impl<T: Clone, C> Historian<T, C> {
 
         let mut history = Vec::new();
         let mut visited = HashSet::new();
+        let txid_index = start_tx.source_transaction_index().unwrap_or_default();
 
-        self.traverse(start_tx, context, &mut history, &mut visited);
+        self.traverse(start_tx, context, &mut history, &mut visited, &txid_index);
 
         // History is collected in traversal order (depth-first from tip),
         // reverse to get chronological order (oldest first).
@@ -82,12 +83,17 @@ impl<T: Clone, C> Historian<T, C> {
         context: Option<&C>,
         history: &mut Vec<T>,
         visited: &mut HashSet<String>,
+        txid_index: &HashMap<String, &Transaction>,
     ) {
         let txid = tx.id().unwrap_or_default();
         if visited.contains(&txid) {
             return;
         }
         visited.insert(txid);
+        let tx = txid_index
+            .get(&tx.id().unwrap_or_default())
+            .copied()
+            .unwrap_or(tx);
 
         // Interpret outputs of this transaction.
         for output_index in 0..tx.outputs.len() {
@@ -98,9 +104,20 @@ impl<T: Clone, C> Historian<T, C> {
 
         // Recursively traverse input source transactions.
         for input in &tx.inputs {
-            if let Some(ref source_tx) = input.source_transaction {
-                self.traverse(source_tx, context, history, visited);
-            }
+            let source_tx = if let Some(source) = input.source_transaction.as_deref() {
+                txid_index
+                    .get(&source.id().unwrap_or_default())
+                    .copied()
+                    .unwrap_or(source)
+            } else if let Some(source_txid) = input.source_txid.as_deref() {
+                let Some(source) = txid_index.get(source_txid).copied() else {
+                    continue;
+                };
+                source
+            } else {
+                continue;
+            };
+            self.traverse(source_tx, context, history, visited, txid_index);
         }
     }
 }

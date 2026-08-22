@@ -1084,12 +1084,12 @@ mod tests {
             }
 
             // String literal: 'text'
-            if token.starts_with('\'') {
+            if let Some(stripped) = token.strip_prefix('\'') {
                 let text = if token.ends_with('\'') && token.len() > 1 {
-                    &token[1..token.len() - 1]
+                    &stripped[..stripped.len() - 1]
                 } else {
                     // Multi-word string? collect until closing quote
-                    let mut s = token[1..].to_string();
+                    let mut s = stripped.to_string();
                     loop {
                         i += 1;
                         if i >= tokens.len() {
@@ -1217,7 +1217,7 @@ mod tests {
     }
 
     fn hex_decode(hex: &str) -> Result<Vec<u8>, ()> {
-        if hex.len() % 2 != 0 {
+        if !hex.len().is_multiple_of(2) {
             return Err(());
         }
         let mut bytes = Vec::with_capacity(hex.len() / 2);

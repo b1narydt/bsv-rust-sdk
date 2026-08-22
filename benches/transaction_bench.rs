@@ -37,7 +37,6 @@ fn now_or_never<F: std::future::Future>(fut: F) -> F::Output {
     }
 }
 
-
 const SCOPE: u32 = SIGHASH_ALL | SIGHASH_FORKID;
 
 /// Create a MerklePath with the standard 2-level structure used in the TS benchmarks.
@@ -146,9 +145,9 @@ fn wide_transaction_sign(input_count: usize) {
         change: false,
     });
 
-    for i in 0..input_count {
-        let source_satoshis = source_txs[i].outputs[0].satoshis.unwrap();
-        let source_ls = source_txs[i].outputs[0].locking_script.clone();
+    for (i, source_tx) in source_txs.iter().enumerate() {
+        let source_satoshis = source_tx.outputs[0].satoshis.unwrap();
+        let source_ls = source_tx.outputs[0].locking_script.clone();
         now_or_never(tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
     }
 
@@ -193,9 +192,9 @@ fn large_tx_sign(input_count: usize, output_count: usize) {
         });
     }
 
-    for i in 0..input_count {
-        let source_satoshis = source_txs[i].outputs[0].satoshis.unwrap();
-        let source_ls = source_txs[i].outputs[0].locking_script.clone();
+    for (i, source_tx) in source_txs.iter().enumerate() {
+        let source_satoshis = source_tx.outputs[0].satoshis.unwrap();
+        let source_ls = source_tx.outputs[0].locking_script.clone();
         now_or_never(tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
     }
 
@@ -247,8 +246,7 @@ fn nested_inputs_sign(depth: usize, fan_out: usize) {
             let source_satoshis = tx.outputs[0].satoshis.unwrap();
             let source_ls = tx.outputs[0].locking_script.clone();
             for i in 0..fan_out {
-                now_or_never(new_tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls))
-                    .unwrap();
+                now_or_never(new_tx.sign(i, &p2pkh, SCOPE, source_satoshis, &source_ls)).unwrap();
             }
 
             new_txs.push(new_tx);
