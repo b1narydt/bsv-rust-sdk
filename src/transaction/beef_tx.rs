@@ -59,7 +59,7 @@ impl BeefTx {
         let input_txids = if bump_index.is_some() {
             Vec::new()
         } else {
-            Self::collect_input_txids(&tx)
+            Self::collect_input_txids(&tx)?
         };
         Ok(BeefTx {
             tx: Some(tx),
@@ -89,17 +89,41 @@ impl BeefTx {
         self.bump_index.is_some()
     }
 
-    /// Collect unique input txids from a transaction.
-    fn collect_input_txids(tx: &Transaction) -> Vec<String> {
+    /// Assign (or clear) the BUMP index and keep `input_txids` coherent with it.
+    ///
+    /// TS `BeefTx.bumpIndex` is a setter that re-derives `inputTxids`: a proven
+    /// transaction carries no input dependencies (its validity comes from the
+    /// proof, so the sort and the dependency verifier must not chase its
+    /// inputs), while clearing the proof re-reads them from the transaction.
+    /// Internal merge paths route every assignment through here so a tx that
+    /// becomes proven mid-merge stops being treated as dependent.
+    pub fn set_bump_index(&mut self, bump_index: Option<usize>) -> Result<(), TransactionError> {
+        self.bump_index = bump_index;
+        self.input_txids = match (bump_index, &self.tx) {
+            (Some(_), _) | (None, None) => Vec::new(),
+            (None, Some(tx)) => Self::collect_input_txids(tx)?,
+        };
+        Ok(())
+    }
+
+    /// Collect unique input txids from a transaction, in input order.
+    ///
+    /// An input that carries a `source_transaction` but no `source_txid`
+    /// (a graph built in memory rather than parsed) is identified by hashing
+    /// the source — TS materializes those ids before merging.
+    fn collect_input_txids(tx: &Transaction) -> Result<Vec<String>, TransactionError> {
         let mut txids = Vec::new();
         for input in &tx.inputs {
-            if let Some(ref stxid) = input.source_txid {
-                if !txids.contains(stxid) {
-                    txids.push(stxid.clone());
-                }
+            let stxid = match (&input.source_txid, &input.source_transaction) {
+                (Some(stxid), _) if !stxid.is_empty() => stxid.clone(),
+                (_, Some(source)) => source.id()?,
+                _ => continue,
+            };
+            if !txids.contains(&stxid) {
+                txids.push(stxid);
             }
         }
-        txids
+        Ok(txids)
     }
 
     /// Deserialize a BeefTx from BEEF V1 binary format.
