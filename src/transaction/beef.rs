@@ -157,10 +157,6 @@ impl Beef {
         beef.atomic_txid = atomic_txid;
         beef.needs_sort = false;
 
-        // Link source transactions: for each input of each tx, if the input's
-        // source_txid matches another tx in the BEEF, set source_transaction.
-        beef.link_source_transactions();
-
         Ok(beef)
     }
 
@@ -631,6 +627,16 @@ impl Beef {
     /// Merge one `BeefTx`: full data upgrades a txid-only entry (or fills a
     /// gap); a txid-only entry never downgrades a full one; a full entry
     /// never replaces an existing full one. Returns the resulting entry.
+    ///
+    /// A full entry whose `Transaction` carries proof-tree data — a
+    /// `merkle_path`, or a `source_transaction` on any input — is merged as
+    /// a graph through [`Beef::merge_transaction`], so its bump and every
+    /// ancestor it links to come along. Only an entry built from a
+    /// `Transaction` object has such data (a parsed entry never does); this
+    /// is the TS `_tx` / `_rawTx` split (`mergeBeefTxEntry` routes `_tx`
+    /// entries to `mergeTransactionGraph`). It is what lets a beef whose
+    /// ancestor entry was removed or reduced to txid-only be merged back
+    /// whole: the graph still hangs off the dependent's `Transaction`.
     pub fn merge_beef_tx(&mut self, btx: &BeefTx) -> Result<BeefTx, TransactionError> {
         let existing = self.position_of(&btx.txid);
         let existing_is_txid_only = existing.is_some_and(|pos| self.txs[pos].is_txid_only());
@@ -640,6 +646,9 @@ impl Beef {
         }
         if let Some(tx) = &btx.tx {
             if existing.is_none() || existing_is_txid_only {
+                if Self::carries_proof_tree(tx) {
+                    return self.merge_transaction(tx);
+                }
                 // The incoming entry's bump_index refers to ITS beef's bumps;
                 // the proof is re-derived against ours.
                 let pos = self.replace_or_append_tx(BeefTx::from_tx(tx.clone(), None)?);
@@ -650,6 +659,11 @@ impl Beef {
         existing.map(|pos| self.txs[pos].clone()).ok_or_else(|| {
             TransactionError::BeefError(format!("Failed to merge BeefTx for txid: {}", btx.txid))
         })
+    }
+
+    /// True iff `tx` holds data only an in-memory transaction graph has.
+    fn carries_proof_tree(tx: &Transaction) -> bool {
+        tx.merkle_path.is_some() || tx.inputs.iter().any(|i| i.source_transaction.is_some())
     }
 
     /// Merge another Beef into this one: bumps first (deduplicated by block
@@ -1043,11 +1057,51 @@ impl Beef {
     // Transaction extraction
     // ------------------------------------------------------------------
 
+    /// The proof tree rooted at `txid` (TS `findAtomicTransaction`): the
+    /// transaction with its merkle path if a bump proves it, otherwise with
+    /// every input's `source_transaction` linked from this beef, recursively,
+    /// down to the proven ancestors. `None` if the txid is unknown or known
+    /// only by txid.
+    ///
+    /// Parsing does not link sources (TS `fromReader` does not either); this
+    /// is where a parsed beef becomes a verifiable `Transaction`. Ancestors
+    /// are built first and cloned into their dependents, so the walk is
+    /// iterative and a deep chain costs copies rather than stack.
+    pub fn find_atomic_transaction(&self, txid: &str) -> Option<Transaction> {
+        let txid_to_idx = self.txid_index();
+        let subject = *txid_to_idx.get(txid)?;
+        self.txs[subject].tx.as_ref()?;
+        let included = self.collect_atomic_transactions(subject, &txid_to_idx);
+        let (order, _) = self.compute_sort_order();
+        let mut built: HashMap<&str, Transaction> = HashMap::new();
+        for i in order {
+            if !included.contains(&i) {
+                continue;
+            }
+            let btx = &self.txs[i];
+            let Some(tx) = &btx.tx else { continue };
+            let mut tx = tx.clone();
+            if let Some(bump) = self.find_bump(&btx.txid) {
+                tx.merkle_path = Some(bump.clone());
+            } else {
+                for input in &mut tx.inputs {
+                    if input.source_transaction.is_some() {
+                        continue;
+                    }
+                    if let Some(source) = input.source_txid.as_deref().and_then(|s| built.get(s)) {
+                        input.source_transaction = Some(Box::new(source.clone()));
+                    }
+                }
+            }
+            built.insert(btx.txid.as_str(), tx);
+        }
+        built.remove(txid)
+    }
+
     /// Extract the subject transaction from this BEEF, consuming it.
     ///
-    /// If `atomic_txid` is set, returns the transaction matching that txid.
-    /// Otherwise, returns the last transaction (the subject).
-    /// Before returning, links source transactions from the BEEF for each input.
+    /// The subject is `atomic_txid` if set, else the last transaction. It is
+    /// returned as its proof tree ([`Beef::find_atomic_transaction`]).
     pub fn into_transaction(self) -> Result<Transaction, TransactionError> {
         let subject_idx = if let Some(ref atomic_txid) = self.atomic_txid {
             self.txs
@@ -1067,94 +1121,15 @@ impl Beef {
             self.txs.len() - 1
         };
 
-        let mut tx = self.txs[subject_idx]
-            .tx
-            .clone()
-            .ok_or_else(|| TransactionError::BeefError("subject tx is txid-only".into()))?;
-
-        // Set merkle_path on subject tx from its bump_index.
-        if let Some(bi) = self.txs[subject_idx].bump_index {
-            if bi >= self.bumps.len() {
-                return Err(TransactionError::BeefError(format!(
-                    "bump_index {} out of bounds (only {} bumps)",
-                    bi,
-                    self.bumps.len()
-                )));
-            }
-            if tx.merkle_path.is_none() {
-                tx.merkle_path = Some(self.bumps[bi].clone());
-            }
+        let subject = &self.txs[subject_idx];
+        if subject.is_txid_only() {
+            return Err(TransactionError::BeefError(
+                "subject tx is txid-only".into(),
+            ));
         }
-
-        // Link source transactions: for each input, find source tx in BEEF
-        // and set merkle_path from bump_index.
-        for input in &mut tx.inputs {
-            if let Some(ref source_txid) = input.source_txid {
-                if input.source_transaction.is_none() {
-                    for btx in &self.txs {
-                        if btx.txid == *source_txid {
-                            if let Some(ref source_tx) = btx.tx {
-                                let mut linked = source_tx.clone();
-                                if let Some(bi) = btx.bump_index {
-                                    if bi >= self.bumps.len() {
-                                        return Err(TransactionError::BeefError(format!(
-                                            "bump_index {} out of bounds (only {} bumps) for source tx {}",
-                                            bi, self.bumps.len(), btx.txid
-                                        )));
-                                    }
-                                    if linked.merkle_path.is_none() {
-                                        linked.merkle_path = Some(self.bumps[bi].clone());
-                                    }
-                                }
-                                input.source_transaction = Some(Box::new(linked));
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(tx)
-    }
-
-    /// Link source transactions within this BEEF.
-    ///
-    /// For each transaction input, if its source_txid matches another transaction
-    /// in this BEEF, set source_transaction to point to it.
-    fn link_source_transactions(&mut self) {
-        // Collect txid -> index mapping
-        let txid_map: Vec<(String, usize)> = self
-            .txs
-            .iter()
-            .enumerate()
-            .map(|(i, btx)| (btx.txid.clone(), i))
-            .collect();
-
-        // We need to clone transactions to set source_transaction references
-        // because Rust ownership rules prevent borrowing self.txs mutably
-        // while also reading from it. We clone the source txs.
-        let tx_clones: Vec<Option<Transaction>> =
-            self.txs.iter().map(|btx| btx.tx.clone()).collect();
-
-        for btx in &mut self.txs {
-            if let Some(ref mut tx) = btx.tx {
-                for input in &mut tx.inputs {
-                    if let Some(ref source_txid) = input.source_txid {
-                        if input.source_transaction.is_none() {
-                            // Find matching tx in BEEF
-                            if let Some((_, idx)) =
-                                txid_map.iter().find(|(tid, _)| tid == source_txid)
-                            {
-                                if let Some(ref source_tx) = tx_clones[*idx] {
-                                    input.source_transaction = Some(Box::new(source_tx.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.find_atomic_transaction(&subject.txid).ok_or_else(|| {
+            TransactionError::BeefError(format!("subject tx {} not found", subject.txid))
+        })
     }
 }
 
