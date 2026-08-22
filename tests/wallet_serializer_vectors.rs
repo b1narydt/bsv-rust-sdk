@@ -553,7 +553,10 @@ test_result_vector!(
         encrypted_linkage_proof: vec![5, 6, 7, 8],
         prover: pk_from_hex(PROVER_HEX),
         verifier: pk_from_hex(VERIFIER_HEX),
-        counterparty: pk_from_hex(COUNTERPARTY_HEX),
+        counterparty: Counterparty {
+            counterparty_type: CounterpartyType::Other,
+            public_key: Some(pk_from_hex(COUNTERPARTY_HEX)),
+        },
         protocol_id: Protocol {
             security_level: 2,
             protocol: "tests".to_string(),
@@ -562,6 +565,37 @@ test_result_vector!(
         proof_type: 1,
     }
 );
+
+#[test]
+fn reveal_specific_key_linkage_sentinel_results_round_trip() {
+    for counterparty_type in [CounterpartyType::Self_, CounterpartyType::Anyone] {
+        let result = RevealSpecificKeyLinkageResult {
+            encrypted_linkage: vec![1],
+            encrypted_linkage_proof: vec![2],
+            prover: pk_from_hex(PROVER_HEX),
+            verifier: pk_from_hex(VERIFIER_HEX),
+            counterparty: Counterparty {
+                counterparty_type: counterparty_type.clone(),
+                public_key: None,
+            },
+            protocol_id: Protocol {
+                security_level: 2,
+                protocol: "tests".to_string(),
+            },
+            key_id: "test-key-id".to_string(),
+            proof_type: 0,
+        };
+
+        let encoded =
+            reveal_specific_key_linkage::serialize_reveal_specific_key_linkage_result(&result)
+                .unwrap();
+        let decoded =
+            reveal_specific_key_linkage::deserialize_reveal_specific_key_linkage_result(&encoded)
+                .unwrap();
+        assert_eq!(decoded.counterparty.counterparty_type, counterparty_type);
+        assert!(decoded.counterparty.public_key.is_none());
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Encrypt / Decrypt

@@ -59,8 +59,8 @@ pub struct RevealSpecificResult {
     pub prover: PublicKey,
     /// The verifier's public key.
     pub verifier: PublicKey,
-    /// The counterparty's public key.
-    pub counterparty: PublicKey,
+    /// The counterparty exactly as supplied (`self`, `anyone`, or a public key).
+    pub counterparty: Counterparty,
     /// The protocol used for this specific derivation.
     pub protocol: Protocol,
     /// The key ID used for this specific derivation.
@@ -435,22 +435,12 @@ impl ProtoWallet {
             &verifier_counterparty,
         )?;
 
-        // Extract the counterparty public key
-        let counterparty_pub = match &counterparty.public_key {
-            Some(pk) => pk.clone(),
-            None => {
-                return Err(WalletError::InvalidParameter(
-                    "counterparty public key required for linkage revelation".to_string(),
-                ))
-            }
-        };
-
         Ok(RevealSpecificResult {
             encrypted_linkage,
             encrypted_linkage_proof: encrypted_proof,
             prover,
             verifier: verifier.clone(),
-            counterparty: counterparty_pub,
+            counterparty: counterparty.clone(),
             protocol: protocol.clone(),
             key_id: key_id.to_string(),
             proof_type: 0,
@@ -1440,27 +1430,53 @@ mod tests {
         let verifier_key = PrivateKey::from_hex("ff").unwrap();
         let counterparty_key = PrivateKey::from_hex("bb").unwrap();
 
-        let result = WalletInterface::reveal_specific_key_linkage(
-            &wallet,
-            RevealSpecificKeyLinkageArgs {
-                counterparty: Counterparty {
-                    counterparty_type: CounterpartyType::Other,
-                    public_key: Some(counterparty_key.to_public_key()),
-                },
-                verifier: verifier_key.to_public_key(),
-                protocol_id: test_protocol(),
-                key_id: "wlink1".to_string(),
-                privileged: None,
-                privileged_reason: None,
+        let counterparties = [
+            Counterparty {
+                counterparty_type: CounterpartyType::Self_,
+                public_key: None,
             },
-            None,
-        )
-        .await
-        .unwrap();
+            Counterparty {
+                counterparty_type: CounterpartyType::Anyone,
+                public_key: None,
+            },
+            Counterparty {
+                counterparty_type: CounterpartyType::Other,
+                public_key: Some(counterparty_key.to_public_key()),
+            },
+        ];
 
-        assert!(!result.encrypted_linkage.is_empty());
-        assert_eq!(result.proof_type, 0);
-        assert_eq!(result.key_id, "wlink1");
+        for (index, counterparty) in counterparties.into_iter().enumerate() {
+            let result = WalletInterface::reveal_specific_key_linkage(
+                &wallet,
+                RevealSpecificKeyLinkageArgs {
+                    counterparty: counterparty.clone(),
+                    verifier: verifier_key.to_public_key(),
+                    protocol_id: test_protocol(),
+                    key_id: format!("wlink{index}"),
+                    privileged: None,
+                    privileged_reason: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.encrypted_linkage.is_empty());
+            assert_eq!(result.proof_type, 0);
+            assert_eq!(result.key_id, format!("wlink{index}"));
+            assert_eq!(
+                result.counterparty.counterparty_type,
+                counterparty.counterparty_type
+            );
+            assert_eq!(
+                result
+                    .counterparty
+                    .public_key
+                    .as_ref()
+                    .map(PublicKey::to_der_hex),
+                counterparty.public_key.as_ref().map(PublicKey::to_der_hex)
+            );
+        }
     }
 
     // -- Counterparty default-dispatch regression tests (C1) --

@@ -48,7 +48,7 @@ pub fn serialize_reveal_specific_key_linkage_result(
     serialize_to_vec(|w| {
         write_public_key(w, &result.prover)?;
         write_public_key(w, &result.verifier)?;
-        write_public_key(w, &result.counterparty)?;
+        write_counterparty(w, &result.counterparty)?;
         write_protocol(w, &result.protocol_id)?;
         write_bytes(w, result.key_id.as_bytes())?;
         write_bytes(w, &result.encrypted_linkage)?;
@@ -63,7 +63,7 @@ pub fn deserialize_reveal_specific_key_linkage_result(
     let mut r = std::io::Cursor::new(data);
     let prover = read_public_key(&mut r)?;
     let verifier = read_public_key(&mut r)?;
-    let counterparty = read_public_key(&mut r)?;
+    let counterparty = read_counterparty(&mut r)?;
     let protocol_id = read_protocol(&mut r)?;
     let key_id_bytes = read_bytes(&mut r)?;
     let key_id =
