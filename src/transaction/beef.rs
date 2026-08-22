@@ -446,11 +446,22 @@ impl Beef {
     ///
     /// Returns the index of the merged bump.
     pub fn merge_bump(&mut self, bump: &MerklePath) -> Result<usize, TransactionError> {
+        // A path with no levels proves nothing and has no root to match on;
+        // refusing it here leaves the beef untouched (TS throws from the
+        // level-0 scan after the push).
+        if bump.path.is_empty() {
+            return Err(TransactionError::InvalidFormat(
+                "Empty merkle path: tree height must be at least 1".to_string(),
+            ));
+        }
         self.needs_sort = true;
         let bi = self.find_or_insert_bump(bump)?;
 
-        let leaf_txids: Vec<String> = self.bumps[bi].path[0]
-            .iter()
+        let leaf_txids: Vec<String> = self.bumps[bi]
+            .path
+            .first()
+            .into_iter()
+            .flatten()
             .filter_map(|leaf| leaf.hash.clone())
             .collect();
         for txid in leaf_txids {
@@ -491,8 +502,11 @@ impl Beef {
     /// carries its txid, flagging that leaf as a txid leaf.
     fn mark_tx_proven_by_bump(&mut self, pos: usize, bi: usize) -> Result<(), TransactionError> {
         let txid = self.txs[pos].txid.clone();
-        if let Some(leaf) = self.bumps[bi].path[0]
-            .iter_mut()
+        if let Some(leaf) = self.bumps[bi]
+            .path
+            .first_mut()
+            .into_iter()
+            .flatten()
             .find(|leaf| leaf.hash.as_deref() == Some(&txid))
         {
             leaf.txid = true;
@@ -965,7 +979,14 @@ impl Beef {
         }
 
         for bump in &self.bumps {
-            for leaf in &bump.path[0] {
+            // `path` is a public field: a bump with no levels can prove
+            // nothing and has no root to report (TS throws here).
+            let level0 = bump.path.first().ok_or_else(|| {
+                TransactionError::InvalidFormat(
+                    "Empty merkle path: tree height must be at least 1".to_string(),
+                )
+            })?;
+            for leaf in level0 {
                 let Some(hash) = leaf.hash.as_deref().filter(|h| !h.is_empty()) else {
                     continue;
                 };

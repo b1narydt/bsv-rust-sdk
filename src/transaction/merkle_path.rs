@@ -53,8 +53,15 @@ impl MerklePath {
         path: Vec<Vec<MerklePathLeaf>>,
         legal_offsets_only: bool,
     ) -> Result<Self, TransactionError> {
-        // Validate: no empty level 0, no duplicate offsets at any level,
-        // and legal offsets at levels > 0.
+        // Validate: at least one level, no empty level 0, no duplicate
+        // offsets at any level, and legal offsets at levels > 0. A BUMP
+        // with tree height 0 (the wire carries the height as a byte) has no
+        // level to prove anything from; TS throws from its constructor.
+        if path.is_empty() {
+            return Err(TransactionError::InvalidFormat(
+                "Empty merkle path: tree height must be at least 1".to_string(),
+            ));
+        }
         let mut legal_offsets: Vec<HashSet<u64>> =
             (0..path.len()).map(|_| HashSet::new()).collect();
 
@@ -317,8 +324,10 @@ impl MerklePath {
 
     /// Find the offset index of a txid at level 0.
     fn index_of(&self, txid: &str) -> Result<u64, TransactionError> {
-        self.path[0]
-            .iter()
+        self.path
+            .first()
+            .into_iter()
+            .flatten()
             .find(|l| l.hash.as_deref() == Some(txid))
             .map(|l| l.offset)
             .ok_or_else(|| {
@@ -335,8 +344,11 @@ impl MerklePath {
         let txid = match txid {
             Some(t) => t.to_string(),
             None => {
-                let found = self.path[0]
-                    .iter()
+                let found = self
+                    .path
+                    .first()
+                    .into_iter()
+                    .flatten()
                     .find(|l| l.hash.is_some())
                     .ok_or_else(|| {
                         TransactionError::InvalidFormat(
@@ -430,6 +442,11 @@ impl MerklePath {
     /// Keeps only the minimum set of nodes needed for root computation
     /// from all txid-marked leaves at level 0.
     pub fn trim(&mut self) {
+        // `path` is a public field, so an empty path can arrive here; there
+        // is nothing to trim.
+        if self.path.is_empty() {
+            return;
+        }
         // Sort all levels by offset first
         for level in self.path.iter_mut() {
             level.sort_by_key(|l| l.offset);
