@@ -151,5 +151,52 @@ for (const [label, v] of [['C_s2', s2], ['C_s5', s5], ['C_s4', s4]]) {
   out.J_original_valid_after_trim = tryRun(() => bp.verifyValid(true).valid)
 }
 
+// D3: a PARSED beef, touched by findAtomicTransaction (which materializes
+// BeefTx._tx and links the graph in place), then a public removal, then
+// merged. TS's mergeBeefTxEntry takes the _tx branch for the touched
+// entries and restores the removed ancestor from the dependent's graph.
+{
+  const b = Beef.fromBinary(Buffer.from(s1.input_beef_hex, 'hex'))
+  b.findAtomicTransaction(T8)
+  b.removeExistingTxid(T5)
+  out.D3_after_remove = order(b)
+  const self3 = new Beef()
+  self3.mergeBeef(b)
+  out.D3_self_order = order(self3)
+  out.D3_self_hex = hex(self3)
+  out.D3_self_valid = self3.verifyValid().valid
+}
+
+// K: findAtomicTransaction where the subject has one resolvable input and
+// one absent one, and the subject PRECEDES its ancestor in array order.
+{
+  const K_HEX = '0200beef01fe00350c0001020002a963d288e79fed3e372b248a0b10f5f6e2a0eacbaa750cfdd69052f406885ffa0100222222222222222222222222222222222222222222222222222222222222222202000100000002a963d288e79fed3e372b248a0b10f5f6e2a0eacbaa750cfdd69052f406885ffa0000000000ffffffff11111111111111111111111111111111111111111111111111111111111111110000000000ffffffff0184030000000000000151000000000100010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff01e803000000000000015100000000'
+  const K_SUBJECT = 'c4d4066af8c692b841b5ba5f2500da11641f13642dfc0337a64468b10f3f2bda'
+  const b = Beef.fromBinary(Buffer.from(K_HEX, 'hex'))
+  out.K_parsed_order = order(b)
+  const tx = b.findAtomicTransaction(K_SUBJECT)
+  out.K_inputs_linked = tx.inputs.map(i => i.sourceTransaction != null)
+  out.K_inputs_have_merkle_path = tx.inputs.map(i => i.sourceTransaction?.merklePath != null)
+  out.K_verify_valid = b.verifyValid().valid
+}
+
+// L: two BEEFs that both parse, same block height, same computed root, but
+// different tree heights — mergeBeef combines the paths level by level and
+// reads past the end of the shorter one.
+{
+  const L_HOST = '0200beef01fe00350c0002020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010100cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00'
+  const L_OTHER = '0200beef01fe00350c0001010002ac06ef3322727422c91237f3e8520c68b1abe69edfa44933810bc2136c52b4bf00'
+  out.L_merge = tryRun(() => {
+    const h = Beef.fromBinary(Buffer.from(L_HOST, 'hex'))
+    h.mergeBeef(Beef.fromBinary(Buffer.from(L_OTHER, 'hex')))
+    return { bumps: h.bumps.length, levels: h.bumps[0].path.length }
+  })
+  out.L_host_usable_after_throw = tryRun(() => {
+    const h = Beef.fromBinary(Buffer.from(L_HOST, 'hex'))
+    try { h.mergeBeef(Beef.fromBinary(Buffer.from(L_OTHER, 'hex'))) } catch (e) { /* host must survive */ }
+    return hex(h)
+  })
+}
+
 writeFileSync(VEC + 'beef_ts_differential.json', JSON.stringify(out, null, 1))
 console.log(Object.keys(out).length + ' scenario keys written to ' + VEC + 'beef_ts_differential.json')

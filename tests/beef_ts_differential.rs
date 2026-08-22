@@ -81,6 +81,8 @@ fn sort_result_json(r: &bsv::transaction::beef::BeefSortResult) -> Value {
 struct Diff {
     ts: Value,
     rust: BTreeMap<String, Value>,
+    same: usize,
+    divergent: usize,
 }
 
 impl Diff {
@@ -91,8 +93,10 @@ impl Diff {
     fn same(&mut self, key: &str, value: Value) {
         assert_eq!(value, self.ts[key], "scenario {key}: Rust diverges from TS");
         self.record(key, value);
+        self.same += 1;
     }
-    /// Rust deliberately differs from TS for this key: pin both sides.
+    /// Rust deliberately differs from TS for this key: pin both sides, so
+    /// closing the gap fails the test rather than passing silently.
     fn documented(&mut self, key: &str, rust: Value, ts_expected: Value) {
         assert_eq!(
             self.ts[key], ts_expected,
@@ -103,6 +107,18 @@ impl Diff {
             "scenario {key}: now matches TS — update the docs"
         );
         self.record(key, rust);
+        self.divergent += 1;
+    }
+
+    /// Both sides refuse the input; only the wording differs.
+    fn refuses(&mut self, key: &str, rust_error: &str) {
+        let ts = self.ts[key].as_str().unwrap_or_default();
+        assert!(
+            ts.starts_with("THROW: "),
+            "scenario {key}: TS did not throw: {ts}"
+        );
+        self.record(key, json!(format!("ERR: {rust_error}")));
+        self.divergent += 1;
     }
 }
 
@@ -111,6 +127,8 @@ fn ts_differential_scenarios() {
     let mut d = Diff {
         ts: load_json("beef_ts_differential.json"),
         rust: BTreeMap::new(),
+        same: 0,
+        divergent: 0,
     };
     let sort = load_json("beef_sort_order.json")["vectors"].clone();
     let s1 = &sort[0]; // already sorted chain: 92af(proven), 529a, 8df6
@@ -175,7 +193,25 @@ fn ts_differential_scenarios() {
     }
 
     // C: mergeBeefFromParty vs plain mergeBeef. TS sorts `other` in place
-    // while collecting its valid txids; Rust reads them without sorting.
+    // while collecting its valid txids, and lists known txids in the order
+    // the party learned them; Rust reads `other` without sorting and lists
+    // known txids in ascending txid order. Same beef, same known set.
+    let ts_party = |label: &str| -> (Value, Value) {
+        match label {
+            "C_s2" => (
+                json!(["92afff0f[b0]", "529a4399", "8df60301"]),
+                json!(["92afff0f", "529a4399", "8df60301"]),
+            ),
+            "C_s5" => (
+                json!(["72b02070[b1]", "92afff0f[b0]", "529a4399", "8df60301"]),
+                json!(["72b02070", "92afff0f", "529a4399", "8df60301"]),
+            ),
+            _ => (
+                json!(["72b02070(txidonly)", "92afff0f[b0]", "529a4399"]),
+                json!(["92afff0f", "72b02070", "529a4399"]),
+            ),
+        }
+    };
     for (label, v) in [("C_s2", s2), ("C_s5", s5), ("C_s4", s4)] {
         let mut bp = BeefParty::new(["a"]);
         bp.merge_beef_from_party("a", &parse(&input(v))).unwrap();
@@ -184,28 +220,38 @@ fn ts_differential_scenarios() {
         d.same(&format!("{label}_plain_order"), json!(order(&plain)));
         d.same(&format!("{label}_plain_hex"), json!(to_hex(&plain)));
         d.same(&format!("{label}_party_hex"), json!(to_hex(&bp.beef)));
-        let mut known = bp.get_known_txids_for_party("a").unwrap();
-        known.sort();
-        let mut ts_known: Vec<String> = d.ts[&format!("{label}_party_known")]
+
+        let (ts_order, ts_known) = ts_party(label);
+        let known = bp.get_known_txids_for_party("a").unwrap();
+        let mut ts_known_set: Vec<String> = ts_known
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s.as_str().unwrap().to_string())
+            .map(|t| t.as_str().unwrap().to_string())
             .collect();
-        ts_known.sort();
-        assert_eq!(short(&known), ts_known, "{label}: known-to-party set");
-        d.record(&format!("{label}_party_known_sorted"), json!(short(&known)));
+        ts_known_set.sort();
+        assert_eq!(
+            short(&known),
+            ts_known_set,
+            "{label}: same known-to-party set"
+        );
+        d.documented(
+            &format!("{label}_party_known"),
+            json!(short(&known)),
+            ts_known,
+        );
+
         let party_order = order(&bp.beef);
-        if d.ts[&format!("{label}_party_order")] == json!(party_order) {
-            d.same(&format!("{label}_party_order"), json!(party_order));
-        } else {
-            assert_eq!(
-                party_order,
-                order(&plain),
-                "{label}: party order is the plain merge order"
-            );
-            d.record(&format!("{label}_party_order"), json!(party_order));
-        }
+        assert_eq!(
+            party_order,
+            order(&plain),
+            "{label}: the party merge leaves `other` in the plain merge order"
+        );
+        d.documented(
+            &format!("{label}_party_order"),
+            json!(party_order),
+            ts_order,
+        );
     }
 
     // D: mergeBeef of a beef whose entries were built from a Transaction
@@ -240,6 +286,83 @@ fn ts_differential_scenarios() {
         d.same("D2_self_hex", json!(to_hex(&me2)));
     }
 
+    // D3: a PARSED beef, touched by find_atomic_transaction, then a public
+    // removal, then merged. TS's `BeefTx.tx` is a lazy getter and
+    // findAtomicTransaction links the graph into those objects IN PLACE, so
+    // TS's `_tx` branch fires afterwards and restores the removed ancestor
+    // out of the dependent's graph. find_atomic_transaction here does not
+    // mutate the beef, so a parsed entry still carries no graph and the
+    // removal stands.
+    {
+        let mut b = parse(&input(s1));
+        b.find_atomic_transaction(&t8).expect("subject present");
+        b.remove_existing_txid(&t5);
+        d.same("D3_after_remove", json!(order(&b)));
+        let mut me = Beef::new(BEEF_V2);
+        me.merge_beef(&b).unwrap();
+        d.documented(
+            "D3_self_order",
+            json!(order(&me)),
+            json!(["92afff0f[b0]", "8df60301", "529a4399"]),
+        );
+        let ts_hex = d.ts["D3_self_hex"].clone();
+        d.documented("D3_self_hex", json!(to_hex(&me)), ts_hex);
+        d.documented(
+            "D3_self_valid",
+            json!(me.verify_valid(false).unwrap().valid),
+            json!(true),
+        );
+    }
+
+    // K: the subject has one resolvable input and one absent one, and is
+    // stored BEFORE the ancestor it can resolve.
+    {
+        const K_HEX: &str = "0200beef01fe00350c0001020002a963d288e79fed3e372b248a0b10f5f6e2a0eacbaa750cfdd69052f406885ffa0100222222222222222222222222222222222222222222222222222222222222222202000100000002a963d288e79fed3e372b248a0b10f5f6e2a0eacbaa750cfdd69052f406885ffa0000000000ffffffff11111111111111111111111111111111111111111111111111111111111111110000000000ffffffff0184030000000000000151000000000100010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff01e803000000000000015100000000";
+        const K_SUBJECT: &str = "c4d4066af8c692b841b5ba5f2500da11641f13642dfc0337a64468b10f3f2bda";
+        let b = parse(K_HEX);
+        d.same("K_parsed_order", json!(order(&b)));
+        let tx = b
+            .find_atomic_transaction(K_SUBJECT)
+            .expect("subject present in full");
+        d.same(
+            "K_inputs_linked",
+            json!(tx
+                .inputs
+                .iter()
+                .map(|i| i.source_transaction.is_some())
+                .collect::<Vec<_>>()),
+        );
+        d.same(
+            "K_inputs_have_merkle_path",
+            json!(tx
+                .inputs
+                .iter()
+                .map(|i| i
+                    .source_transaction
+                    .as_deref()
+                    .is_some_and(|source| source.merkle_path.is_some()))
+                .collect::<Vec<_>>()),
+        );
+        d.same(
+            "K_verify_valid",
+            json!(b.verify_valid(false).unwrap().valid),
+        );
+    }
+
+    // L: two BEEFs whose BUMPs share a height and a root but not a tree
+    // height. TS combines level by level and reads past the end of the
+    // shorter path; both sides must refuse without losing the host.
+    {
+        const L_HOST: &str = "0200beef01fe00350c0002020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010100cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00";
+        const L_OTHER: &str = "0200beef01fe00350c0001010002ac06ef3322727422c91237f3e8520c68b1abe69edfa44933810bc2136c52b4bf00";
+        let mut host = parse(L_HOST);
+        let err = host
+            .merge_beef_from_binary(&hex::decode(L_OTHER).unwrap())
+            .expect_err("a tree-height mismatch is refused");
+        d.refuses("L_merge", &err.to_string());
+        d.same("L_host_usable_after_throw", json!(to_hex(&host)));
+    }
+
     // E: zero-height bump. TS throws from the parse; Rust returns Err.
     {
         let zero = hex::decode("0200beef01010000").unwrap();
@@ -255,11 +378,7 @@ fn ts_differential_scenarios() {
             "E_toBinary",
             "E_mergeRawTx_bump0",
         ] {
-            assert!(
-                d.ts[key].as_str().unwrap().starts_with("THROW: "),
-                "{key}: TS throws"
-            );
-            d.record(key, json!(format!("ERR: {err}")));
+            d.refuses(key, &err);
         }
         let mut s = Beef::new(BEEF_V2);
         assert!(s.merge_beef_from_binary(&zero).is_err());
@@ -338,12 +457,27 @@ fn ts_differential_scenarios() {
     let ts_keys: Vec<&String> = d.ts.as_object().unwrap().keys().collect();
     let missing: Vec<&&String> = ts_keys
         .iter()
-        .filter(|k| !d.rust.contains_key(**k) && !d.rust.contains_key(&format!("{k}_sorted")))
+        .filter(|k| !d.rust.contains_key(**k))
         .collect();
     assert!(missing.is_empty(), "TS scenarios not replayed: {missing:?}");
+    assert_eq!(
+        d.same + d.divergent,
+        ts_keys.len(),
+        "every key is classified"
+    );
+    assert_eq!(
+        (d.same, d.divergent),
+        (48, 19),
+        "the divergence budget moved — every divergent key is a documented \
+         Rust/TS difference or a both-sides refusal, so a change here is a \
+         behavior change, not a test nit"
+    );
     println!(
-        "beef_ts_differential.json: {} scenario keys replayed",
-        ts_keys.len()
+        "beef_ts_differential.json: {} scenario keys replayed — {} identical to TS, \
+         {} divergent (documented difference or both-sides refusal)",
+        ts_keys.len(),
+        d.same,
+        d.divergent
     );
 
     if let Ok(path) = std::env::var("BEEF_TS_DIFFERENTIAL_OUT") {

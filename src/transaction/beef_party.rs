@@ -60,13 +60,20 @@ impl BeefParty {
         Ok(())
     }
 
-    /// Get the list of txids known to a party.
+    /// Get the txids known to a party, in ascending txid order.
+    ///
+    /// The order is the set's, not a history: `known_to` maps txids by hash,
+    /// so sorting is what makes successive calls agree with each other. TS
+    /// returns `Object.keys`, i.e. the order the party learned them in.
+    /// Every consumer of this list — trimming above all — is set-based.
     pub fn get_known_txids_for_party(&self, party: &str) -> Result<Vec<String>, TransactionError> {
         let known = self
             .known_to
             .get(party)
             .ok_or_else(|| TransactionError::BeefError(format!("Party {party} is unknown.")))?;
-        Ok(known.keys().cloned().collect())
+        let mut txids: Vec<String> = known.keys().cloned().collect();
+        txids.sort();
+        Ok(txids)
     }
 
     /// Record additional txids as known to a party (adding the party if new).
