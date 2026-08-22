@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Vendored and pinned 259 vectors from the official `bsv-blockchain/ts-stack` cross-implementation conformance corpus, with grouped hermetic Rust runners, a refresh workflow, generated all-corpus coverage ledger, and an explicit per-vector divergence ledger. The runners assert 258 vectors and preserve the upstream governed skip for `sdk.crypto.ecies.17`; the 5,116-vector script-evaluation file remains visibly out of scope.
+
 ## [0.6.0] - 2026-08-22
 
 ### Fixed
