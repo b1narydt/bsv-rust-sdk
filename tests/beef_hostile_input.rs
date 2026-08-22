@@ -235,3 +235,54 @@ fn bump_index_out_of_range_is_invalid_not_a_panic() {
         "an entry that already claims a proof is left alone (TS `tx.bumpIndex == null` guard)"
     );
 }
+
+/// Two BEEFs that both parse cleanly, name the same block height, and whose
+/// BUMPs compute the SAME merkle root — but with different tree heights,
+/// because `other`'s single leaf hash IS `host`'s root. `merge_bump` pairs
+/// them by (height, root) and hands them to `MerklePath::combine`, which
+/// walked `other`'s levels by `self`'s level count. TS reads past the end of
+/// the shorter array and throws a catchable TypeError; this must not panic,
+/// and the host must survive intact.
+#[test]
+fn combining_paths_of_different_tree_heights_is_an_error_not_a_panic() {
+    const HOST: &str = "0200beef01fe00350c0002020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010100cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00";
+    const OTHER: &str = "0200beef01fe00350c0001010002ac06ef3322727422c91237f3e8520c68b1abe69edfa44933810bc2136c52b4bf00";
+
+    let mut host = Beef::from_hex(HOST).expect("host parses");
+    let other = Beef::from_hex(OTHER).expect("other parses");
+    assert_eq!(host.bumps[0].block_height, other.bumps[0].block_height);
+    assert_eq!(
+        host.bumps[0].compute_root(None).unwrap(),
+        other.bumps[0].compute_root(None).unwrap(),
+        "same root is what pairs them for combining"
+    );
+    assert_ne!(host.bumps[0].path.len(), other.bumps[0].path.len());
+
+    let before = host.to_hex().unwrap();
+    let err = host
+        .merge_beef_from_binary(&hex::decode(OTHER).unwrap())
+        .expect_err("a tree-height mismatch must be refused");
+    assert!(
+        err.to_string().contains("tree height"),
+        "the error names the rule: {err}"
+    );
+    assert_eq!(
+        host.to_hex().unwrap(),
+        before,
+        "the host survives the refusal intact"
+    );
+    assert_eq!(host.bumps.len(), 1);
+    assert_eq!(host.bumps[0].path.len(), 2, "the host path is untouched");
+
+    // Directly, too — `combine` is public.
+    let mut path = host.bumps[0].clone();
+    assert!(path.combine(&other.bumps[0]).is_err());
+    assert!(
+        other.bumps[0].clone().combine(&host.bumps[0]).is_err(),
+        "shorter host, longer other"
+    );
+    assert!(
+        path.combine(&host.bumps[0]).is_ok(),
+        "combining equal heights still works"
+    );
+}

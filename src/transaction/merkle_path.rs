@@ -395,13 +395,29 @@ impl MerklePath {
 
     /// Combine another MerklePath into this one (compound proof).
     ///
-    /// Both paths must have the same block_height and compute to the same root.
-    /// After combining, trim is called to remove unnecessary intermediate nodes.
+    /// Both paths must have the same block height, the same tree height, and
+    /// compute to the same root. After combining, trim is called to remove
+    /// unnecessary intermediate nodes.
+    ///
+    /// The tree-height check is what keeps a shorter `other` from being
+    /// indexed level by level: two BEEFs that parse cleanly can carry paths
+    /// of different heights whose roots still match (a one-leaf path whose
+    /// leaf hash IS the other's root), and that pair reaches here through
+    /// `Beef::merge_bump`. TS reads past the end of the shorter array and
+    /// throws on `undefined`; erring here refuses the same pair by name and
+    /// leaves both paths untouched.
     pub fn combine(&mut self, other: &MerklePath) -> Result<(), TransactionError> {
         if self.block_height != other.block_height {
             return Err(TransactionError::InvalidFormat(
                 "You cannot combine paths which do not have the same block height.".to_string(),
             ));
+        }
+        if self.path.len() != other.path.len() {
+            return Err(TransactionError::InvalidFormat(format!(
+                "You cannot combine paths which do not have the same tree height: {} vs {}.",
+                self.path.len(),
+                other.path.len()
+            )));
         }
         let root1 = self.compute_root(None)?;
         let root2 = other.compute_root(None)?;
