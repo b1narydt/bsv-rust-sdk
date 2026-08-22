@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`Beef::to_binary_atomic` emits the BRC-95 dependency closure, byte-exact with TS.** It truncated `txs` after the subject in insertion order — keeping unrelated transactions that happened to precede the subject, silently dropping an ancestor merged after it, and carrying every bump whether referenced or not. rust-wallet-toolbox had to reimplement the closure locally (`serialize_beef_atomic`, rust-mpc#352) to get a conformant Atomic BEEF out. The walk now follows `input_txids` from the subject (derived from txids, not array position, so an unsorted beef gives the same bytes as a sorted one), stops at bump-proven or txid-only entries, drops everything else, prunes unreferenced bumps and re-indexes the survivors in first-use order, and writes the inner BEEF in dependency order. Byte-exact against every case of `test-vectors/beef_atomic_closure.json` and `beef_spend_closure.json`. Success is not a completeness guarantee: a subject whose parent is absent serializes as an Atomic BEEF of just the subject (TS does the same); `verify_valid` on the result is what reports the gap. (#44)
+- **`Beef::to_binary` no longer re-emits the Atomic prefix** because an `atomic_txid` survived a parse — TS `toBinary` never does. A parsed Atomic BEEF that was merged into and re-serialized came back out framed as Atomic for a subject it no longer closed over. `atomic_txid` is a parse-side fact; `to_binary_atomic` is how Atomic BEEF is produced. (#44)
+- **`Beef::to_binary` writes dependency order once the beef has been touched.** TS `toBinary` sorts before writing unless it can hand back its parse-time byte cache; this port keeps the same flag: a beef parsed by `from_binary` and not touched since re-emits its input bytes, and anything built or merged since serializes in `sort_txs()` order. Callers no longer have to remember to sort before writing. (#44)
+- **The sort matches TS `sortTxs`.** Kahn's algorithm in array order placed dependents by discovery, not by the reference's round-bucketed order, and treated every entry alike; TS partitions first (unsortable entries lead, then input-less txid-only entries, then proven transactions in their existing order, then dependents). Pinned byte-exact by `test-vectors/beef_sort_order.json`. (#44)
+- **`Beef::merge_bump` flags the bump leaf as a txid leaf and clears the proven transaction's `input_txids`**, as the TS `bumpIndex` setter does. Without the leaf flag, structural verification (which reads txid leaves) could not see a merged proof; without clearing the inputs, a proven transaction was still chased as a dependent. (#44)
+- **`Beef::merge_raw_tx` / `merge_beef` replace an existing entry in place** rather than remove-and-append, preserving the relative order the sort's tie-breaks read. A txid-only entry never downgrades a full transaction; a full transaction upgrades a txid-only one; `bump_index` is always re-derived against this beef's bumps. (#44)
+- **`BeefParty::merge` routes through `Beef::merge_beef`.** It copied `other`'s entries verbatim, carrying `bump_index` values that indexed `other`'s bumps array into a differently-indexed one — a transaction could claim a bump that proves something else. Bumps now dedupe by (height, root) and every merged transaction's proof is re-derived. (#44)
+- **`BeefParty::get_trimmed_beef_for_party` trims txid-only entries only.** It dropped any transaction the party knew, full ones included; TS `trimKnownTxids` removes `isTxidOnly` entries only, since a full transaction is validity data the rest of the beef depends on. Bumps left unreferenced by the trim are pruned and re-indexed. (#44)
+
+### Added
+
+- **`Beef::sort_txs` returns `BeefSortResult`** — `missing_inputs`, `not_valid`, `valid`, `with_missing_inputs`, `txid_only`, in TS `sortTxs` order. `Beef::get_valid_txids` exposes the `valid` partition without mutating. (#44)
+- **`Beef::verify_valid(allow_txid_only) -> BeefVerifyResult`** and **`Beef::is_valid`** — TS structural validation: atomic closure, no duplicate txids, no missing or unplaceable inputs, per-height merkle-root agreement across bumps, every `bump_index` names a bump carrying the txid, and dependency order. `roots` carries the per-height roots for a chain tracker to confirm. Also **`Beef::has_duplicate_txids`** and **`Beef::is_atomic`**. Verdicts pinned by `test-vectors/beef_invalid.json`, including the case TS accepts (trailing garbage, lenient parser). (#44)
+- **`Beef::merge_transaction`** — TS `mergeTransaction`: merges a `Transaction` with its `merkle_path` and, recursively, every `source_transaction` below an unproven input; this is the `graph_route` half of `beef_spend_closure.json`. Also **`merge_txid_only`**, **`merge_beef_tx`**, **`make_txid_only`**, **`trim_known_txids`**, **`find_bump`**. (#44)
+- **`Beef::from_binary_strict`** — TS `fromBinaryView`: rejects trailing data, the verdict to apply at a wire boundary. `from_binary` and `from_hex` stay the lenient prefix parsers TS `fromBinary`/`fromString` are. (#44)
+- **`BeefTx::set_bump_index`** — the TS `bumpIndex` setter: assigning a proof clears `input_txids`; clearing the proof re-derives them. (#44)
+- **`BeefParty::merge_beef_from_party`** — TS `mergeBeefFromParty`: merge and record every txid the incoming beef proves as known to that party. (#44)
+- `tests/conformance_beef_vectors.rs` — every case of every `test-vectors/beef_*.json` file, asserted per `test-vectors/README.md`: byte-exact for atomic/spend/sort, structural for merge, rule-named TS verdicts for invalid. (#44)
+
+### Changed
+
+- **Breaking:** `Beef` carries a private field (the TS `needsSort` flag), so it can no longer be built with a struct literal — use `Beef::new(version)` and assign `bumps`/`txs` or use the merge API. Known literal sites: rust-mpc `mpc-cosigner-core/src/ops/revocation_proof.rs` (tests) and `bins/enterprise-wallet/tests/enterprise_box_e2e.rs`. (#44)
+- **Breaking:** `Beef::sort_txs` returns `BeefSortResult` instead of `()`; callers that ignore the value keep compiling. (#44)
+- `BeefTx::from_tx` identifies an input by hashing its `source_transaction` when `source_txid` is absent (TS `materializeSourceTXIDs`). (#44)
+
 ## [0.5.1] - 2026-08-19
 
 ### Fixed
