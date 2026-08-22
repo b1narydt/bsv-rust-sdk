@@ -1,8 +1,8 @@
 //! Live probe: reproduce the enterprise box's ls_ship discovery failure.
 //! Run: cargo run --example overlay_probe
 
-use bsv::services::overlay_tools::{LookupResolver, LookupResolverConfig, Network};
 use bsv::services::overlay_tools::types::LookupQuestion;
+use bsv::services::overlay_tools::{LookupResolver, LookupResolverConfig, Network};
 
 #[tokio::main]
 async fn main() {
