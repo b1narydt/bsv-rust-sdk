@@ -6,7 +6,7 @@
 //! TS-generated corpus under `test-vectors/beef_*.json` pins its byte-exact
 //! output, and `tests/conformance_beef_vectors.rs` holds this module to it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Cursor, Read, Write};
 
 use crate::primitives::utils::{from_hex, to_hex};
@@ -1067,43 +1067,108 @@ impl Beef {
 
     /// The proof tree rooted at `txid` (TS `findAtomicTransaction`): the
     /// transaction with its merkle path if a bump proves it, otherwise with
-    /// every input's `source_transaction` linked from this beef, recursively,
-    /// down to the proven ancestors. `None` if the txid is unknown or known
-    /// only by txid.
+    /// every input's `source_transaction` resolved from this beef,
+    /// recursively, down to the proven ancestors. `None` if the txid is
+    /// unknown or known only by txid.
     ///
     /// Parsing does not link sources (TS `fromReader` does not either); this
-    /// is where a parsed beef becomes a verifiable `Transaction`. Ancestors
-    /// are built first and cloned into their dependents, so the walk is
-    /// iterative and a deep chain costs copies rather than stack.
+    /// is where a parsed beef becomes a verifiable `Transaction`. The walk
+    /// starts at the subject and follows inputs, so it does not depend on
+    /// the order `txs` happens to be in: a subject whose own inputs are
+    /// partly absent still gets the ones this beef can resolve.
+    ///
+    /// **Each ancestor is expanded once.** TS assigns the same
+    /// `Transaction` object everywhere an ancestor is spent, so its result
+    /// is a DAG; `source_transaction` here owns its value (`Option<Box<_>>`),
+    /// so aliasing is not representable and expanding every path would be
+    /// exponential in a diamond graph — a 4 KB BEEF can name 2^21 paths.
+    /// Every input that this beef can resolve still gets its transaction
+    /// (so satoshis and locking scripts are always present, at every level),
+    /// but only the first placement of a given ancestor carries that
+    /// ancestor's own ancestry; a repeat placement carries the transaction
+    /// and its merkle path alone. Proven ancestors are unaffected — the walk
+    /// stops at them in TS too, so they are leaves either way. Total nodes
+    /// are bounded by (transactions + input edges) in the beef.
     pub fn find_atomic_transaction(&self, txid: &str) -> Option<Transaction> {
         let txid_to_idx = self.txid_index();
         let subject = *txid_to_idx.get(txid)?;
         self.txs[subject].tx.as_ref()?;
-        let included = self.collect_atomic_transactions(subject, &txid_to_idx);
-        let (order, _) = self.compute_sort_order();
-        let mut built: HashMap<&str, Transaction> = HashMap::new();
-        for i in order {
-            if !included.contains(&i) {
+
+        // Breadth-first from the subject, claiming one "deep" edge per
+        // ancestor: the first input that reaches it, nearest the subject.
+        let mut order: Vec<usize> = vec![subject];
+        let mut expanded: HashSet<usize> = HashSet::from([subject]);
+        let mut deep_edges: HashSet<(usize, usize)> = HashSet::new();
+        let mut queue: VecDeque<usize> = VecDeque::from([subject]);
+        while let Some(i) = queue.pop_front() {
+            if self.find_bump(&self.txs[i].txid).is_some() {
                 continue;
             }
-            let btx = &self.txs[i];
-            let Some(tx) = &btx.tx else { continue };
-            let mut tx = tx.clone();
-            if let Some(bump) = self.find_bump(&btx.txid) {
-                tx.merkle_path = Some(bump.clone());
-            } else {
-                for input in &mut tx.inputs {
-                    if input.source_transaction.is_some() {
-                        continue;
-                    }
-                    if let Some(source) = input.source_txid.as_deref().and_then(|s| built.get(s)) {
-                        input.source_transaction = Some(Box::new(source.clone()));
-                    }
+            let Some(tx) = &self.txs[i].tx else { continue };
+            for (input_index, input) in tx.inputs.iter().enumerate() {
+                let Some(source) = self.resolvable_source(input, &txid_to_idx) else {
+                    continue;
+                };
+                if expanded.insert(source) {
+                    deep_edges.insert((i, input_index));
+                    order.push(source);
+                    queue.push_back(source);
                 }
             }
-            built.insert(btx.txid.as_str(), tx);
         }
-        built.remove(txid)
+
+        // Assemble deepest-first: reversing breadth-first discovery order
+        // builds every claimed ancestor before the input that claims it.
+        let mut built: HashMap<usize, Transaction> = HashMap::new();
+        for &i in order.iter().rev() {
+            let mut tx = self.txs[i].tx.clone()?;
+            if let Some(bump) = self.find_bump(&self.txs[i].txid) {
+                tx.merkle_path = Some(bump.clone());
+                built.insert(i, tx);
+                continue;
+            }
+            for (input_index, input) in tx.inputs.iter_mut().enumerate() {
+                if input.source_transaction.is_some() {
+                    continue;
+                }
+                let Some(source) = self.resolvable_source(input, &txid_to_idx) else {
+                    continue;
+                };
+                let linked = match deep_edges.contains(&(i, input_index)) {
+                    true => built.remove(&source),
+                    false => None,
+                }
+                .or_else(|| self.proof_tree_leaf(source))?;
+                input.source_transaction = Some(Box::new(linked));
+            }
+            built.insert(i, tx);
+        }
+        built.remove(&subject)
+    }
+
+    /// The index of the transaction `input` spends, if this beef holds it in
+    /// full.
+    fn resolvable_source(
+        &self,
+        input: &crate::transaction::transaction_input::TransactionInput,
+        txid_to_idx: &HashMap<&str, usize>,
+    ) -> Option<usize> {
+        let source = *txid_to_idx.get(input.source_txid.as_deref()?)?;
+        self.txs[source].tx.as_ref().map(|_| source)
+    }
+
+    /// The transaction at `index` as a proof-tree leaf: its merkle path if a
+    /// bump proves it, and none of its own ancestry.
+    fn proof_tree_leaf(&self, index: usize) -> Option<Transaction> {
+        let btx = &self.txs[index];
+        let mut tx = btx.tx.clone()?;
+        if let Some(bump) = self.find_bump(&btx.txid) {
+            tx.merkle_path = Some(bump.clone());
+        }
+        for input in &mut tx.inputs {
+            input.source_transaction = None;
+        }
+        Some(tx)
     }
 
     /// Extract the subject transaction from this BEEF, consuming it.
