@@ -8,9 +8,9 @@ use crate::primitives::transaction_signature::{
 };
 use crate::script::locking_script::LockingScript;
 use crate::script::templates::ScriptTemplateUnlock;
-use crate::transaction::sighash_preimage::SighashPreimage;
 use crate::transaction::error::TransactionError;
 use crate::transaction::merkle_path::MerklePath;
+use crate::transaction::sighash_preimage::SighashPreimage;
 use crate::transaction::transaction_input::TransactionInput;
 use crate::transaction::transaction_output::TransactionOutput;
 use crate::transaction::{
@@ -126,30 +126,74 @@ impl Transaction {
         Ok(buf)
     }
 
+    /// Index every owned placement in this source tree by transaction id.
+    ///
+    /// A proof tree reconstructed from BEEF can contain the same transaction
+    /// more than once: one placement owns its ancestry and the others are
+    /// leaves. Consumers use this index to resolve a leaf's inputs through the
+    /// complete placement elsewhere in the tree. A placement carrying a proof
+    /// is preferred because a proven transaction terminates ancestry walks.
+    pub(crate) fn source_transaction_index(
+        &self,
+    ) -> Result<std::collections::HashMap<String, &Transaction>, TransactionError> {
+        use std::collections::HashMap;
+
+        let mut index: HashMap<String, &Transaction> = HashMap::new();
+        let mut stack = vec![self];
+        while let Some(tx) = stack.pop() {
+            let txid = tx.id()?;
+            match index.entry(txid) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(tx);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if entry.get().merkle_path.is_none() && tx.merkle_path.is_some() =>
+                {
+                    entry.insert(tx);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
+            for input in tx.inputs.iter().rev() {
+                if let Some(source) = input.source_transaction.as_deref() {
+                    stack.push(source);
+                }
+            }
+        }
+        Ok(index)
+    }
+
     /// Serialize this transaction and its input chain to BEEF (BRC-62) format.
     ///
-    /// Walks the `source_transaction` tree recursively to collect all ancestor
-    /// transactions and their merkle paths, then delegates to `Beef` for
+    /// Indexes the `source_transaction` tree by txid, then recursively collects
+    /// all ancestor transactions and their merkle paths. Indexing lets a leaf
+    /// placement of a repeated transaction resolve ancestry held by another
+    /// placement in the owned tree. The result is delegated to `Beef` for
     /// deduplication, topological sorting, and serialization.
     /// Matches the TS SDK's `Transaction.toBEEF()`.
     pub fn to_beef(&self) -> Result<Vec<u8>, TransactionError> {
         use crate::transaction::beef::{Beef, BEEF_V1};
         use crate::transaction::beef_tx::BeefTx;
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
 
         let mut beef = Beef::new(BEEF_V1);
         let mut seen = HashSet::new();
+        let txid_index = self.source_transaction_index()?;
 
         fn collect(
             tx: &Transaction,
             beef: &mut Beef,
             seen: &mut HashSet<String>,
+            txid_index: &HashMap<String, &Transaction>,
         ) -> Result<(), TransactionError> {
             let txid = tx.id()?;
             if seen.contains(&txid) {
                 return Ok(());
             }
             seen.insert(txid.clone());
+
+            // Use the best placement known for this txid. In particular, a
+            // proven placement must win over an unproven leaf placement.
+            let tx = txid_index.get(&txid).copied().unwrap_or(tx);
 
             if let Some(ref mp) = tx.merkle_path {
                 // Proven tx: merge its bump and add with the resulting index.
@@ -160,8 +204,16 @@ impl Transaction {
             } else {
                 // Unproven tx: recurse into source transactions first.
                 for input in &tx.inputs {
-                    if let Some(ref source_tx) = input.source_transaction {
-                        collect(source_tx, beef, seen)?;
+                    let source_tx = if let Some(source) = input.source_transaction.as_deref() {
+                        let source_txid = source.id()?;
+                        txid_index.get(&source_txid).copied().unwrap_or(source)
+                    } else if let Some(source_txid) = input.source_txid.as_deref() {
+                        txid_index.get(source_txid).copied().ok_or_else(|| {
+                            TransactionError::BeefError(format!(
+                                "input spending {source_txid}:{} has no source transaction and tx {txid} has no merkle proof — cannot build BEEF",
+                                input.source_output_index,
+                            ))
+                        })?
                     } else {
                         return Err(TransactionError::BeefError(format!(
                             "input spending {}:{} has no source transaction and tx {} has no merkle proof — cannot build BEEF",
@@ -169,7 +221,8 @@ impl Transaction {
                             input.source_output_index,
                             txid,
                         )));
-                    }
+                    };
+                    collect(source_tx, beef, seen, txid_index)?;
                 }
                 let btx = BeefTx::from_tx(tx.clone(), None)?;
                 beef.remove_existing_txid(&btx.txid);
@@ -179,7 +232,7 @@ impl Transaction {
             Ok(())
         }
 
-        collect(self, &mut beef, &mut seen)?;
+        collect(self, &mut beef, &mut seen, &txid_index)?;
 
         if beef.bumps.is_empty() {
             return Err(TransactionError::BeefError(

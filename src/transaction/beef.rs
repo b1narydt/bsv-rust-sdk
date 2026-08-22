@@ -571,9 +571,12 @@ impl Beef {
     /// absorbs it and proves whatever it can), then the transaction replaces
     /// any entry sharing its txid. The walk stops below a transaction that
     /// ends up proven — its ancestors are not needed for validity. Inputs are
-    /// visited in order. Returns the entry for `tx` itself.
+    /// visited in order. Repeated placements are resolved through a txid index,
+    /// so a leaf placement can use ancestry owned by another placement.
+    /// Returns the entry for `tx` itself.
     pub fn merge_transaction(&mut self, tx: &Transaction) -> Result<BeefTx, TransactionError> {
         let root_txid = tx.id()?;
+        let txid_index = tx.source_transaction_index()?;
         let mut visited: HashSet<String> = HashSet::new();
         let mut stack: Vec<&Transaction> = vec![tx];
 
@@ -582,6 +585,7 @@ impl Beef {
             if !visited.insert(txid) {
                 continue;
             }
+            let current = txid_index.get(&current.id()?).copied().unwrap_or(current);
             let bump_index = match &current.merkle_path {
                 Some(mp) => Some(self.merge_bump(mp)?),
                 None => None,
@@ -591,8 +595,13 @@ impl Beef {
             if self.txs[pos].bump_index.is_none() {
                 // Pushed in reverse so inputs pop in forward order.
                 for input in current.inputs.iter().rev() {
-                    if let Some(source) = &input.source_transaction {
-                        stack.push(source);
+                    if let Some(source) = input.source_transaction.as_deref() {
+                        let source_txid = source.id()?;
+                        stack.push(txid_index.get(&source_txid).copied().unwrap_or(source));
+                    } else if let Some(source_txid) = input.source_txid.as_deref() {
+                        if let Some(source) = txid_index.get(source_txid) {
+                            stack.push(source);
+                        }
                     }
                 }
             }

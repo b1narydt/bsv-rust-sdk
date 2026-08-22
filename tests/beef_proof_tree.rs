@@ -4,6 +4,8 @@
 //! size of the result.
 
 use bsv::script::locking_script::LockingScript;
+#[cfg(feature = "network")]
+use bsv::services::overlay_tools::Historian;
 use bsv::transaction::beef::{Beef, BEEF_V2};
 use bsv::transaction::beef_tx::BeefTx;
 use bsv::transaction::merkle_path::{MerklePath, MerklePathLeaf};
@@ -230,6 +232,16 @@ fn a_diamond_dag_does_not_expand_exponentially() {
 fn a_repeated_ancestor_is_expanded_once() {
     let great = tx_with(&[("00".repeat(32), 0)], 2, 6000);
     let great_txid = great.id().unwrap();
+    let great_proof = MerklePath::new(
+        800_000,
+        vec![vec![MerklePathLeaf {
+            offset: 0,
+            hash: Some(great_txid.clone()),
+            txid: true,
+            duplicate: false,
+        }]],
+    )
+    .unwrap();
     let grandparent = tx_with(&[(great_txid.clone(), 0)], 2, 5000);
     let gp_txid = grandparent.id().unwrap();
     let parent = tx_with(&[(gp_txid.clone(), 0)], 2, 4000);
@@ -240,7 +252,8 @@ fn a_repeated_ancestor_is_expanded_once() {
     let subject_txid = subject.id().unwrap();
 
     let mut beef = Beef::new(BEEF_V2);
-    beef.txs.push(BeefTx::from_tx(great, None).unwrap());
+    beef.bumps.push(great_proof);
+    beef.txs.push(BeefTx::from_tx(great, Some(0)).unwrap());
     beef.txs.push(BeefTx::from_tx(grandparent, None).unwrap());
     beef.txs.push(BeefTx::from_tx(parent, None).unwrap());
     beef.txs.push(BeefTx::from_tx(subject, None).unwrap());
@@ -271,4 +284,41 @@ fn a_repeated_ancestor_is_expanded_once() {
         5,
         "subject + parent + two grandparent placements + one great-grandparent"
     );
+
+    // The bounded tree is still a complete graph when placements are keyed by
+    // txid: the direct grandparent placement resolves `great`, even though the
+    // leaf placement reached through `parent` does not. The TS collector also
+    // deduplicates by txid, so this must not depend on which placement is read
+    // first.
+    let input_hex = beef.to_hex().unwrap();
+    let parsed = Transaction::from_beef(&input_hex).expect("from_beef should build proof tree");
+    let output = parsed
+        .to_beef()
+        .expect("a complete repeated-ancestor DAG should serialize");
+    let output_hex = hex::encode(&output);
+    let round_trip_beef = Beef::from_binary_strict(&output).expect("round-trip BEEF parses");
+    assert!(round_trip_beef.verify_valid(false).unwrap().valid);
+    assert_eq!(round_trip_beef.txs.len(), 4, "each txid is emitted once");
+    let round_trip = Transaction::from_beef(&output_hex).expect("round-trip transaction parses");
+    assert_eq!(round_trip.id().unwrap(), subject_txid);
+
+    // The other recursive consumers must also resolve through the complete
+    // placement instead of treating the first leaf placement as definitive.
+    let mut merged = Beef::new(BEEF_V2);
+    merged
+        .merge_transaction(&parsed)
+        .expect("merge_transaction resolves repeated placements");
+    assert!(merged.find_txid(&great_txid).is_some());
+
+    #[cfg(feature = "network")]
+    {
+        let mut historian: Historian<String, ()> = Historian::new(Box::new(|tx, output, _| {
+            (output == 0).then(|| tx.id().unwrap())
+        }));
+        let history = historian.build_history(&parsed, None);
+        assert!(
+            history.contains(&great_txid),
+            "history reaches ancestry held by the complete placement"
+        );
+    }
 }
