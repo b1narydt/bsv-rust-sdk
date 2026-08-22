@@ -472,7 +472,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_jacobian_mul_2() {
         let g = g_jacobian();
         let k = BigNumber::from_number(2);

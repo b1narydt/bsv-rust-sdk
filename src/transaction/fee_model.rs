@@ -166,16 +166,20 @@ mod tests {
         let key = crate::primitives::private_key::PrivateKey::from_hex("1").unwrap();
         let p2pkh = P2PKH::from_private_key(key.clone());
         let unlock = p2pkh
-            .unlock(&crate::transaction::sighash_preimage::test_support::preimage_under(
-                crate::primitives::transaction_signature::SIGHASH_ALL
-                    | crate::primitives::transaction_signature::SIGHASH_FORKID,
-            ))
+            .unlock(
+                &crate::transaction::sighash_preimage::test_support::preimage_under(
+                    crate::primitives::transaction_signature::SIGHASH_ALL
+                        | crate::primitives::transaction_signature::SIGHASH_FORKID,
+                ),
+            )
             .unwrap();
         let unlock_len = unlock.to_binary().len() as u64;
 
-        let mut input = TransactionInput::default();
-        input.unlocking_script = Some(unlock);
-        input.source_txid = Some("00".repeat(32));
+        let input = TransactionInput {
+            unlocking_script: Some(unlock),
+            source_txid: Some("00".repeat(32)),
+            ..Default::default()
+        };
         tx.add_input(input);
 
         let p2pkh_lock = P2PKH::from_public_key_hash([0xab; 20]);

@@ -370,9 +370,9 @@ mod tests {
         let tampered: String = chars.into_iter().collect();
 
         let valid = verify_nonce(&wallet, &tampered).await;
-        match valid {
-            Ok(v) => assert!(!v, "tampered nonce should not verify"),
-            Err(_) => {} // Error is also acceptable for tampered input
+        // An error is also acceptable for tampered input.
+        if let Ok(v) = valid {
+            assert!(!v, "tampered nonce should not verify");
         }
     }
 
@@ -384,9 +384,9 @@ mod tests {
         let nonce = create_nonce(&wallet1).await.expect("create_nonce failed");
 
         let valid = verify_nonce(&wallet2, &nonce).await;
-        match valid {
-            Ok(v) => assert!(!v, "nonce from different wallet should not verify"),
-            Err(_) => {} // Error is also acceptable
+        // An error is also acceptable.
+        if let Ok(v) = valid {
+            assert!(!v, "nonce from different wallet should not verify");
         }
     }
 

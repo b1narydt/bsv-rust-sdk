@@ -287,7 +287,7 @@ impl WalletInterface for MockWallet {
 
     async fn get_header_for_height(
         &self,
-        args: GetHeaderArgs,
+        _args: GetHeaderArgs,
         _originator: Option<&str>,
     ) -> Result<GetHeaderResult, WalletError> {
         Ok(GetHeaderResult {

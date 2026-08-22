@@ -465,10 +465,6 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     #[test]
     fn test_binary_roundtrip_empty() {
         let script = Script::from_binary(&[]);
