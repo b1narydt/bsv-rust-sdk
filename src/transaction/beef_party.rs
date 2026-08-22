@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use crate::transaction::beef::Beef;
-use crate::transaction::beef_tx::BeefTx;
 use crate::transaction::error::TransactionError;
 
 /// A multi-party BEEF container that tracks which transactions
@@ -70,44 +69,55 @@ impl BeefParty {
         Ok(known.keys().cloned().collect())
     }
 
-    /// Record additional txids as known to a party.
+    /// Record additional txids as known to a party (adding the party if new).
+    ///
+    /// Each txid is also merged into the beef as a txid-only entry so the
+    /// beef's dependency graph can resolve against it; an entry that an
+    /// existing bump already proves picks up that proof (TS `mergeTxidOnly`).
     pub fn add_known_txids_for_party(&mut self, party: &str, txids: &[String]) {
         let known = self.known_to.entry(party.to_string()).or_default();
         for txid in txids {
             known.insert(txid.clone(), true);
-            // Also add as txid-only to the beef if not already present
-            if !self.beef.txs.iter().any(|t| t.txid == *txid) {
-                self.beef.txs.push(BeefTx::from_txid(txid.clone()));
-            }
+            self.beef.merge_txid_only(txid);
         }
     }
 
-    /// Get a trimmed Beef for a specific party, excluding txids they already know.
+    /// Get a Beef trimmed of what `party` already knows.
+    ///
+    /// Only txid-only entries the party knows are removed — a full
+    /// transaction stays even if the party knows its txid, because a
+    /// full transaction is validity data the beef still depends on
+    /// (TS `trimKnownTxids` removes `isTxidOnly` entries only). Bumps no
+    /// longer referenced after the trim are pruned and re-indexed.
     pub fn get_trimmed_beef_for_party(&self, party: &str) -> Result<Beef, TransactionError> {
         let known_txids = self.get_known_txids_for_party(party)?;
-        let mut trimmed = self.beef.clone();
-        trimmed.txs.retain(|tx| !known_txids.contains(&tx.txid));
-        Ok(trimmed)
+        let mut pruned = self.beef.clone();
+        pruned.trim_known_txids(&known_txids)?;
+        Ok(pruned)
     }
 
-    /// Merge another Beef into this BeefParty.
+    /// Merge another Beef into this BeefParty's beef.
+    ///
+    /// Routes through `Beef::merge_beef`, so bumps dedupe by (height, root)
+    /// and every merged transaction's `bump_index` is re-derived against
+    /// this beef's bumps array. Copying `other`'s entries verbatim would
+    /// carry `bump_index` values that point into `other`'s array, not ours.
     pub fn merge(&mut self, other: &Beef) -> Result<(), TransactionError> {
-        // Merge bumps, deduplicating by block height and root
-        for bump in &other.bumps {
-            let already_exists = self.beef.bumps.iter().any(|b| {
-                b.block_height == bump.block_height
-                    && b.compute_root(None).ok() == bump.compute_root(None).ok()
-            });
-            if !already_exists {
-                self.beef.bumps.push(bump.clone());
-            }
-        }
+        self.beef.merge_beef(other)
+    }
 
-        // Merge transactions, deduplicating by txid
-        for tx in &other.txs {
-            if !self.beef.txs.iter().any(|t| t.txid == tx.txid) {
-                self.beef.txs.push(tx.clone());
-            }
+    /// Merge a beef received from `party`, recording every transaction the
+    /// beef proves (or chains to a proof) as known to that party.
+    pub fn merge_beef_from_party(
+        &mut self,
+        party: &str,
+        other: &Beef,
+    ) -> Result<(), TransactionError> {
+        let known_txids = other.get_valid_txids();
+        self.beef.merge_beef(other)?;
+        let known = self.known_to.entry(party.to_string()).or_default();
+        for txid in known_txids {
+            known.insert(txid, true);
         }
         Ok(())
     }
