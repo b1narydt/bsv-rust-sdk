@@ -130,7 +130,7 @@ impl BeefTx {
     ///
     /// V1 format: raw_transaction + has_bump(u8) + [bump_index(varint)]
     pub fn from_binary_v1(reader: &mut impl Read) -> Result<Self, TransactionError> {
-        let tx = Transaction::from_binary(reader)?;
+        let tx = Self::read_embedded_tx(reader)?;
         let mut has_bump_buf = [0u8; 1];
         reader.read_exact(&mut has_bump_buf)?;
         let bump_index = if has_bump_buf[0] != 0 {
@@ -165,14 +165,30 @@ impl BeefTx {
                 let bump_index = read_varint(reader)
                     .map_err(|e| TransactionError::InvalidFormat(e.to_string()))?
                     as usize;
-                let tx = Transaction::from_binary(reader)?;
+                let tx = Self::read_embedded_tx(reader)?;
                 Self::from_tx(tx, Some(bump_index))
             }
             TxDataFormat::RawTx => {
-                let tx = Transaction::from_binary(reader)?;
+                let tx = Self::read_embedded_tx(reader)?;
                 Self::from_tx(tx, None)
             }
         }
+    }
+
+    /// Read one raw transaction embedded in a BEEF. A transaction that runs
+    /// past the end of the BEEF data is reported as TS does (`BeefTx.ts`
+    /// `scanRawTransaction`: "Serialized transaction exceeds available BEEF
+    /// data"), so a truncated or mis-framed entry names the framing rule it
+    /// broke rather than a bare short read.
+    fn read_embedded_tx(reader: &mut impl Read) -> Result<Transaction, TransactionError> {
+        Transaction::from_binary(reader).map_err(|e| match e {
+            TransactionError::Io(ref io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
+                TransactionError::BeefError(
+                    "Serialized transaction exceeds available BEEF data".to_string(),
+                )
+            }
+            other => other,
+        })
     }
 
     /// Serialize a BeefTx to BEEF V1 binary format.

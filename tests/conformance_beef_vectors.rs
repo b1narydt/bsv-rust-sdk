@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 
 use bsv::transaction::beef::{Beef, BeefSortResult, BEEF_V2};
+use bsv::transaction::beef_tx::BeefTx;
 use bsv::transaction::transaction::Transaction;
 use serde::Deserialize;
 
@@ -42,6 +43,27 @@ fn load<T: for<'de> Deserialize<'de>>(name: &str) -> T {
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{name}: read failed ({e}) — vectors are committed"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: parse failed: {e}"))
+}
+
+/// `beef`'s bytes (which must already be in serialized order) with a
+/// txid-only entry spliced in at transaction position `at`, built from the
+/// per-entry serializers so the expectation does not pass through `Beef`'s
+/// own ordering. Counts stay below the one-byte varint limit.
+fn splice_txid_only(beef: &Beef, at: usize, txid: &str) -> Vec<u8> {
+    assert!(beef.version == BEEF_V2 && beef.bumps.len() < 253 && beef.txs.len() + 1 < 253);
+    let mut out = beef.version.to_le_bytes().to_vec();
+    out.push(beef.bumps.len() as u8);
+    for bump in &beef.bumps {
+        bump.to_binary(&mut out).unwrap();
+    }
+    out.push((beef.txs.len() + 1) as u8);
+    let mut entries: Vec<&BeefTx> = beef.txs.iter().collect();
+    let fresh = BeefTx::from_txid(txid.to_string());
+    entries.insert(at, &fresh);
+    for entry in entries {
+        entry.to_binary_v2(&mut out).unwrap();
+    }
+    out
 }
 
 fn parse_lenient(bytes: &[u8], context: &str) -> Beef {
@@ -299,15 +321,23 @@ fn sort_order_vectors() {
             "{ctx}: untouched parse must round-trip: {}",
             byte_diff(&input, &out_untouched)
         );
+        // A state-changing merge (a fresh txid-only entry) without an
+        // explicit sort: the output is the sorted expectation with the new
+        // entry in the txid-only slot — after the unsortable entries and any
+        // txid-only entries already present, before the proven ones.
         let mut touched = parse_lenient(&input, &ctx);
-        let bump = touched.bumps[0].clone();
-        touched.merge_bump(&bump).unwrap();
+        let fresh = "11".repeat(32);
+        touched.merge_txid_only(&fresh);
         let mut out_touched = Vec::new();
         touched.to_binary(&mut out_touched).unwrap();
+        let slot = v.sort_result.with_missing_inputs.len()
+            + v.sort_result.not_valid.len()
+            + v.sort_result.txid_only.len();
+        let expected_touched = splice_txid_only(&parse_lenient(&expected, &ctx), slot, &fresh);
         assert!(
-            out_touched == expected,
+            out_touched == expected_touched,
             "{ctx}: to_binary after a merge must sort without an explicit sort_txs: {}",
-            byte_diff(&expected, &out_touched)
+            byte_diff(&expected_touched, &out_touched)
         );
 
         // Sorting is idempotent on the order (the report's `valid` list
@@ -371,6 +401,8 @@ struct InvalidVector {
 struct TsVerdict {
     parses: bool,
     #[serde(default)]
+    parse_error: Option<String>,
+    #[serde(default)]
     valid: Option<bool>,
     #[serde(default)]
     roots: Option<BTreeMap<String, String>>,
@@ -399,8 +431,20 @@ fn invalid_vectors() {
             "{ctx}: lenient parse verdict (got {:?})",
             lenient.as_ref().err().map(|e| e.to_string())
         );
-        let Ok(beef) = lenient else {
-            continue;
+        let beef = match lenient {
+            Ok(beef) => beef,
+            Err(e) => {
+                let expected_msg = v
+                    .ts_verdict
+                    .parse_error
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{ctx}: corpus records no parse_error"));
+                assert!(
+                    e.to_string().contains(expected_msg),
+                    "{ctx}: parse error {e:?} should carry {expected_msg:?}"
+                );
+                continue;
+            }
         };
 
         let vv = beef
@@ -662,7 +706,11 @@ fn merge_vectors() {
         let reparsed = Beef::from_binary_strict(&bytes).unwrap();
         structurally_equal(&merged, &reparsed)
             .unwrap_or_else(|why| panic!("{ctx}: merged beef not serialize-stable: {why}"));
-        assert!(reparsed.verify_valid(false).unwrap().valid == v.merged_verdict.verify_valid);
+        assert_eq!(
+            reparsed.verify_valid(false).unwrap().valid,
+            v.merged_verdict.verify_valid,
+            "{ctx}: verdict survives a serialize/parse round-trip"
+        );
 
         // Merging in the other order gives the same structure.
         let mut reversed = Beef::new(BEEF_V2);
