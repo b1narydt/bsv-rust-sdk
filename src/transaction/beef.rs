@@ -1,13 +1,19 @@
 //! BEEF format (BRC-62/95/96) serialization and deserialization.
 //!
 //! Supports V1, V2, and Atomic BEEF variants for SPV proof packaging.
+//!
+//! The normative reference is the TypeScript `@bsv/sdk` `Beef` class; the
+//! TS-generated corpus under `test-vectors/beef_*.json` pins its byte-exact
+//! output, and `tests/conformance_beef_vectors.rs` holds this module to it.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 
 use crate::primitives::utils::{from_hex, to_hex};
 use crate::transaction::beef_tx::BeefTx;
 use crate::transaction::error::TransactionError;
 use crate::transaction::merkle_path::MerklePath;
+use crate::transaction::transaction::Transaction;
 use crate::transaction::{read_u32_le, read_varint, write_u32_le, write_varint};
 
 /// BEEF V1 version marker (0x0100BEEF in LE = 4022206465).
@@ -17,10 +23,51 @@ pub const BEEF_V2: u32 = 4022206466;
 /// Atomic BEEF prefix (0x01010101).
 pub const ATOMIC_BEEF: u32 = 0x01010101;
 
+/// Outcome of [`Beef::sort_txs`]: the txids of each partition, in the order
+/// TS `sortTxs` reports them.
+///
+/// `valid` lists every transaction that has a proof, is an input-less
+/// txid-only entry, or whose inputs chain back to one of those — in the
+/// order they were accepted (proven and txid-only entries in array order,
+/// then topologically sorted dependents). The other four are disjoint
+/// subsets of what could not be placed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BeefSortResult {
+    /// Input txids referenced by some transaction but absent from the beef.
+    pub missing_inputs: Vec<String>,
+    /// Transactions whose inputs are all present but which could not be
+    /// placed — they depend (transitively) on a transaction in
+    /// `with_missing_inputs`, or form a cycle.
+    pub not_valid: Vec<String>,
+    /// Transactions with a proof, or whose inputs chain back to one.
+    pub valid: Vec<String>,
+    /// Transactions with at least one input absent from the beef.
+    pub with_missing_inputs: Vec<String>,
+    /// Input-less txid-only entries (BRC-96 "known" transactions).
+    pub txid_only: Vec<String>,
+}
+
+/// Outcome of [`Beef::verify_valid`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BeefVerifyResult {
+    /// True iff the beef is structurally valid.
+    pub valid: bool,
+    /// Merkle root computed for each block height, to be confirmed against
+    /// a chain tracker. Populated as far as verification got, so a rejected
+    /// beef may still report the roots accepted before the failing check.
+    pub roots: BTreeMap<u32, String>,
+}
+
 /// A BEEF (Background Evaluation Extended Format) container.
 ///
 /// Contains a set of BUMPs (Merkle paths) and transactions that together
 /// form a validity proof chain for SPV verification.
+///
+/// `txs` is kept in insertion order. Serialization emits dependency order
+/// (TS `toBinary` sorts before writing) unless the beef is exactly what
+/// [`Beef::from_binary`] parsed — a parsed, untouched beef round-trips to
+/// its input bytes, as TS's parse-time byte cache makes it do — and
+/// [`Beef::sort_txs`] applies the dependency order in place.
 #[derive(Debug, Clone)]
 pub struct Beef {
     /// BEEF version (BEEF_V1 or BEEF_V2).
@@ -29,8 +76,16 @@ pub struct Beef {
     pub bumps: Vec<MerklePath>,
     /// Transactions with BEEF metadata.
     pub txs: Vec<BeefTx>,
-    /// For Atomic BEEF: the txid of the proven transaction.
+    /// The subject txid recorded by an Atomic BEEF (BRC-95) prefix at parse
+    /// time. It is a parse-side fact, not a serialization instruction:
+    /// [`Beef::to_binary`] never re-emits the prefix (TS `toBinary` does not
+    /// either); use [`Beef::to_binary_atomic`] to produce Atomic BEEF.
     pub atomic_txid: Option<String>,
+    /// Whether serialization must compute dependency order. Cleared by
+    /// `from_binary` (emit the parsed order) and `sort_txs`; set by every
+    /// method that changes `txs` or `bumps`. TS keeps the same flag
+    /// (`needsSort`) next to its serialization cache.
+    needs_sort: bool,
 }
 
 impl Beef {
@@ -41,10 +96,20 @@ impl Beef {
             bumps: Vec::new(),
             txs: Vec::new(),
             atomic_txid: None,
+            needs_sort: true,
         }
     }
 
-    /// Deserialize a Beef from binary format.
+    // ------------------------------------------------------------------
+    // Parsing
+    // ------------------------------------------------------------------
+
+    /// Deserialize a Beef from binary format, reading exactly one BEEF and
+    /// leaving any bytes after it unread.
+    ///
+    /// This is the lenient prefix parser (TS `Beef.fromBinary` /
+    /// `fromString`): trailing data is neither consumed nor rejected. Use
+    /// [`Beef::from_binary_strict`] to enforce exact framing.
     pub fn from_binary(reader: &mut impl Read) -> Result<Self, TransactionError> {
         let mut version = read_u32_le(reader)?;
         let mut atomic_txid = None;
@@ -68,9 +133,7 @@ impl Beef {
         let mut beef = Beef::new(version);
 
         // Read bumps
-        let bump_count = read_varint(reader)
-            .map_err(|e| TransactionError::InvalidFormat(e.to_string()))?
-            as usize;
+        let bump_count = read_varint(reader)? as usize;
         for _ in 0..bump_count {
             // TS parity: Beef.fromReader parses embedded bumps with
             // legalOffsetsOnly=false, so a non-canonical/untrimmed bump does not
@@ -81,9 +144,7 @@ impl Beef {
         }
 
         // Read transactions
-        let tx_count = read_varint(reader)
-            .map_err(|e| TransactionError::InvalidFormat(e.to_string()))?
-            as usize;
+        let tx_count = read_varint(reader)? as usize;
         for _ in 0..tx_count {
             let beef_tx = if version == BEEF_V2 {
                 BeefTx::from_binary_v2(reader)?
@@ -94,6 +155,7 @@ impl Beef {
         }
 
         beef.atomic_txid = atomic_txid;
+        beef.needs_sort = false;
 
         // Link source transactions: for each input of each tx, if the input's
         // source_txid matches another tx in the BEEF, set source_transaction.
@@ -102,28 +164,68 @@ impl Beef {
         Ok(beef)
     }
 
-    /// Serialize this Beef to binary format.
-    pub fn to_binary(&self, writer: &mut impl Write) -> Result<(), TransactionError> {
-        // Write Atomic BEEF prefix if applicable
-        if let Some(ref txid) = self.atomic_txid {
-            write_u32_le(writer, ATOMIC_BEEF)?;
-            let mut txid_bytes =
-                from_hex(txid).map_err(|e| TransactionError::InvalidFormat(e.to_string()))?;
-            txid_bytes.reverse(); // BE display -> LE wire
-            writer.write_all(&txid_bytes)?;
+    /// Deserialize a Beef that must span `bytes` exactly.
+    ///
+    /// TS `Beef.fromBinaryView`: trailing data after the BEEF is an error.
+    /// This is the verdict to apply at a wire boundary — a prefix parser
+    /// silently accepts whatever follows a well-formed BEEF.
+    pub fn from_binary_strict(bytes: &[u8]) -> Result<Self, TransactionError> {
+        let mut cursor = Cursor::new(bytes);
+        let beef = Self::from_binary(&mut cursor)?;
+        if cursor.position() as usize != bytes.len() {
+            return Err(TransactionError::BeefError(
+                "Serialized BEEF contains trailing data".to_string(),
+            ));
         }
+        Ok(beef)
+    }
 
+    /// Deserialize a Beef from a hex string (lenient framing, like
+    /// [`Beef::from_binary`]).
+    pub fn from_hex(hex: &str) -> Result<Self, TransactionError> {
+        let bytes = from_hex(hex).map_err(|e| TransactionError::InvalidFormat(e.to_string()))?;
+        let mut cursor = Cursor::new(bytes);
+        Self::from_binary(&mut cursor)
+    }
+
+    // ------------------------------------------------------------------
+    // Serialization
+    // ------------------------------------------------------------------
+
+    /// Serialize this Beef to binary format.
+    ///
+    /// Matches TS `toBinary`: transactions are written in `sort_txs()` order
+    /// once anything has been merged or removed since parse (or the beef was
+    /// built from scratch), while a beef parsed by [`Beef::from_binary`] and
+    /// not touched since re-emits exactly its input bytes. The order is
+    /// computed without mutating `self`; call [`Beef::sort_txs`] to reorder
+    /// `txs` in place. An Atomic prefix is never written — a parsed
+    /// `atomic_txid` does not make this an Atomic BEEF on the way back out.
+    pub fn to_binary(&self, writer: &mut impl Write) -> Result<(), TransactionError> {
+        if self.needs_sort {
+            let (order, _) = self.compute_sort_order();
+            self.write_in_order(writer, &order)
+        } else {
+            let order: Vec<usize> = (0..self.txs.len()).collect();
+            self.write_in_order(writer, &order)
+        }
+    }
+
+    fn write_in_order(
+        &self,
+        writer: &mut impl Write,
+        order: &[usize],
+    ) -> Result<(), TransactionError> {
         write_u32_le(writer, self.version)?;
 
-        // Write bumps
         write_varint(writer, self.bumps.len() as u64)?;
         for bump in &self.bumps {
             bump.to_binary(writer)?;
         }
 
-        // Write transactions
         write_varint(writer, self.txs.len() as u64)?;
-        for tx in &self.txs {
+        for &i in order {
+            let tx = &self.txs[i];
             if self.version == BEEF_V2 {
                 tx.to_binary_v2(writer)?;
             } else {
@@ -134,13 +236,6 @@ impl Beef {
         Ok(())
     }
 
-    /// Deserialize a Beef from a hex string.
-    pub fn from_hex(hex: &str) -> Result<Self, TransactionError> {
-        let bytes = from_hex(hex).map_err(|e| TransactionError::InvalidFormat(e.to_string()))?;
-        let mut cursor = Cursor::new(bytes);
-        Self::from_binary(&mut cursor)
-    }
-
     /// Serialize this Beef to a hex string.
     pub fn to_hex(&self) -> Result<String, TransactionError> {
         let mut buf = Vec::new();
@@ -148,14 +243,791 @@ impl Beef {
         Ok(to_hex(&buf))
     }
 
+    /// Serialize as Atomic BEEF (BRC-95) for `txid`, which must exist here.
+    ///
+    /// The output holds exactly the subject and its dependency closure over
+    /// this beef: the walk follows `input_txids` from the subject and stops
+    /// at any transaction proven by a bump (or known only by txid). Closure
+    /// is derived from txids, not array position, so an unsorted beef gives
+    /// the same bytes as a sorted one. Transactions outside the closure are
+    /// dropped; bumps no bump-proven closure member references are dropped
+    /// and the survivors re-indexed in first-use order; the inner BEEF is
+    /// written in dependency order.
+    ///
+    /// Success is not a completeness guarantee: a subject whose parent is
+    /// absent serializes as an Atomic BEEF of just the subject (TS does the
+    /// same), and only [`Beef::verify_valid`] on the result reports the
+    /// missing input.
+    ///
+    /// Output layout: `ATOMIC_BEEF(4 LE) + txid(32, reversed) + BEEF`.
+    pub fn to_binary_atomic(&self, txid: &str) -> Result<Vec<u8>, TransactionError> {
+        let atomic = self.beef_for_atomic(txid)?;
+        let mut txid_bytes =
+            from_hex(txid).map_err(|e| TransactionError::InvalidFormat(e.to_string()))?;
+        txid_bytes.reverse(); // BE display -> LE wire
+
+        let mut buf = Vec::new();
+        write_u32_le(&mut buf, ATOMIC_BEEF)?;
+        buf.extend_from_slice(&txid_bytes);
+        atomic.to_binary(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// The closure beef `to_binary_atomic` serializes (TS `getBeefForAtomic`).
+    fn beef_for_atomic(&self, txid: &str) -> Result<Beef, TransactionError> {
+        let txid_to_idx = self.txid_index();
+        let subject = *txid_to_idx.get(txid).ok_or_else(|| {
+            TransactionError::BeefError(format!("{txid} does not exist in this Beef"))
+        })?;
+        let included = self.collect_atomic_transactions(subject, &txid_to_idx);
+        let mut beef = self.copy_selected_transactions(&included);
+        beef.sort_txs();
+        Ok(beef)
+    }
+
+    /// Indices of the subject's dependency closure (TS
+    /// `collectAtomicTransactions`): a depth-first walk over `input_txids`
+    /// that does not descend below a bump-proven or txid-only entry.
+    fn collect_atomic_transactions(
+        &self,
+        subject: usize,
+        txid_to_idx: &HashMap<&str, usize>,
+    ) -> HashSet<usize> {
+        let mut included = HashSet::new();
+        let mut stack = vec![subject];
+        while let Some(i) = stack.pop() {
+            if !included.insert(i) {
+                continue;
+            }
+            let tx = &self.txs[i];
+            if self.has_matching_bump(tx) || tx.is_txid_only() {
+                continue;
+            }
+            for input_txid in &tx.input_txids {
+                if let Some(&input) = txid_to_idx.get(input_txid.as_str()) {
+                    stack.push(input);
+                }
+            }
+        }
+        included
+    }
+
+    /// True iff `tx.bump_index` names a bump whose level-0 leaves include
+    /// `tx.txid`. A bump index that points at the wrong bump (or out of
+    /// range) is not a proof.
+    fn has_matching_bump(&self, tx: &BeefTx) -> bool {
+        match tx.bump_index {
+            Some(bi) if bi < self.bumps.len() => self.bumps[bi]
+                .path
+                .first()
+                .is_some_and(|level| level.iter().any(|l| l.hash.as_deref() == Some(&tx.txid))),
+            _ => false,
+        }
+    }
+
+    /// Copy the selected transactions into a fresh beef, carrying only the
+    /// bumps they are proven by, re-indexed in first-use order over the
+    /// current `txs` order (TS `copySelectedTransactions`).
+    fn copy_selected_transactions(&self, included: &HashSet<usize>) -> Beef {
+        let mut beef = Beef::new(self.version);
+        let mut bump_index_map: HashMap<usize, usize> = HashMap::new();
+
+        for (i, tx) in self.txs.iter().enumerate() {
+            if !included.contains(&i) || !self.has_matching_bump(tx) {
+                continue;
+            }
+            let Some(bi) = tx.bump_index else { continue };
+            if let std::collections::hash_map::Entry::Vacant(slot) = bump_index_map.entry(bi) {
+                slot.insert(beef.bumps.len());
+                beef.bumps.push(self.bumps[bi].clone());
+            }
+        }
+
+        for (i, tx) in self.txs.iter().enumerate() {
+            if !included.contains(&i) {
+                continue;
+            }
+            beef.txs.push(BeefTx {
+                tx: tx.tx.clone(),
+                txid: tx.txid.clone(),
+                bump_index: tx
+                    .bump_index
+                    .and_then(|bi| bump_index_map.get(&bi).copied()),
+                input_txids: tx.input_txids.clone(),
+            });
+        }
+
+        beef
+    }
+
+    /// BRC-95 transaction-inclusion check, without header-root validation:
+    /// the subject exists, no txid repeats, and every transaction here is
+    /// in the subject's recursive dependency graph.
+    ///
+    /// `txid` defaults to `atomic_txid`; with neither, the answer is false.
+    pub fn is_atomic(&self, txid: Option<&str>) -> bool {
+        let Some(txid) = txid.or(self.atomic_txid.as_deref()) else {
+            return false;
+        };
+        if txid.is_empty() {
+            return false;
+        }
+        let txid_to_idx = self.txid_index();
+        if txid_to_idx.len() != self.txs.len() {
+            return false;
+        }
+        let Some(&subject) = txid_to_idx.get(txid) else {
+            return false;
+        };
+        self.collect_atomic_transactions(subject, &txid_to_idx)
+            .len()
+            == self.txs.len()
+    }
+
+    // ------------------------------------------------------------------
+    // Lookup
+    // ------------------------------------------------------------------
+
+    /// txid -> position; a repeated txid resolves to its last position, as
+    /// the TS index map does.
+    fn txid_index(&self) -> HashMap<&str, usize> {
+        self.txs
+            .iter()
+            .enumerate()
+            .map(|(i, btx)| (btx.txid.as_str(), i))
+            .collect()
+    }
+
+    fn position_of(&self, txid: &str) -> Option<usize> {
+        self.txs.iter().rposition(|btx| btx.txid == txid)
+    }
+
+    /// Find a `BeefTx` by txid.
+    pub fn find_txid(&self, txid: &str) -> Option<&BeefTx> {
+        self.position_of(txid).map(|i| &self.txs[i])
+    }
+
+    /// Find the bump whose level-0 leaves include `txid`.
+    pub fn find_bump(&self, txid: &str) -> Option<&MerklePath> {
+        self.find_bump_index_for_txid(txid).map(|i| &self.bumps[i])
+    }
+
+    /// Index of the bump proving `txid`. When several bumps carry the same
+    /// leaf the last one wins, as the TS txid->bump index does.
+    fn find_bump_index_for_txid(&self, txid: &str) -> Option<usize> {
+        self.bumps.iter().rposition(|bump| {
+            bump.path
+                .first()
+                .is_some_and(|level| level.iter().any(|leaf| leaf.hash.as_deref() == Some(txid)))
+        })
+    }
+
+    /// True iff some txid appears more than once in `txs`.
+    ///
+    /// Unreachable through the merge API (which replaces by txid) but a
+    /// hand-built or hostile serialization can carry one; `verify_valid`
+    /// rejects it.
+    pub fn has_duplicate_txids(&self) -> bool {
+        let mut seen = HashSet::new();
+        self.txs.iter().any(|btx| !seen.insert(btx.txid.as_str()))
+    }
+
+    // ------------------------------------------------------------------
+    // Merging
+    // ------------------------------------------------------------------
+
+    /// Merge a MerklePath (BUMP) that is assumed to be fully valid.
+    ///
+    /// A bump with the same block height and computed root as an existing
+    /// one is combined into it; otherwise the bump is appended. Every
+    /// unproven transaction the (possibly combined) bump proves is then
+    /// marked: its `bump_index` is set and the bump's leaf is flagged as a
+    /// txid leaf, which is what `verify_valid` reads.
+    ///
+    /// Returns the index of the merged bump.
+    pub fn merge_bump(&mut self, bump: &MerklePath) -> Result<usize, TransactionError> {
+        self.needs_sort = true;
+        let bi = self.find_or_insert_bump(bump)?;
+
+        let leaf_txids: Vec<String> = self.bumps[bi].path[0]
+            .iter()
+            .filter_map(|leaf| leaf.hash.clone())
+            .collect();
+        for txid in leaf_txids {
+            if let Some(pos) = self.position_of(&txid) {
+                if self.txs[pos].bump_index.is_none() {
+                    self.mark_tx_proven_by_bump(pos, bi)?;
+                }
+            }
+        }
+
+        Ok(bi)
+    }
+
+    /// Find an existing compatible bump or insert a new one; return its index.
+    fn find_or_insert_bump(&mut self, bump: &MerklePath) -> Result<usize, TransactionError> {
+        let same_height: Vec<usize> = self
+            .bumps
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.block_height == bump.block_height)
+            .map(|(i, _)| i)
+            .collect();
+        if !same_height.is_empty() {
+            let root = bump.compute_root(None)?;
+            for i in same_height {
+                if self.bumps[i].compute_root(None)? != root {
+                    continue;
+                }
+                self.bumps[i].combine(bump)?;
+                return Ok(i);
+            }
+        }
+        self.bumps.push(bump.clone());
+        Ok(self.bumps.len() - 1)
+    }
+
+    /// Record bump `bi` as the proof of `txs[pos]` if the bump's level 0
+    /// carries its txid, flagging that leaf as a txid leaf.
+    fn mark_tx_proven_by_bump(&mut self, pos: usize, bi: usize) -> Result<(), TransactionError> {
+        let txid = self.txs[pos].txid.clone();
+        if let Some(leaf) = self.bumps[bi].path[0]
+            .iter_mut()
+            .find(|leaf| leaf.hash.as_deref() == Some(&txid))
+        {
+            leaf.txid = true;
+            self.txs[pos].set_bump_index(Some(bi))?;
+        }
+        Ok(())
+    }
+
+    /// Give `txs[pos]` a proof if some existing bump carries its txid.
+    fn try_to_validate_bump_index(&mut self, pos: usize) -> Result<bool, TransactionError> {
+        if self.txs[pos].bump_index.is_some() {
+            return Ok(true);
+        }
+        let Some(bi) = self.find_bump_index_for_txid(&self.txs[pos].txid) else {
+            return Ok(false);
+        };
+        self.mark_tx_proven_by_bump(pos, bi)?;
+        Ok(true)
+    }
+
+    /// Replace the entry sharing `tx`'s txid in place, or append; returns
+    /// the entry's position. Replacing in place keeps the relative order
+    /// of everything else, which is what the sort's tie-breaks read.
+    fn replace_or_append_tx(&mut self, tx: BeefTx) -> usize {
+        self.needs_sort = true;
+        match self.position_of(&tx.txid) {
+            Some(pos) => {
+                self.txs[pos] = tx;
+                pos
+            }
+            None => {
+                self.txs.push(tx);
+                self.txs.len() - 1
+            }
+        }
+    }
+
+    /// Remove an existing transaction with the given txid, preserving the
+    /// relative order of the rest.
+    pub fn remove_existing_txid(&mut self, txid: &str) {
+        if let Some(pos) = self.position_of(txid) {
+            self.txs.remove(pos);
+            self.needs_sort = true;
+        }
+    }
+
+    /// Merge a raw serialized transaction into this BEEF.
+    ///
+    /// Replaces any existing transaction with the same txid. Without an
+    /// explicit `bump_index`, an existing bump carrying the txid supplies
+    /// the proof.
+    pub fn merge_raw_tx(
+        &mut self,
+        raw_tx: &[u8],
+        bump_index: Option<usize>,
+    ) -> Result<BeefTx, TransactionError> {
+        let mut cursor = Cursor::new(raw_tx);
+        let tx = Transaction::from_binary(&mut cursor)?;
+        let pos = self.replace_or_append_tx(BeefTx::from_tx(tx, bump_index)?);
+        self.try_to_validate_bump_index(pos)?;
+        Ok(self.txs[pos].clone())
+    }
+
+    /// Merge a `Transaction` together with its `merkle_path` and, recursively,
+    /// every `source_transaction` reachable from an unproven input.
+    ///
+    /// Each transaction's bump is merged first (so a bump already here
+    /// absorbs it and proves whatever it can), then the transaction replaces
+    /// any entry sharing its txid. The walk stops below a transaction that
+    /// ends up proven — its ancestors are not needed for validity. Inputs are
+    /// visited in order. Returns the entry for `tx` itself.
+    pub fn merge_transaction(&mut self, tx: &Transaction) -> Result<BeefTx, TransactionError> {
+        let root_txid = tx.id()?;
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<&Transaction> = vec![tx];
+
+        while let Some(current) = stack.pop() {
+            let txid = current.id()?;
+            if !visited.insert(txid) {
+                continue;
+            }
+            let bump_index = match &current.merkle_path {
+                Some(mp) => Some(self.merge_bump(mp)?),
+                None => None,
+            };
+            let pos = self.replace_or_append_tx(BeefTx::from_tx(current.clone(), bump_index)?);
+            self.try_to_validate_bump_index(pos)?;
+            if self.txs[pos].bump_index.is_none() {
+                // Pushed in reverse so inputs pop in forward order.
+                for input in current.inputs.iter().rev() {
+                    if let Some(source) = &input.source_transaction {
+                        stack.push(source);
+                    }
+                }
+            }
+        }
+
+        self.find_txid(&root_txid).cloned().ok_or_else(|| {
+            TransactionError::BeefError("Failed to merge root transaction".to_string())
+        })
+    }
+
+    /// Add `txid` as a txid-only entry unless some entry already has it.
+    /// A new entry that an existing bump proves picks up that proof.
+    /// Returns the entry (existing or new).
+    pub fn merge_txid_only(&mut self, txid: &str) -> BeefTx {
+        let pos = match self.position_of(txid) {
+            Some(pos) => pos,
+            None => {
+                self.txs.push(BeefTx::from_txid(txid.to_string()));
+                self.needs_sort = true;
+                let pos = self.txs.len() - 1;
+                // A txid-only entry has no inputs to re-derive, so marking
+                // cannot fail.
+                let _ = self.try_to_validate_bump_index(pos);
+                pos
+            }
+        };
+        self.txs[pos].clone()
+    }
+
+    /// Merge one `BeefTx`: full data upgrades a txid-only entry (or fills a
+    /// gap); a txid-only entry never downgrades a full one; a full entry
+    /// never replaces an existing full one. Returns the resulting entry.
+    pub fn merge_beef_tx(&mut self, btx: &BeefTx) -> Result<BeefTx, TransactionError> {
+        let existing = self.position_of(&btx.txid);
+        let existing_is_txid_only = existing.is_some_and(|pos| self.txs[pos].is_txid_only());
+
+        if btx.is_txid_only() && existing.is_none() {
+            return Ok(self.merge_txid_only(&btx.txid));
+        }
+        if let Some(tx) = &btx.tx {
+            if existing.is_none() || existing_is_txid_only {
+                // The incoming entry's bump_index refers to ITS beef's bumps;
+                // the proof is re-derived against ours.
+                let pos = self.replace_or_append_tx(BeefTx::from_tx(tx.clone(), None)?);
+                self.try_to_validate_bump_index(pos)?;
+                return Ok(self.txs[pos].clone());
+            }
+        }
+        existing.map(|pos| self.txs[pos].clone()).ok_or_else(|| {
+            TransactionError::BeefError(format!("Failed to merge BeefTx for txid: {}", btx.txid))
+        })
+    }
+
+    /// Merge another Beef into this one: bumps first (deduplicated by block
+    /// height + root), then transactions via [`Beef::merge_beef_tx`].
+    pub fn merge_beef(&mut self, other: &Beef) -> Result<(), TransactionError> {
+        for bump in &other.bumps {
+            self.merge_bump(bump)?;
+        }
+        for btx in &other.txs {
+            self.merge_beef_tx(btx)?;
+        }
+        Ok(())
+    }
+
+    /// Merge a Beef from binary data into this one.
+    pub fn merge_beef_from_binary(&mut self, data: &[u8]) -> Result<(), TransactionError> {
+        let mut cursor = Cursor::new(data);
+        let other = Beef::from_binary(&mut cursor)?;
+        self.merge_beef(&other)
+    }
+
+    /// Replace the entry for `txid` with a txid-only entry; `None` if the
+    /// txid is unknown. A bump that proves it keeps proving it.
+    pub fn make_txid_only(&mut self, txid: &str) -> Option<BeefTx> {
+        let pos = self.position_of(txid)?;
+        if !self.txs[pos].is_txid_only() {
+            self.txs[pos] = BeefTx::from_txid(txid.to_string());
+            self.needs_sort = true;
+            let _ = self.try_to_validate_bump_index(pos);
+        }
+        Some(self.txs[pos].clone())
+    }
+
+    /// Remove every txid-only entry whose txid is in `known_txids`, then
+    /// drop bumps no remaining transaction references and re-index the rest.
+    ///
+    /// Full transactions are never removed — they are validity data the
+    /// beef's other transactions depend on.
+    pub fn trim_known_txids(&mut self, known_txids: &[String]) -> Result<(), TransactionError> {
+        let known: HashSet<&str> = known_txids.iter().map(String::as_str).collect();
+        let before = self.txs.len();
+        self.txs
+            .retain(|tx| !(tx.is_txid_only() && known.contains(tx.txid.as_str())));
+        if self.txs.len() != before {
+            self.needs_sort = true;
+        }
+        self.reindex_bumps()
+    }
+
+    /// Drop bumps no transaction references; remap the survivors' indices.
+    fn reindex_bumps(&mut self) -> Result<(), TransactionError> {
+        let referenced: HashSet<usize> = self.txs.iter().filter_map(|tx| tx.bump_index).collect();
+        if referenced.len() >= self.bumps.len() {
+            return Ok(());
+        }
+        self.needs_sort = true;
+        let mut index_map: HashMap<usize, usize> = HashMap::new();
+        let mut kept = Vec::with_capacity(referenced.len());
+        for (i, bump) in std::mem::take(&mut self.bumps).into_iter().enumerate() {
+            if referenced.contains(&i) {
+                index_map.insert(i, kept.len());
+                kept.push(bump);
+            }
+        }
+        self.bumps = kept;
+        for tx in &mut self.txs {
+            if let Some(bi) = tx.bump_index {
+                let mapped = *index_map.get(&bi).ok_or_else(|| {
+                    TransactionError::BeefError(format!(
+                        "Internal error: bumpIndex {bi} not found in indexMap"
+                    ))
+                })?;
+                tx.bump_index = Some(mapped);
+            }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Sorting
+    // ------------------------------------------------------------------
+
+    /// Sort `txs` into dependency order and report the partitions.
+    ///
+    /// Resulting order: transactions with a missing input, then those that
+    /// depend on them (or cycle), then input-less txid-only entries, then
+    /// the valid set — proven transactions in their existing order followed
+    /// by their dependents, ancestors before dependents. The unsortable
+    /// entries lead so that the valid tail is self-contained.
+    ///
+    /// Sorting a sorted beef leaves the order unchanged. The report's lists
+    /// follow the array order at the time of the call, so `valid` can list
+    /// the same set in a different order on a second call.
+    pub fn sort_txs(&mut self) -> BeefSortResult {
+        self.needs_sort = false;
+        let (order, result) = self.compute_sort_order();
+        let mut old: Vec<Option<BeefTx>> = std::mem::take(&mut self.txs)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.txs = order
+            .into_iter()
+            .map(|i| old[i].take().expect("sort order is a permutation"))
+            .collect();
+        result
+    }
+
+    /// Txids of every transaction that has a proof, is an input-less
+    /// txid-only entry, or chains back to one (the `valid` partition).
+    pub fn get_valid_txids(&self) -> Vec<String> {
+        self.compute_sort_order().1.valid
+    }
+
+    /// The TS `sortTxs` algorithm, as a permutation of `txs` plus the sort
+    /// result, without touching `self`. Keyed by txid throughout, so a
+    /// repeated txid collapses exactly as it does in the reference maps.
+    fn compute_sort_order(&self) -> (Vec<usize>, BeefSortResult) {
+        // Insertion-ordered "valid" set (TS: Object.keys of a Record).
+        fn mark_valid<'a>(set: &mut HashSet<&'a str>, list: &mut Vec<String>, txid: &'a str) {
+            if set.insert(txid) {
+                list.push(txid.to_string());
+            }
+        }
+        let mut valid: Vec<String> = Vec::new();
+        let mut valid_set: HashSet<&str> = HashSet::new();
+
+        let present: HashSet<&str> = self.txs.iter().map(|t| t.txid.as_str()).collect();
+        let mut result: Vec<usize> = Vec::new();
+        let mut txid_only: Vec<usize> = Vec::new();
+        let mut queue: Vec<usize> = Vec::new();
+
+        // Partition: proven, input-less txid-only, everything else.
+        for (i, tx) in self.txs.iter().enumerate() {
+            if tx.has_proof() {
+                mark_valid(&mut valid_set, &mut valid, &tx.txid);
+                result.push(i);
+            } else if tx.is_txid_only() && tx.input_txids.is_empty() {
+                mark_valid(&mut valid_set, &mut valid, &tx.txid);
+                txid_only.push(i);
+            } else {
+                queue.push(i);
+            }
+        }
+
+        // Separate entries with an input absent from the beef.
+        let mut missing_inputs: Vec<String> = Vec::new();
+        let mut txs_missing_inputs: Vec<usize> = Vec::new();
+        let mut remaining: Vec<usize> = Vec::new();
+        for &i in &queue {
+            let mut has_missing = false;
+            for input_txid in &self.txs[i].input_txids {
+                if !present.contains(input_txid.as_str()) {
+                    if !missing_inputs.contains(input_txid) {
+                        missing_inputs.push(input_txid.clone());
+                    }
+                    has_missing = true;
+                }
+            }
+            if has_missing {
+                txs_missing_inputs.push(i);
+            } else {
+                remaining.push(i);
+            }
+        }
+
+        // Topological sort of the remainder. An input that is neither valid
+        // nor a candidate (it has a missing input itself) never resolves, so
+        // its dependents stay unprocessed and land in `not_valid`.
+        let candidates: HashSet<&str> = remaining
+            .iter()
+            .map(|&i| self.txs[i].txid.as_str())
+            .collect();
+        let mut indegree: HashMap<&str, usize> = HashMap::new();
+        let mut dependents: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut original_index: HashMap<&str, usize> = HashMap::new();
+        let mut round: HashMap<&str, usize> = HashMap::new();
+        for (qpos, &i) in remaining.iter().enumerate() {
+            original_index.insert(self.txs[i].txid.as_str(), qpos);
+        }
+        let valid_snapshot: HashSet<&str> = valid.iter().map(String::as_str).collect();
+        for &i in &remaining {
+            let tx = &self.txs[i];
+            let mut degree = 0;
+            for input_txid in &tx.input_txids {
+                if valid_snapshot.contains(input_txid.as_str()) {
+                    continue;
+                }
+                degree += 1;
+                if candidates.contains(input_txid.as_str()) {
+                    dependents.entry(input_txid.as_str()).or_default().push(i);
+                }
+            }
+            indegree.insert(tx.txid.as_str(), degree);
+            round.insert(tx.txid.as_str(), 0);
+        }
+
+        // Process the ready list as it grows. A dependency that sits after
+        // its dependent in the original order pushes the dependent into the
+        // next "round", reproducing the reference's repeated-scan ordering.
+        let mut ready: Vec<usize> = remaining
+            .iter()
+            .copied()
+            .filter(|&i| indegree.get(self.txs[i].txid.as_str()) == Some(&0))
+            .collect();
+        let mut processed: HashSet<&str> = HashSet::new();
+        let mut k = 0;
+        while k < ready.len() {
+            let i = ready[k];
+            k += 1;
+            let txid = self.txs[i].txid.as_str();
+            if !processed.insert(txid) {
+                continue;
+            }
+            let deps = dependents.get(txid).cloned().unwrap_or_default();
+            for dep in deps {
+                let dep_txid = self.txs[dep].txid.as_str();
+                let advance = usize::from(
+                    original_index.get(txid).copied().unwrap_or(0)
+                        > original_index.get(dep_txid).copied().unwrap_or(0),
+                );
+                let next_round = round.get(txid).copied().unwrap_or(0) + advance;
+                let r = round.entry(dep_txid).or_insert(0);
+                *r = (*r).max(next_round);
+                let next = indegree
+                    .get(dep_txid)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(1);
+                indegree.insert(dep_txid, next);
+                if next == 0 {
+                    ready.push(dep);
+                }
+            }
+        }
+
+        let mut by_round: Vec<Vec<usize>> = Vec::new();
+        for &i in &remaining {
+            let txid = self.txs[i].txid.as_str();
+            if !processed.contains(txid) {
+                continue;
+            }
+            let r = round.get(txid).copied().unwrap_or(0);
+            if by_round.len() <= r {
+                by_round.resize_with(r + 1, Vec::new);
+            }
+            by_round[r].push(i);
+        }
+        for bucket in &by_round {
+            for &i in bucket {
+                mark_valid(&mut valid_set, &mut valid, &self.txs[i].txid);
+                result.push(i);
+            }
+        }
+
+        let not_valid: Vec<usize> = remaining
+            .iter()
+            .copied()
+            .filter(|&i| !processed.contains(self.txs[i].txid.as_str()))
+            .collect();
+
+        let txids = |ix: &[usize]| ix.iter().map(|&i| self.txs[i].txid.clone()).collect();
+        let sort_result = BeefSortResult {
+            missing_inputs,
+            not_valid: txids(&not_valid),
+            valid: valid.clone(),
+            with_missing_inputs: txids(&txs_missing_inputs),
+            txid_only: txids(&txid_only),
+        };
+
+        let mut order = txs_missing_inputs;
+        order.extend(not_valid);
+        order.extend(txid_only);
+        order.extend(result);
+        (order, sort_result)
+    }
+
+    // ------------------------------------------------------------------
+    // Validation
+    // ------------------------------------------------------------------
+
+    /// Structural validity (no merkle-root confirmation), sorting first.
+    ///
+    /// Valid iff: an Atomic subject, if recorded, closes over every
+    /// transaction; no txid repeats; every transaction has a proof or
+    /// chains back to one (txid-only entries count only with
+    /// `allow_txid_only`); every bump txid leaf's computed root agrees
+    /// with the first root seen for its height; every `bump_index` names
+    /// a bump carrying the transaction's txid; and, in dependency order,
+    /// every input is an already-accepted txid.
+    ///
+    /// `roots` carries the per-height merkle roots for a chain tracker to
+    /// confirm. Errors come only from malformed merkle paths whose root
+    /// cannot be computed at all.
+    pub fn verify_valid(
+        &self,
+        allow_txid_only: bool,
+    ) -> Result<BeefVerifyResult, TransactionError> {
+        let mut r = BeefVerifyResult::default();
+
+        if self.atomic_txid.is_some() && !self.is_atomic(None) {
+            return Ok(r);
+        }
+        let (order, sr) = self.compute_sort_order();
+        if self.has_duplicate_txids() {
+            return Ok(r);
+        }
+        if !sr.missing_inputs.is_empty()
+            || !sr.not_valid.is_empty()
+            || (!sr.txid_only.is_empty() && !allow_txid_only)
+            || !sr.with_missing_inputs.is_empty()
+        {
+            return Ok(r);
+        }
+
+        // Accepted txids: txid-only (if allowed), bump leaves, then each
+        // transaction once its inputs are all accepted.
+        let mut txids: HashSet<&str> = HashSet::new();
+
+        for tx in &self.txs {
+            if !tx.is_txid_only() {
+                continue;
+            }
+            if !allow_txid_only {
+                return Ok(r);
+            }
+            txids.insert(tx.txid.as_str());
+        }
+
+        for bump in &self.bumps {
+            for leaf in &bump.path[0] {
+                let Some(hash) = leaf.hash.as_deref().filter(|h| !h.is_empty()) else {
+                    continue;
+                };
+                if !leaf.txid {
+                    continue;
+                }
+                txids.insert(hash);
+                let root = bump.compute_root(Some(hash))?;
+                let accepted = r
+                    .roots
+                    .entry(bump.block_height)
+                    .or_insert_with(|| root.clone());
+                if *accepted != root {
+                    return Ok(r);
+                }
+            }
+        }
+
+        for tx in &self.txs {
+            if let Some(bi) = tx.bump_index {
+                if bi >= self.bumps.len() {
+                    return Ok(r);
+                }
+                let proven = self.bumps[bi]
+                    .path
+                    .first()
+                    .is_some_and(|level| level.iter().any(|l| l.hash.as_deref() == Some(&tx.txid)));
+                if !proven {
+                    return Ok(r);
+                }
+            }
+        }
+
+        for &i in &order {
+            let tx = &self.txs[i];
+            for input_txid in &tx.input_txids {
+                if !txids.contains(input_txid.as_str()) {
+                    return Ok(r);
+                }
+            }
+            txids.insert(tx.txid.as_str());
+        }
+
+        r.valid = true;
+        Ok(r)
+    }
+
+    /// [`Beef::verify_valid`] reduced to its verdict.
+    pub fn is_valid(&self, allow_txid_only: bool) -> Result<bool, TransactionError> {
+        Ok(self.verify_valid(allow_txid_only)?.valid)
+    }
+
+    // ------------------------------------------------------------------
+    // Transaction extraction
+    // ------------------------------------------------------------------
+
     /// Extract the subject transaction from this BEEF, consuming it.
     ///
     /// If `atomic_txid` is set, returns the transaction matching that txid.
     /// Otherwise, returns the last transaction (the subject).
     /// Before returning, links source transactions from the BEEF for each input.
-    pub fn into_transaction(
-        self,
-    ) -> Result<crate::transaction::transaction::Transaction, TransactionError> {
+    pub fn into_transaction(self) -> Result<Transaction, TransactionError> {
         let subject_idx = if let Some(ref atomic_txid) = self.atomic_txid {
             self.txs
                 .iter()
@@ -225,256 +1097,6 @@ impl Beef {
         Ok(tx)
     }
 
-    /// Topologically sort transactions by dependency order.
-    ///
-    /// Uses Kahn's algorithm. Proven transactions (with bump_index) and those
-    /// with no in-BEEF dependencies come first; dependent transactions follow.
-    pub fn sort_txs(&mut self) {
-        use std::collections::{HashMap, VecDeque};
-
-        let n = self.txs.len();
-        if n <= 1 {
-            return;
-        }
-
-        // Build txid -> index map
-        let txid_to_idx: HashMap<&str, usize> = self
-            .txs
-            .iter()
-            .enumerate()
-            .map(|(i, btx)| (btx.txid.as_str(), i))
-            .collect();
-
-        // Compute in-degree for each tx (how many of its input txids are in this BEEF)
-        let mut in_degree = vec![0usize; n];
-        // adjacency: txid_idx -> list of dependent tx indices
-        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
-
-        for (i, btx) in self.txs.iter().enumerate() {
-            for input_txid in &btx.input_txids {
-                if let Some(&dep_idx) = txid_to_idx.get(input_txid.as_str()) {
-                    if dep_idx != i {
-                        in_degree[i] += 1;
-                        dependents[dep_idx].push(i);
-                    }
-                }
-            }
-        }
-
-        // Start with nodes having in-degree 0
-        let mut queue: VecDeque<usize> = VecDeque::new();
-        for (i, &deg) in in_degree.iter().enumerate() {
-            if deg == 0 {
-                queue.push_back(i);
-            }
-        }
-
-        let mut sorted_indices: Vec<usize> = Vec::with_capacity(n);
-        while let Some(idx) = queue.pop_front() {
-            sorted_indices.push(idx);
-            for &dep in &dependents[idx] {
-                in_degree[dep] -= 1;
-                if in_degree[dep] == 0 {
-                    queue.push_back(dep);
-                }
-            }
-        }
-
-        // If there are remaining nodes (cycle), append them
-        if sorted_indices.len() < n {
-            for i in 0..n {
-                if !sorted_indices.contains(&i) {
-                    sorted_indices.push(i);
-                }
-            }
-        }
-
-        // Reorder self.txs according to sorted_indices
-        let old_txs = std::mem::take(&mut self.txs);
-        self.txs = sorted_indices
-            .into_iter()
-            .map(|i| old_txs[i].clone())
-            .collect();
-    }
-
-    /// Find a `BeefTx` by txid.
-    pub fn find_txid(&self, txid: &str) -> Option<&BeefTx> {
-        self.txs.iter().find(|btx| btx.txid == txid)
-    }
-
-    /// Merge a MerklePath (BUMP) that is assumed to be fully valid.
-    ///
-    /// If an identical bump (same block height, same computed root) already exists,
-    /// combines them. Otherwise appends a new bump.
-    ///
-    /// After merging, scans transactions to assign bump indices to any that match
-    /// a leaf in the merged bump.
-    ///
-    /// Returns the index of the merged bump.
-    pub fn merge_bump(&mut self, bump: &MerklePath) -> Result<usize, TransactionError> {
-        let mut bump_index: Option<usize> = None;
-
-        for (i, existing) in self.bumps.iter_mut().enumerate() {
-            if existing.block_height == bump.block_height {
-                let root_a = existing.compute_root(None)?;
-                let root_b = bump.compute_root(None)?;
-                if root_a == root_b {
-                    existing.combine(bump)?;
-                    bump_index = Some(i);
-                    break;
-                }
-            }
-        }
-
-        if bump_index.is_none() {
-            bump_index = Some(self.bumps.len());
-            self.bumps.push(bump.clone());
-        }
-
-        let bi = bump_index.expect("bump_index was just set");
-
-        // Check if any existing transactions are proven by this bump
-        let bump_ref = &self.bumps[bi];
-        let leaf_txids: Vec<String> = bump_ref.path[0]
-            .iter()
-            .filter_map(|leaf| leaf.hash.clone())
-            .collect();
-
-        for btx in &mut self.txs {
-            if btx.bump_index.is_none() && leaf_txids.contains(&btx.txid) {
-                btx.bump_index = Some(bi);
-            }
-        }
-
-        Ok(bi)
-    }
-
-    /// Remove an existing transaction with the given txid.
-    pub fn remove_existing_txid(&mut self, txid: &str) {
-        if let Some(pos) = self.txs.iter().position(|btx| btx.txid == txid) {
-            self.txs.remove(pos);
-        }
-    }
-
-    /// Merge a raw serialized transaction into this BEEF.
-    ///
-    /// Replaces any existing transaction with the same txid.
-    ///
-    /// If `bump_index` is provided, it must be a valid index into `self.bumps`.
-    pub fn merge_raw_tx(
-        &mut self,
-        raw_tx: &[u8],
-        bump_index: Option<usize>,
-    ) -> Result<BeefTx, TransactionError> {
-        let mut cursor = std::io::Cursor::new(raw_tx);
-        let tx = crate::transaction::transaction::Transaction::from_binary(&mut cursor)?;
-        let new_tx = BeefTx::from_tx(tx, bump_index)?;
-        self.remove_existing_txid(&new_tx.txid);
-        let txid = new_tx.txid.clone();
-        self.txs.push(new_tx);
-
-        // Try to find a bump for this transaction if none provided
-        if bump_index.is_none() {
-            self.try_to_validate_bump_index(&txid);
-        }
-
-        Ok(self.txs.last().cloned().expect("just pushed"))
-    }
-
-    /// Merge another Beef into this one.
-    ///
-    /// All BUMPs from `other` are merged first (deduplicating by block height + root),
-    /// then all transactions are merged (replacing any with matching txids).
-    pub fn merge_beef(&mut self, other: &Beef) -> Result<(), TransactionError> {
-        for bump in &other.bumps {
-            self.merge_bump(bump)?;
-        }
-
-        for btx in &other.txs {
-            if btx.is_txid_only() {
-                // Merge txid-only if we don't already have this txid
-                if self.find_txid(&btx.txid).is_none() {
-                    self.txs.push(BeefTx::from_txid(btx.txid.clone()));
-                }
-            } else if let Some(ref tx) = btx.tx {
-                // Re-derive the bump index in the context of our bumps
-                let new_bump_index = self.find_bump_index_for_txid(&btx.txid);
-                let new_btx = BeefTx::from_tx(tx.clone(), new_bump_index)?;
-                self.remove_existing_txid(&btx.txid);
-                let txid = new_btx.txid.clone();
-                self.txs.push(new_btx);
-                if new_bump_index.is_none() {
-                    self.try_to_validate_bump_index(&txid);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Merge a Beef from binary data into this one.
-    pub fn merge_beef_from_binary(&mut self, data: &[u8]) -> Result<(), TransactionError> {
-        let mut cursor = std::io::Cursor::new(data);
-        let other = Beef::from_binary(&mut cursor)?;
-        self.merge_beef(&other)
-    }
-
-    /// Serialize this Beef as Atomic BEEF (BRC-95) for a specific transaction.
-    ///
-    /// The target `txid` must exist in this Beef. After sorting by dependency order,
-    /// if the target transaction is not the last one, transactions after it are excluded.
-    ///
-    /// The output format is: `ATOMIC_BEEF(4 bytes) + txid(32 bytes LE) + BEEF binary`.
-    pub fn to_binary_atomic(&self, txid: &str) -> Result<Vec<u8>, TransactionError> {
-        // Verify the txid exists
-        if self.find_txid(txid).is_none() {
-            return Err(TransactionError::BeefError(format!(
-                "{txid} does not exist in this Beef"
-            )));
-        }
-
-        // Clone and set up atomic txid
-        let mut atomic_beef = self.clone();
-        atomic_beef.atomic_txid = Some(txid.to_string());
-
-        // If the target tx is not the last one, remove transactions after it
-        if let Some(pos) = atomic_beef.txs.iter().position(|btx| btx.txid == txid) {
-            atomic_beef.txs.truncate(pos + 1);
-        }
-
-        let mut buf = Vec::new();
-        atomic_beef.to_binary(&mut buf)?;
-        Ok(buf)
-    }
-
-    /// Try to find a bump index for a txid by scanning all bumps.
-    fn try_to_validate_bump_index(&mut self, txid: &str) {
-        for (i, bump) in self.bumps.iter().enumerate() {
-            let found = bump.path[0]
-                .iter()
-                .any(|leaf| leaf.hash.as_deref() == Some(txid));
-            if found {
-                if let Some(btx) = self.txs.iter_mut().find(|btx| btx.txid == txid) {
-                    btx.bump_index = Some(i);
-                }
-                return;
-            }
-        }
-    }
-
-    /// Find the bump index for a txid, if any bump contains it.
-    fn find_bump_index_for_txid(&self, txid: &str) -> Option<usize> {
-        for (i, bump) in self.bumps.iter().enumerate() {
-            let found = bump.path[0]
-                .iter()
-                .any(|leaf| leaf.hash.as_deref() == Some(txid));
-            if found {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// Link source transactions within this BEEF.
     ///
     /// For each transaction input, if its source_txid matches another transaction
@@ -491,7 +1113,7 @@ impl Beef {
         // We need to clone transactions to set source_transaction references
         // because Rust ownership rules prevent borrowing self.txs mutably
         // while also reading from it. We clone the source txs.
-        let tx_clones: Vec<Option<crate::transaction::transaction::Transaction>> =
+        let tx_clones: Vec<Option<Transaction>> =
             self.txs.iter().map(|btx| btx.tx.clone()).collect();
 
         for btx in &mut self.txs {
