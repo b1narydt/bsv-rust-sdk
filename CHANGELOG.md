@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-22
+
+Wires this crate to the **official cross-implementation conformance corpus** from
+`bsv-blockchain/ts-stack` — the same vectors the Go and TypeScript toolboxes are held to — and
+fixes every disagreement it surfaced. `conformance/DIVERGENCES.md` is empty. The parity reference
+for this release is **@bsv/sdk 2.4.1**.
+
+### Changed — breaking
+
+- **`RevealSpecificKeyLinkageResult.counterparty` / `RevealSpecificResult.counterparty` are now `Counterparty`**, not `PublicKey`, so they can carry the `self`/`anyone` sentinels the reference has always allowed. Previously the crypto completed and the result was discarded because the type could not hold a legal value. A caller matching on the old concrete key must now handle the sentinels. (0.6.0 shipped this; restated here for callers upgrading across both.)
+- **`CertificateResult.verifier` is now `Option<String>`.** The reference types it as a string; this crate held hex bytes, so wire bytes `[104, 105]` surfaced as `"6869"` where the reference gives `"hi"`.
+- **Optional arrays that the wire distinguishes are now `Option<Vec<_>>`.** The reference encodes absent as `-1` and empty as `0` and round-trips the difference; this crate collapsed both to an empty `Vec` in each direction. Affects `CreateActionArgs.{inputs,outputs,labels}`, `CreateActionOutput.tags`, `CreateActionOptions.{known_txids,no_send_change,send_with}`, `SignActionOptions.send_with`, `InternalizeActionArgs.labels`, `CreateActionResult.{no_send_change,send_with_results}`, `SignActionResult.send_with_results`, and the `Action`/`Output` siblings. `ListOutputsArgs.tags` and `BasketInsertion.tags` are deliberately unchanged — the reference collapses omitted and `[]` to the same encoding for those.
+- **`ListOutputsArgs.offset` is now `Option<i64>`.** The reference documents negative offsets as a query mode — "outputs are returned newest first and offset of -1 is the newest output" — which `Option<u32>` could not express at all.
+- **`Transaction::add_input` returns `Result`.** It accepted an input with no source reference; the reference rejects it.
+- **`ecdsa_verify` returns `Result<bool>`.** It returned `false` for an infinity public key, conflating "this key is not a valid point" with "this signature does not verify".
+- **`PeerSession` gains `certificates_required` and `certificates_validated`**, which the reference carries and this crate had no counterpart for.
+
+### Fixed
+
+- **Compound BUMPs (BRC-74) were rejected.** `compute_root` used the number of serialized path levels as the tree height, where a level-0-only compound path needs it inferred from the largest leaf offset; odd right-edge nodes were not implicitly duplicated. Every official compound BUMP failed with "Mismatched roots" — the shape that occurs whenever one block proves two of a wallet's transactions, so ordinary production BEEF. The guard itself is retained: genuinely inconsistent compound paths still reject.
+- **Inbound `certificateResponse` was dispatched with no verification** — no signature check, no session lookup, no `yourNonce` validation, no replay gate — and the identity handed to consumers was the raw envelope claim. Four of the five message types delegated to a handler that authenticates first; this one did not, and no `process_certificate_response` existed. It now performs the reference's full sequence before anything reaches a consumer. (#45)
+- **Certificates arriving on `initialResponse` were delivered without content validation.** The peer identity was genuinely verified there, but certifier signatures, subject binding and agreement with the requested set were never checked. Now ports the reference's `validateInitialResponseCertificates`.
+- **`Transaction::to_beef` resolved ancestry by placement rather than by txid**, so a valid repeated-ancestor DAG failed to re-serialize when the incomplete placement was reached first. `merge_transaction` and `Historian` shared the defect.
+- **AES-192 was unsupported** across GCM and CBC.
+- **Compact signatures accepted an out-of-range recovery id** (4); valid ids are 0..=3.
+- **`PrivateKey::from_hex` rejected scalars at or above `n`** instead of reducing modulo the curve order.
+- **`Script::to_asm` rendered `OP_0` as `0`**; the sweep also corrected `OP_1NEGATE`, `OP_CHECKLOCKTIMEVERIFY` and `OP_CHECKSEQUENCEVERIFY`.
+- **`Transaction::add_output` accepted an output with neither satoshis nor `change`**, and **`SatoshisPerKilobyte::compute_fee` computed a fee for an input with no source value** — a silently wrong number that costs real satoshis.
+- **`ECIES::electrum_encrypt` had no `noKey` mode**, so a legal reference call was unrepresentable.
+- **The checksig parser was duplicated inline** in both spend paths rather than calling `TransactionSignature::from_checksig_format`. Behaviour-preserving, but two copies of signature parsing in a consensus-critical path can drift.
+
+### Added
+
+- `conformance/` — vendored official vectors pinned in `SOURCE`, `refresh-vectors.sh` so the pin cannot rot silently, a generated `COVERAGE.md` listing every upstream file including those not covered, and `DIVERGENCES.md`.
+- `scripts/unwired-pub-fns.py` + a CI job: a ratchet against `pub fn`s that only tests reference. `dead_code` never fires on a `pub` item, which is how a fully implemented, fully tested `validate_certificates` sat unwired while the certificate path skipped validation. The predicate cannot separate a disconnected helper from a genuine entry point on its own, so the current set is baselined as reviewed and CI fails only on a new one.
+
+
 ### Changed
 
 - **Breaking:** BRC-100 arrays whose binary wire format distinguishes omission (`-1`) from an explicit empty list (`0`) now use `Option<Vec<_>>`. This applies to `CreateActionArgs::{inputs, outputs, labels}`, `CreateActionOutput::tags`, `CreateActionOptions::{known_txids, no_send_change, send_with}`, `SignActionOptions::send_with`, `InternalizeActionArgs::labels`, `CreateActionResult::{no_send_change, send_with_results}`, `SignActionResult::send_with_results`, `Action::{labels, inputs, outputs}`, and `Output::{tags, labels}`. Callers must use `None` to omit a field and `Some(vec![])` to send or return an explicit empty array. `ListOutputsArgs::tags` and `BasketInsertion::tags` remain plain `Vec<_>` because their TypeScript wire paths collapse omitted and empty arrays.
