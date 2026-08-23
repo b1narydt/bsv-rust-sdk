@@ -40,26 +40,15 @@ pub fn serialize_internalize_action_args(
                         w,
                         &insertion.custom_instructions.clone().unwrap_or_default(),
                     )?;
-                    write_string_slice(
-                        w,
-                        &if insertion.tags.is_empty() {
-                            None
-                        } else {
-                            Some(insertion.tags.clone())
-                        },
-                    )?;
+                    // The TypeScript transceiver writes zero for both omitted
+                    // and empty insertion tags, and its processor always
+                    // returns an explicit array.
+                    write_string_slice(w, &Some(insertion.tags.clone()))?;
                 }
             }
         }
         // Labels, description, seekPermission
-        write_string_slice(
-            w,
-            &if args.labels.is_empty() {
-                None
-            } else {
-                Some(args.labels.clone())
-            },
-        )?;
+        write_string_slice(w, &args.labels)?;
         write_string(w, &args.description)?;
         write_optional_bool(w, args.seek_permission.0)
     })
@@ -116,7 +105,7 @@ pub fn deserialize_internalize_action_args(
         };
         outputs.push(output);
     }
-    let labels = read_string_slice(&mut r)?.unwrap_or_default();
+    let labels = read_string_slice(&mut r)?;
     let description = read_string(&mut r)?;
     let seek_permission = BooleanDefaultTrue(read_optional_bool(&mut r)?);
     Ok(InternalizeActionArgs {

@@ -25,8 +25,8 @@ impl WalletInterface for MockWallet {
         Ok(CreateActionResult {
             txid: Some("abcd1234".repeat(8)),
             tx: None,
-            no_send_change: vec![],
-            send_with_results: vec![],
+            no_send_change: Some(vec![]),
+            send_with_results: Some(vec![]),
             signable_transaction: None,
         })
     }
@@ -39,7 +39,7 @@ impl WalletInterface for MockWallet {
         Ok(SignActionResult {
             txid: Some("signed123".to_string()),
             tx: None,
-            send_with_results: vec![],
+            send_with_results: Some(vec![]),
         })
     }
 
@@ -685,8 +685,6 @@ fn test_call_code_round_trip_all() {
 mod json_round_trip {
     use crate::wallet::interfaces::*;
     use crate::wallet::types::*;
-    use std::collections::HashMap;
-
     #[test]
     fn test_encrypt_args_json_round_trip() {
         let args = EncryptArgs {
@@ -808,11 +806,11 @@ mod json_round_trip {
         let args = CreateActionArgs {
             description: "test action".to_string(),
             input_beef: None,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: Some(vec![]),
+            outputs: Some(vec![]),
             lock_time: None,
             version: None,
-            labels: vec!["label1".to_string()],
+            labels: Some(vec!["label1".to_string()]),
             options: None,
             reference: None,
         };
@@ -820,7 +818,7 @@ mod json_round_trip {
         let json = serde_json::to_string(&args).unwrap();
         let deserialized: CreateActionArgs = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.description, "test action");
-        assert_eq!(deserialized.labels, vec!["label1".to_string()]);
+        assert_eq!(deserialized.labels, Some(vec!["label1".to_string()]));
     }
 
     #[test]

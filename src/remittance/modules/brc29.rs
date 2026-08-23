@@ -387,7 +387,7 @@ impl RemittanceModule for Brc29RemittanceModule {
                 InternalizeActionArgs {
                     tx: settlement.transaction.clone(),
                     description: "BRC-29 payment received".to_string(),
-                    labels: self.config.labels.clone(),
+                    labels: Some(self.config.labels.clone()),
                     seek_permission: BooleanDefaultTrue(Some(true)),
                     outputs: vec![match self.config.internalize_protocol {
                         InternalizeProtocol::WalletPayment => InternalizeOutput::WalletPayment {
@@ -574,21 +574,21 @@ impl Brc29RemittanceModule {
             .create_action(
                 CreateActionArgs {
                     description,
-                    labels,
-                    outputs: vec![CreateActionOutput {
+                    labels: Some(labels),
+                    outputs: Some(vec![CreateActionOutput {
                         locking_script: Some(script_bytes),
                         satoshis: option.amount_satoshis,
                         output_description: self.config.output_description.clone(),
                         basket: None,
                         custom_instructions: Some(custom_json),
-                        tags: vec![],
-                    }],
+                        tags: Some(vec![]),
+                    }]),
                     options: Some(CreateActionOptions {
                         randomize_outputs: BooleanDefaultTrue(Some(false)),
                         ..Default::default()
                     }),
                     input_beef: None,
-                    inputs: vec![],
+                    inputs: Some(vec![]),
                     lock_time: None,
                     version: None,
                     reference: None,
