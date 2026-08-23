@@ -272,11 +272,15 @@ impl MerklePath {
             .and_then(|level| level.iter().find(|l| l.offset == offset))
     }
 
-    /// Find leaf at given height/offset, or compute it from the level below recursively.
+    /// Find a leaf at `height`/`offset`, or compute it recursively from lower levels.
+    ///
+    /// A single-level compound path can omit every intermediate node. In that form,
+    /// `max_offset` identifies an odd right edge whose missing peer must be duplicated.
     fn find_or_compute_leaf(
         &self,
         height: usize,
         offset: u64,
+        max_offset: u64,
     ) -> Result<Option<MerklePathLeaf>, TransactionError> {
         // Check if leaf exists at this level
         if let Some(leaf) = self.find_leaf(height, offset) {
@@ -292,26 +296,30 @@ impl MerklePath {
         let h = height - 1;
         let l = offset << 1;
 
-        let leaf0 = self.find_or_compute_leaf(h, l)?;
+        let leaf0 = self.find_or_compute_leaf(h, l, max_offset)?;
         let leaf0 = match leaf0 {
             Some(ref leaf) if matches!(leaf.hash.as_deref(), Some(h) if !h.is_empty()) => leaf,
             _ => return Ok(None),
         };
 
-        let leaf1 = match self.find_or_compute_leaf(h, l + 1)? {
-            Some(leaf) => leaf,
-            None => return Ok(None),
-        };
-
         // SAFETY: leaf0.hash confirmed to be Some with non-empty content by match above
         let leaf0_hash = leaf0.hash.as_deref().unwrap_or("");
+        let leaf1 = self.find_or_compute_leaf(h, l + 1, max_offset)?;
 
-        let working_hash = if leaf1.duplicate {
-            let combined = format!("{leaf0_hash}{leaf0_hash}");
-            Self::merkle_hash(&combined)?
-        } else {
-            let combined = format!("{}{}", leaf1.hash.as_deref().unwrap_or(""), leaf0_hash);
-            Self::merkle_hash(&combined)?
+        let working_hash = match leaf1 {
+            Some(leaf) if leaf.duplicate => {
+                let combined = format!("{leaf0_hash}{leaf0_hash}");
+                Self::merkle_hash(&combined)?
+            }
+            Some(leaf) if leaf.hash.is_some() => {
+                let combined = format!("{}{}", leaf.hash.as_deref().unwrap_or(""), leaf0_hash);
+                Self::merkle_hash(&combined)?
+            }
+            None if self.path.len() == 1 && l == (max_offset >> h) => {
+                let combined = format!("{leaf0_hash}{leaf0_hash}");
+                Self::merkle_hash(&combined)?
+            }
+            _ => return Ok(None),
         };
 
         Ok(Some(MerklePathLeaf {
@@ -340,6 +348,8 @@ impl MerklePath {
     /// Compute the Merkle root from a transaction ID.
     ///
     /// If txid is None, uses the first leaf with a hash at level 0.
+    /// For a compound path containing only level zero, the effective tree height
+    /// comes from the largest leaf offset rather than the serialized level count.
     pub fn compute_root(&self, txid: Option<&str>) -> Result<String, TransactionError> {
         let txid = match txid {
             Some(t) => t.to_string(),
@@ -367,11 +377,27 @@ impl MerklePath {
             return Ok(txid);
         }
 
+        let max_offset = self.path[0]
+            .iter()
+            .map(|leaf| leaf.offset)
+            .max()
+            .unwrap_or(0);
+        let offset_height = (u64::BITS - max_offset.leading_zeros()) as usize;
+        let tree_height = self.path.len().max(offset_height);
         let mut working_hash = txid;
 
-        for height in 0..self.path.len() {
+        for height in 0..tree_height {
             let offset = (index >> height) ^ 1;
-            let leaf = self.find_or_compute_leaf(height, offset)?.ok_or_else(|| {
+            let leaf = self.find_or_compute_leaf(height, offset, max_offset)?;
+
+            if leaf.is_none() && self.path.len() == 1 && (index >> height) == (max_offset >> height)
+            {
+                let combined = format!("{working_hash}{working_hash}");
+                working_hash = Self::merkle_hash(&combined)?;
+                continue;
+            }
+
+            let leaf = leaf.ok_or_else(|| {
                 TransactionError::InvalidFormat(format!(
                     "Missing hash for index {index} at height {height}"
                 ))
@@ -610,6 +636,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_level_zero_compound_path_round_trips_and_computes_shared_root() {
+        let hex = "6401040002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0102bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0202cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0302dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let expected_root = "fd02fb9070e9f55fe8a7674be02515d3a61deabff94db50f3b519d516fb6e8ef";
+
+        let path = MerklePath::from_hex(hex).expect("parse level-zero compound BUMP");
+        assert_eq!(path.path.len(), 1);
+        assert_eq!(path.path[0].len(), 4);
+        assert_eq!(path.to_hex().unwrap(), hex);
+
+        for txid in ["aa", "bb", "cc", "dd"].map(|byte| byte.repeat(32)) {
+            assert_eq!(path.compute_root(Some(&txid)).unwrap(), expected_root);
+        }
+    }
+
+    #[test]
+    fn test_level_zero_compound_path_duplicates_odd_last_nodes() {
+        let leaves = ["01", "02", "03"]
+            .into_iter()
+            .enumerate()
+            .map(|(offset, byte)| MerklePathLeaf {
+                offset: offset as u64,
+                hash: Some(byte.repeat(32)),
+                txid: true,
+                duplicate: false,
+            })
+            .collect();
+        let path = MerklePath::new(100, vec![leaves]).expect("parse odd compound path");
+        let expected_root = "acbd47d5022a6c5e954ad677df8ec221c893f871889826df53f0f1ad3f023e22";
+
+        for txid in ["01", "02", "03"].map(|byte| byte.repeat(32)) {
+            assert_eq!(path.compute_root(Some(&txid)).unwrap(), expected_root);
+        }
+    }
+
+    #[test]
+    fn test_rejects_compound_path_with_mismatched_roots() {
+        let level_zero = ["aa", "bb", "cc", "dd"]
+            .into_iter()
+            .enumerate()
+            .map(|(offset, byte)| MerklePathLeaf {
+                offset: offset as u64,
+                hash: Some(byte.repeat(32)),
+                txid: true,
+                duplicate: false,
+            })
+            .collect();
+        let inconsistent_upper_level = vec![MerklePathLeaf {
+            offset: 1,
+            hash: Some("11".repeat(32)),
+            txid: false,
+            duplicate: false,
+        }];
+
+        let error = MerklePath::new(100, vec![level_zero, inconsistent_upper_level])
+            .expect_err("inconsistent branches must not share a compound path");
+        assert!(
+            error.to_string().contains("Mismatched roots"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
