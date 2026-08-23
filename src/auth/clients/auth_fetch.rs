@@ -696,18 +696,18 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                 CreateActionArgs {
                     description,
                     input_beef: None,
-                    inputs: Vec::new(),
-                    outputs: vec![CreateActionOutput {
+                    inputs: Some(Vec::new()),
+                    outputs: Some(vec![CreateActionOutput {
                         locking_script: Some(locking_script_bytes),
                         satoshis: satoshis_required,
                         output_description: "HTTP request payment".to_string(),
                         basket: None,
                         custom_instructions: Some(custom_instructions),
-                        tags: Vec::new(),
-                    }],
+                        tags: Some(Vec::new()),
+                    }]),
                     lock_time: None,
                     version: None,
-                    labels: Vec::new(),
+                    labels: Some(Vec::new()),
                     options: Some(CreateActionOptions {
                         // randomizeOutputs: false — must match TS to get deterministic TXID
                         randomize_outputs: BooleanDefaultTrue(Some(false)),

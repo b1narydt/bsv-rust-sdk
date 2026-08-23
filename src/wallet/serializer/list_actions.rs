@@ -98,66 +98,59 @@ pub fn serialize_list_actions_result(result: &ListActionsResult) -> Result<Vec<u
             write_byte(w, status_byte)?;
             write_optional_bool(w, Some(action.is_outgoing))?;
             write_string(w, &action.description)?;
-            write_string_slice(
-                w,
-                &if action.labels.is_empty() {
-                    None
-                } else {
-                    Some(action.labels.clone())
-                },
-            )?;
+            write_string_slice(w, &action.labels)?;
             write_varint(w, action.version as u64)?;
             write_varint(w, action.lock_time as u64)?;
             // Inputs
-            if action.inputs.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
+            if let Some(inputs) = &action.inputs {
+                write_varint(w, inputs.len() as u64)?;
+                for input in inputs {
+                    write_outpoint(w, &input.source_outpoint)?;
+                    write_varint(w, input.source_satoshis)?;
+                    // Source locking script (optional, NegativeOne if empty)
+                    if let Some(ref script) = input.source_locking_script {
+                        write_bytes(w, script)?;
+                    } else {
+                        write_varint(w, NEGATIVE_ONE)?;
+                    }
+                    // Unlocking script (optional)
+                    if let Some(ref script) = input.unlocking_script {
+                        write_bytes(w, script)?;
+                    } else {
+                        write_varint(w, NEGATIVE_ONE)?;
+                    }
+                    write_string(w, &input.input_description)?;
+                    write_varint(w, input.sequence_number as u64)?;
+                }
             } else {
-                write_varint(w, action.inputs.len() as u64)?;
-            }
-            for input in &action.inputs {
-                write_outpoint(w, &input.source_outpoint)?;
-                write_varint(w, input.source_satoshis)?;
-                // Source locking script (optional, NegativeOne if empty)
-                if let Some(ref script) = input.source_locking_script {
-                    write_bytes(w, script)?;
-                } else {
-                    write_varint(w, NEGATIVE_ONE)?;
-                }
-                // Unlocking script (optional)
-                if let Some(ref script) = input.unlocking_script {
-                    write_bytes(w, script)?;
-                } else {
-                    write_varint(w, NEGATIVE_ONE)?;
-                }
-                write_string(w, &input.input_description)?;
-                write_varint(w, input.sequence_number as u64)?;
+                write_varint(w, NEGATIVE_ONE)?;
             }
             // Outputs
-            if action.outputs.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
-            } else {
-                write_varint(w, action.outputs.len() as u64)?;
-            }
-            for output in &action.outputs {
-                write_varint(w, output.output_index as u64)?;
-                write_varint(w, output.satoshis)?;
-                if let Some(ref script) = output.locking_script {
-                    write_bytes(w, script)?;
-                } else {
-                    write_varint(w, NEGATIVE_ONE)?;
-                }
-                write_optional_bool(w, Some(output.spendable))?;
-                write_string(w, &output.output_description)?;
-                write_string(w, output.basket.as_deref().unwrap_or(""))?;
-                write_string_slice(
-                    w,
-                    &if output.tags.is_empty() {
-                        None
+            if let Some(outputs) = &action.outputs {
+                write_varint(w, outputs.len() as u64)?;
+                for output in outputs {
+                    write_varint(w, output.output_index as u64)?;
+                    write_varint(w, output.satoshis)?;
+                    if let Some(ref script) = output.locking_script {
+                        write_bytes(w, script)?;
                     } else {
-                        Some(output.tags.clone())
-                    },
-                )?;
-                write_string_optional(w, output.custom_instructions.as_deref().unwrap_or(""))?;
+                        write_varint(w, NEGATIVE_ONE)?;
+                    }
+                    write_optional_bool(w, Some(output.spendable))?;
+                    write_string(w, &output.output_description)?;
+                    write_string(w, output.basket.as_deref().unwrap_or(""))?;
+                    write_string_slice(
+                        w,
+                        &if output.tags.is_empty() {
+                            None
+                        } else {
+                            Some(output.tags.clone())
+                        },
+                    )?;
+                    write_string_optional(w, output.custom_instructions.as_deref().unwrap_or(""))?;
+                }
+            } else {
+                write_varint(w, NEGATIVE_ONE)?;
             }
         }
         Ok(())
@@ -190,71 +183,71 @@ pub fn deserialize_list_actions_result(data: &[u8]) -> Result<ListActionsResult,
         };
         let is_outgoing = read_byte(&mut r)? == 1;
         let description = read_string(&mut r)?;
-        let labels = read_string_slice(&mut r)?.unwrap_or_default();
+        let labels = read_string_slice(&mut r)?;
         let version = read_varint(&mut r)? as u32;
         let lock_time = read_varint(&mut r)? as u32;
         // Inputs
         let input_count = read_varint(&mut r)?;
-        let input_count = if input_count == NEGATIVE_ONE {
-            0
+        let inputs = if input_count == NEGATIVE_ONE {
+            None
         } else {
-            input_count
+            let mut inputs = Vec::with_capacity(input_count as usize);
+            for _ in 0..input_count {
+                let source_outpoint = read_outpoint(&mut r)?;
+                let source_satoshis = read_varint(&mut r)?;
+                let source_locking_script = read_optional_bytes_varint(&mut r)?;
+                let unlocking_script = read_optional_bytes_varint(&mut r)?;
+                let input_description = read_string(&mut r)?;
+                let sequence_number = read_varint(&mut r)? as u32;
+                inputs.push(ActionInput {
+                    source_outpoint,
+                    source_satoshis,
+                    source_locking_script,
+                    unlocking_script,
+                    input_description,
+                    sequence_number,
+                });
+            }
+            Some(inputs)
         };
-        let mut inputs = Vec::with_capacity(input_count as usize);
-        for _ in 0..input_count {
-            let source_outpoint = read_outpoint(&mut r)?;
-            let source_satoshis = read_varint(&mut r)?;
-            let source_locking_script = read_optional_bytes_varint(&mut r)?;
-            let unlocking_script = read_optional_bytes_varint(&mut r)?;
-            let input_description = read_string(&mut r)?;
-            let sequence_number = read_varint(&mut r)? as u32;
-            inputs.push(ActionInput {
-                source_outpoint,
-                source_satoshis,
-                source_locking_script,
-                unlocking_script,
-                input_description,
-                sequence_number,
-            });
-        }
         // Outputs
         let output_count = read_varint(&mut r)?;
-        let output_count = if output_count == NEGATIVE_ONE {
-            0
+        let outputs = if output_count == NEGATIVE_ONE {
+            None
         } else {
-            output_count
+            let mut outputs = Vec::with_capacity(output_count as usize);
+            for _ in 0..output_count {
+                let output_index = read_varint(&mut r)? as u32;
+                let satoshis = read_varint(&mut r)?;
+                let locking_script = read_optional_bytes_varint(&mut r)?;
+                let spendable = read_byte(&mut r)? == 1;
+                let output_description = read_string(&mut r)?;
+                let basket_str = read_string(&mut r)?;
+                let basket = if basket_str.is_empty() {
+                    None
+                } else {
+                    Some(basket_str)
+                };
+                let tags = read_string_slice(&mut r)?.unwrap_or_default();
+                let custom_str = read_string(&mut r)?;
+                let custom_instructions = if custom_str.is_empty() {
+                    None
+                } else {
+                    Some(custom_str)
+                };
+                outputs.push(ActionOutput {
+                    satoshis,
+                    locking_script,
+                    spendable,
+                    custom_instructions,
+                    tags,
+                    output_index,
+                    output_description,
+                    basket,
+                });
+            }
+            Some(outputs)
         };
-        let mut outputs = Vec::with_capacity(output_count as usize);
-        for _ in 0..output_count {
-            let output_index = read_varint(&mut r)? as u32;
-            let satoshis = read_varint(&mut r)?;
-            let locking_script = read_optional_bytes_varint(&mut r)?;
-            let spendable = read_byte(&mut r)? == 1;
-            let output_description = read_string(&mut r)?;
-            let basket_str = read_string(&mut r)?;
-            let basket = if basket_str.is_empty() {
-                None
-            } else {
-                Some(basket_str)
-            };
-            let tags = read_string_slice(&mut r)?.unwrap_or_default();
-            let custom_str = read_string(&mut r)?;
-            let custom_instructions = if custom_str.is_empty() {
-                None
-            } else {
-                Some(custom_str)
-            };
-            outputs.push(ActionOutput {
-                satoshis,
-                locking_script,
-                spendable,
-                custom_instructions,
-                tags,
-                output_index,
-                output_description,
-                basket,
-            });
-        }
         actions.push(Action {
             txid,
             satoshis,

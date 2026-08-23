@@ -249,18 +249,18 @@ test_args_vector!(
     CreateActionArgs {
         description: "Test action description".to_string(),
         input_beef: None,
-        inputs: vec![],
-        outputs: vec![CreateActionOutput {
+        inputs: None,
+        outputs: Some(vec![CreateActionOutput {
             locking_script: Some(hex_decode(LOCKING_SCRIPT_HEX).unwrap()),
             satoshis: 999,
             output_description: "Test output".to_string(),
             basket: Some("test-basket".to_string()),
             custom_instructions: Some("Test instructions".to_string()),
-            tags: vec!["test-tag".to_string()],
-        }],
+            tags: Some(vec!["test-tag".to_string()]),
+        }]),
         lock_time: None,
         version: None,
-        labels: vec!["test-label".to_string()],
+        labels: Some(vec!["test-label".to_string()]),
         options: None,
         reference: None,
     }
@@ -304,11 +304,11 @@ test_result_vector!(
             status: ActionStatus::Completed,
             is_outgoing: true,
             description: "Test transaction 1".to_string(),
-            labels: vec![],
+            labels: None,
             version: 1,
             lock_time: 10,
-            inputs: vec![],
-            outputs: vec![ActionOutput {
+            inputs: None,
+            outputs: Some(vec![ActionOutput {
                 output_index: 1,
                 output_description: "Test output".to_string(),
                 basket: Some("basket1".to_string()),
@@ -317,7 +317,7 @@ test_result_vector!(
                 satoshis: 1000,
                 locking_script: Some(hex_decode(LOCKING_SCRIPT_HEX).unwrap()),
                 custom_instructions: None,
-            }],
+            }]),
         }],
     }
 );
@@ -353,7 +353,7 @@ test_args_vector!(
             },
         ],
         description: "test transaction".to_string(),
-        labels: vec!["label1".to_string(), "label2".to_string()],
+        labels: Some(vec!["label1".to_string(), "label2".to_string()]),
         seek_permission: BooleanDefaultTrue(Some(true)),
     }
 );
@@ -404,19 +404,19 @@ test_result_vector!(
                 locking_script: None,
                 spendable: true,
                 custom_instructions: None,
-                tags: vec![],
+                tags: None,
                 outpoint: format!("{TXID_HEX}.0"),
-                labels: vec![],
+                labels: None,
             },
             Output {
                 satoshis: 5000,
                 locking_script: None,
                 spendable: true,
                 custom_instructions: None,
-                tags: vec![],
+                tags: None,
                 outpoint: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890.2"
                     .to_string(),
-                labels: vec![],
+                labels: None,
             },
         ],
     }
@@ -953,36 +953,18 @@ test_result_vector!(
     }
 );
 
-test_result_vector!(
-    test_list_certificates_full_result,
-    "listCertificates-full-result",
-    list_certificates::serialize_list_certificates_result,
-    list_certificates::deserialize_list_certificates_result,
-    {
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), "Alice".to_string());
-        fields.insert("email".to_string(), "alice@example.com".to_string());
-        let mut keyring = HashMap::new();
-        keyring.insert("field1".to_string(), "a2V5MQ==".to_string());
-        keyring.insert("field2".to_string(), "a2V5Mg==".to_string());
-        ListCertificatesResult {
-            total_certificates: 1,
-            certificates: vec![CertificateResult {
-                certificate: Certificate {
-                    cert_type: type_from_base64(TYPE_B64),
-                    serial_number: serial_from_base64(SERIAL_B64),
-                    subject: pk_from_hex(PUB_KEY_HEX),
-                    certifier: pk_from_hex(COUNTERPARTY_HEX),
-                    revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-                    fields: Some(fields),
-                    signature: Some(sig_from_hex(SIG_HEX)),
-                },
-                keyring: Some(keyring),
-                verifier: Some(hex_decode(VERIFIER_HEX).unwrap()),
-            }],
-        }
-    }
-);
+#[test]
+fn test_list_certificates_legacy_verifier_bytes_decode_like_typescript() {
+    let (_, wire) = read_vector("listCertificates-full-result");
+    let params = strip_result_frame(&wire);
+    let decoded = list_certificates::deserialize_list_certificates_result(&params).unwrap();
+    let legacy_bytes = hex_decode(VERIFIER_HEX).unwrap();
+    let expected = String::from_utf8_lossy(&legacy_bytes);
+    assert_eq!(
+        decoded.certificates[0].verifier.as_deref(),
+        Some(expected.as_ref())
+    );
+}
 
 // ---------------------------------------------------------------------------
 // ProveCertificate
@@ -1362,6 +1344,387 @@ fn test_list_certificates_keyring_three_state_roundtrip() {
     assert_eq!(populated_roundtripped, &populated);
 }
 
+fn empty_create_action_args() -> CreateActionArgs {
+    CreateActionArgs {
+        description: "test action".to_string(),
+        input_beef: None,
+        inputs: None,
+        outputs: None,
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: None,
+        reference: None,
+    }
+}
+
+#[test]
+fn create_action_optional_arrays_preserve_absent_and_empty() {
+    let absent = empty_create_action_args();
+    let absent_bytes = create_action::serialize_create_action_args(&absent).unwrap();
+    let absent_out = create_action::deserialize_create_action_args(&absent_bytes).unwrap();
+    assert!(absent_out.inputs.is_none());
+    assert!(absent_out.outputs.is_none());
+    assert!(absent_out.labels.is_none());
+
+    let mut with_inputs = absent.clone();
+    with_inputs.inputs = Some(vec![]);
+    let bytes = create_action::serialize_create_action_args(&with_inputs).unwrap();
+    assert_ne!(bytes, absent_bytes);
+    assert_eq!(
+        create_action::deserialize_create_action_args(&bytes)
+            .unwrap()
+            .inputs
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let mut with_outputs = absent.clone();
+    with_outputs.outputs = Some(vec![]);
+    let bytes = create_action::serialize_create_action_args(&with_outputs).unwrap();
+    assert_ne!(bytes, absent_bytes);
+    assert_eq!(
+        create_action::deserialize_create_action_args(&bytes)
+            .unwrap()
+            .outputs
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let mut with_labels = absent.clone();
+    with_labels.labels = Some(vec![]);
+    let bytes = create_action::serialize_create_action_args(&with_labels).unwrap();
+    assert_ne!(bytes, absent_bytes);
+    assert_eq!(
+        create_action::deserialize_create_action_args(&bytes)
+            .unwrap()
+            .labels
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn create_action_nested_optional_arrays_preserve_absent_and_empty() {
+    let output = CreateActionOutput {
+        locking_script: Some(vec![0x51]),
+        satoshis: 1,
+        output_description: "test output".to_string(),
+        basket: None,
+        custom_instructions: None,
+        tags: None,
+    };
+    let mut absent_tags = empty_create_action_args();
+    absent_tags.outputs = Some(vec![output.clone()]);
+    let absent_tag_bytes = create_action::serialize_create_action_args(&absent_tags).unwrap();
+    assert!(
+        create_action::deserialize_create_action_args(&absent_tag_bytes)
+            .unwrap()
+            .outputs
+            .unwrap()[0]
+            .tags
+            .is_none()
+    );
+    let mut empty_tags = absent_tags;
+    empty_tags.outputs.as_mut().unwrap()[0].tags = Some(vec![]);
+    let empty_tag_bytes = create_action::serialize_create_action_args(&empty_tags).unwrap();
+    assert_ne!(empty_tag_bytes, absent_tag_bytes);
+    assert_eq!(
+        create_action::deserialize_create_action_args(&empty_tag_bytes)
+            .unwrap()
+            .outputs
+            .unwrap()[0]
+            .tags
+            .as_ref()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    for field in ["known_txids", "no_send_change", "send_with"] {
+        let mut absent_options = empty_create_action_args();
+        absent_options.options = Some(CreateActionOptions::default());
+        let absent_bytes = create_action::serialize_create_action_args(&absent_options).unwrap();
+        let mut empty_options = absent_options;
+        let options = empty_options.options.as_mut().unwrap();
+        match field {
+            "known_txids" => options.known_txids = Some(vec![]),
+            "no_send_change" => options.no_send_change = Some(vec![]),
+            "send_with" => options.send_with = Some(vec![]),
+            _ => unreachable!(),
+        }
+        let empty_bytes = create_action::serialize_create_action_args(&empty_options).unwrap();
+        assert_ne!(empty_bytes, absent_bytes, "{field}");
+        let decoded = create_action::deserialize_create_action_args(&empty_bytes)
+            .unwrap()
+            .options
+            .unwrap();
+        let is_empty = match field {
+            "known_txids" => decoded.known_txids.unwrap().is_empty(),
+            "no_send_change" => decoded.no_send_change.unwrap().is_empty(),
+            "send_with" => decoded.send_with.unwrap().is_empty(),
+            _ => unreachable!(),
+        };
+        assert!(is_empty, "{field}");
+    }
+}
+
+#[test]
+fn sign_internalize_and_result_optional_arrays_preserve_empty() {
+    let sign_args = SignActionArgs {
+        reference: vec![],
+        spends: HashMap::new(),
+        options: Some(SignActionOptions::default()),
+    };
+    let absent_bytes = sign_action::serialize_sign_action_args(&sign_args).unwrap();
+    let mut empty_sign_args = sign_args;
+    empty_sign_args.options.as_mut().unwrap().send_with = Some(vec![]);
+    let empty_bytes = sign_action::serialize_sign_action_args(&empty_sign_args).unwrap();
+    assert_ne!(empty_bytes, absent_bytes);
+    assert!(sign_action::deserialize_sign_action_args(&empty_bytes)
+        .unwrap()
+        .options
+        .unwrap()
+        .send_with
+        .unwrap()
+        .is_empty());
+
+    let internalize = InternalizeActionArgs {
+        tx: vec![],
+        description: "test action".to_string(),
+        labels: None,
+        seek_permission: BooleanDefaultTrue(None),
+        outputs: vec![],
+    };
+    let absent_bytes = internalize_action::serialize_internalize_action_args(&internalize).unwrap();
+    let mut empty_internalize = internalize;
+    empty_internalize.labels = Some(vec![]);
+    let empty_bytes =
+        internalize_action::serialize_internalize_action_args(&empty_internalize).unwrap();
+    assert_ne!(empty_bytes, absent_bytes);
+    assert!(
+        internalize_action::deserialize_internalize_action_args(&empty_bytes)
+            .unwrap()
+            .labels
+            .unwrap()
+            .is_empty()
+    );
+
+    let insertion = InternalizeActionArgs {
+        tx: vec![],
+        description: "test action".to_string(),
+        labels: None,
+        seek_permission: BooleanDefaultTrue(None),
+        outputs: vec![InternalizeOutput::BasketInsertion {
+            output_index: 0,
+            insertion: BasketInsertion {
+                basket: "default".to_string(),
+                custom_instructions: None,
+                tags: vec![],
+            },
+        }],
+    };
+    let insertion_bytes =
+        internalize_action::serialize_internalize_action_args(&insertion).unwrap();
+    let mut insertion_reader = std::io::Cursor::new(insertion_bytes);
+    assert_eq!(read_varint(&mut insertion_reader).unwrap(), 0); // tx
+    assert_eq!(read_varint(&mut insertion_reader).unwrap(), 1); // outputs
+    assert_eq!(read_varint(&mut insertion_reader).unwrap(), 0); // output index
+    assert_eq!(read_byte(&mut insertion_reader).unwrap(), 2); // basket insertion
+    assert_eq!(read_string(&mut insertion_reader).unwrap(), "default");
+    assert_eq!(read_string(&mut insertion_reader).unwrap(), "");
+    assert_eq!(
+        read_varint(&mut insertion_reader).unwrap(),
+        0,
+        "omitted/empty TS insertion tags use a zero count"
+    );
+
+    let create_result = CreateActionResult {
+        txid: None,
+        tx: None,
+        no_send_change: None,
+        send_with_results: None,
+        signable_transaction: None,
+    };
+    let absent_bytes = create_action::serialize_create_action_result(&create_result).unwrap();
+    let mut empty_result = create_result.clone();
+    empty_result.no_send_change = Some(vec![]);
+    let empty_bytes = create_action::serialize_create_action_result(&empty_result).unwrap();
+    assert_ne!(empty_bytes, absent_bytes);
+    assert!(
+        create_action::deserialize_create_action_result(&empty_bytes)
+            .unwrap()
+            .no_send_change
+            .unwrap()
+            .is_empty()
+    );
+    empty_result = create_result;
+    empty_result.send_with_results = Some(vec![]);
+    let empty_bytes = create_action::serialize_create_action_result(&empty_result).unwrap();
+    assert_ne!(empty_bytes, absent_bytes);
+    assert!(
+        create_action::deserialize_create_action_result(&empty_bytes)
+            .unwrap()
+            .send_with_results
+            .unwrap()
+            .is_empty()
+    );
+
+    let sign_result = SignActionResult {
+        txid: None,
+        tx: None,
+        send_with_results: Some(vec![]),
+    };
+    let bytes = sign_action::serialize_sign_action_result(&sign_result).unwrap();
+    assert!(sign_action::deserialize_sign_action_result(&bytes)
+        .unwrap()
+        .send_with_results
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn list_outputs_matches_collapsed_tags_and_signed_offset_wire() {
+    let args = ListOutputsArgs {
+        basket: "default".to_string(),
+        tags: vec![],
+        tag_query_mode: None,
+        include: None,
+        include_custom_instructions: BooleanDefaultFalse(None),
+        include_tags: BooleanDefaultFalse(None),
+        include_labels: BooleanDefaultFalse(None),
+        limit: None,
+        offset: Some(-2),
+        seek_permission: BooleanDefaultTrue(None),
+    };
+    let bytes = list_outputs::serialize_list_outputs_args(&args).unwrap();
+    assert_eq!(bytes[8], 0, "empty/omitted TS tags use a zero count");
+    assert_eq!(
+        &bytes[bytes.len() - 10..bytes.len() - 1],
+        &[0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+    );
+    let decoded = list_outputs::deserialize_list_outputs_args(&bytes).unwrap();
+    assert!(decoded.tags.is_empty());
+    assert_eq!(
+        decoded.offset, None,
+        "TS processor discards negative offsets"
+    );
+}
+
+#[test]
+fn list_result_optional_arrays_preserve_absent_and_empty() {
+    let action = Action {
+        txid: "00".repeat(32),
+        satoshis: 0,
+        status: ActionStatus::Completed,
+        is_outgoing: false,
+        description: "test action".to_string(),
+        labels: None,
+        version: 0,
+        lock_time: 0,
+        inputs: None,
+        outputs: None,
+    };
+    let absent = ListActionsResult {
+        total_actions: 1,
+        actions: vec![action],
+    };
+    let absent_bytes = list_actions::serialize_list_actions_result(&absent).unwrap();
+    let absent_out = list_actions::deserialize_list_actions_result(&absent_bytes).unwrap();
+    assert!(absent_out.actions[0].labels.is_none());
+    assert!(absent_out.actions[0].inputs.is_none());
+    assert!(absent_out.actions[0].outputs.is_none());
+    for field in ["labels", "inputs", "outputs"] {
+        let mut present = absent.clone();
+        let action = &mut present.actions[0];
+        match field {
+            "labels" => action.labels = Some(vec![]),
+            "inputs" => action.inputs = Some(vec![]),
+            "outputs" => action.outputs = Some(vec![]),
+            _ => unreachable!(),
+        }
+        let bytes = list_actions::serialize_list_actions_result(&present).unwrap();
+        assert_ne!(bytes, absent_bytes, "{field}");
+        let decoded = list_actions::deserialize_list_actions_result(&bytes).unwrap();
+        let action = &decoded.actions[0];
+        let is_empty = match field {
+            "labels" => action.labels.as_ref().unwrap().is_empty(),
+            "inputs" => action.inputs.as_ref().unwrap().is_empty(),
+            "outputs" => action.outputs.as_ref().unwrap().is_empty(),
+            _ => unreachable!(),
+        };
+        assert!(is_empty, "{field}");
+    }
+
+    let output = Output {
+        satoshis: 1,
+        locking_script: None,
+        spendable: true,
+        custom_instructions: None,
+        tags: None,
+        outpoint: format!("{}.0", "00".repeat(32)),
+        labels: None,
+    };
+    let absent = ListOutputsResult {
+        total_outputs: 1,
+        beef: None,
+        outputs: vec![output],
+    };
+    let absent_bytes = list_outputs::serialize_list_outputs_result(&absent).unwrap();
+    let absent_out = list_outputs::deserialize_list_outputs_result(&absent_bytes).unwrap();
+    assert!(absent_out.outputs[0].tags.is_none());
+    assert!(absent_out.outputs[0].labels.is_none());
+    for field in ["tags", "labels"] {
+        let mut present = absent.clone();
+        match field {
+            "tags" => present.outputs[0].tags = Some(vec![]),
+            "labels" => present.outputs[0].labels = Some(vec![]),
+            _ => unreachable!(),
+        }
+        let bytes = list_outputs::serialize_list_outputs_result(&present).unwrap();
+        assert_ne!(bytes, absent_bytes, "{field}");
+        let decoded = list_outputs::deserialize_list_outputs_result(&bytes).unwrap();
+        let output = &decoded.outputs[0];
+        let is_empty = match field {
+            "tags" => output.tags.as_ref().unwrap().is_empty(),
+            "labels" => output.labels.as_ref().unwrap().is_empty(),
+            _ => unreachable!(),
+        };
+        assert!(is_empty, "{field}");
+    }
+}
+
+#[test]
+fn list_certificates_verifier_is_utf8_on_wire_and_in_json() {
+    let result = ListCertificatesResult {
+        total_certificates: 1,
+        certificates: vec![CertificateResult {
+            certificate: Certificate {
+                cert_type: type_from_base64(TYPE_B64),
+                serial_number: serial_from_base64(SERIAL_B64),
+                subject: pk_from_hex(PUB_KEY_HEX),
+                certifier: pk_from_hex(COUNTERPARTY_HEX),
+                revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+                fields: None,
+                signature: None,
+            },
+            keyring: None,
+            verifier: Some("hi".to_string()),
+        }],
+    };
+    let bytes = list_certificates::serialize_list_certificates_result(&result).unwrap();
+    assert_eq!(&bytes[bytes.len() - 3..], &[2, 0x68, 0x69]);
+    let decoded = list_certificates::deserialize_list_certificates_result(&bytes).unwrap();
+    assert_eq!(decoded.certificates[0].verifier.as_deref(), Some("hi"));
+    #[cfg(feature = "serde")]
+    let json = serde_json::to_value(&decoded.certificates[0]).unwrap();
+    #[cfg(feature = "serde")]
+    assert_eq!(json["verifier"], "hi");
+}
+
 // ---------------------------------------------------------------------------
 // GetNetwork args (empty args, like isAuthenticated)
 // ---------------------------------------------------------------------------
@@ -1399,27 +1762,27 @@ test_args_vector!(
     CreateActionArgs {
         description: "Test action description with trust self and no-send".to_string(),
         input_beef: None,
-        inputs: vec![],
-        outputs: vec![CreateActionOutput {
+        inputs: None,
+        outputs: Some(vec![CreateActionOutput {
             locking_script: Some(hex_decode(LOCKING_SCRIPT_HEX).unwrap()),
             satoshis: 999,
             output_description: "Test output".to_string(),
             basket: Some("test-basket".to_string()),
             custom_instructions: Some("Test instructions".to_string()),
-            tags: vec!["test-tag".to_string()],
-        }],
+            tags: Some(vec!["test-tag".to_string()]),
+        }]),
         lock_time: None,
         version: None,
-        labels: vec!["test-label".to_string()],
+        labels: Some(vec!["test-label".to_string()]),
         options: Some(CreateActionOptions {
             sign_and_process: BooleanDefaultTrue(Some(false)),
             accept_delayed_broadcast: BooleanDefaultTrue(None),
             trust_self: None,
-            known_txids: vec![],
+            known_txids: None,
             return_txid_only: BooleanDefaultFalse(None),
             no_send: BooleanDefaultFalse(None),
-            no_send_change: vec![],
-            send_with: vec![],
+            no_send_change: None,
+            send_with: None,
             randomize_outputs: BooleanDefaultTrue(None),
         }),
         reference: None,
@@ -1438,8 +1801,8 @@ test_result_vector!(
     CreateActionResult {
         txid: Some(RESULT_TXID.to_string()),
         tx: Some(hex_decode(RESULT_TX_HEX).unwrap()),
-        no_send_change: vec![],
-        send_with_results: vec![],
+        no_send_change: None,
+        send_with_results: None,
         signable_transaction: None,
     }
 );
@@ -1456,8 +1819,8 @@ test_result_vector!(
     CreateActionResult {
         txid: None,
         tx: None,
-        no_send_change: vec![],
-        send_with_results: vec![],
+        no_send_change: None,
+        send_with_results: None,
         signable_transaction: Some(SignableTransaction {
             tx: hex_decode(RESULT_TX_HEX).unwrap(),
             reference: base64_std_decode("dGVzdA=="),
@@ -1477,7 +1840,7 @@ test_result_vector!(
     SignActionResult {
         txid: Some(RESULT_TXID.to_string()),
         tx: Some(hex_decode(RESULT_TX_HEX).unwrap()),
-        send_with_results: vec![],
+        send_with_results: None,
     }
 );
 

@@ -14,11 +14,9 @@ pub fn serialize_create_action_args(args: &CreateActionArgs) -> Result<Vec<u8>, 
         // Input BEEF (optional)
         write_optional_bytes_varint(w, args.input_beef.as_deref())?;
         // Inputs
-        if args.inputs.is_empty() {
-            write_varint(w, NEGATIVE_ONE)?;
-        } else {
-            write_varint(w, args.inputs.len() as u64)?;
-            for input in &args.inputs {
+        if let Some(inputs) = &args.inputs {
+            write_varint(w, inputs.len() as u64)?;
+            for input in inputs {
                 write_outpoint(w, &input.outpoint)?;
                 if let Some(ref script) = input.unlocking_script {
                     write_bytes(w, script)?;
@@ -29,39 +27,27 @@ pub fn serialize_create_action_args(args: &CreateActionArgs) -> Result<Vec<u8>, 
                 write_string(w, &input.input_description)?;
                 write_optional_uint32(w, input.sequence_number)?;
             }
+        } else {
+            write_varint(w, NEGATIVE_ONE)?;
         }
         // Outputs
-        if args.outputs.is_empty() {
-            write_varint(w, NEGATIVE_ONE)?;
-        } else {
-            write_varint(w, args.outputs.len() as u64)?;
-            for output in &args.outputs {
+        if let Some(outputs) = &args.outputs {
+            write_varint(w, outputs.len() as u64)?;
+            for output in outputs {
                 write_bytes(w, output.locking_script.as_deref().unwrap_or(&[]))?;
                 write_varint(w, output.satoshis)?;
                 write_string(w, &output.output_description)?;
                 write_string_optional(w, &output.basket.clone().unwrap_or_default())?;
                 write_string_optional(w, &output.custom_instructions.clone().unwrap_or_default())?;
-                write_string_slice(
-                    w,
-                    &if output.tags.is_empty() {
-                        None
-                    } else {
-                        Some(output.tags.clone())
-                    },
-                )?;
+                write_string_slice(w, &output.tags)?;
             }
+        } else {
+            write_varint(w, NEGATIVE_ONE)?;
         }
         // LockTime, Version, Labels
         write_optional_uint32(w, args.lock_time)?;
         write_optional_uint32(w, args.version)?;
-        write_string_slice(
-            w,
-            &if args.labels.is_empty() {
-                None
-            } else {
-                Some(args.labels.clone())
-            },
-        )?;
+        write_string_slice(w, &args.labels)?;
         // Options
         if let Some(ref opts) = args.options {
             write_byte(w, 1)?;
@@ -73,37 +59,35 @@ pub fn serialize_create_action_args(args: &CreateActionArgs) -> Result<Vec<u8>, 
                 None => write_byte(w, NEGATIVE_ONE_BYTE)?,
             }
             // KnownTxids
-            if opts.known_txids.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
-            } else {
-                write_varint(w, opts.known_txids.len() as u64)?;
-                for txid in &opts.known_txids {
+            if let Some(known_txids) = &opts.known_txids {
+                write_varint(w, known_txids.len() as u64)?;
+                for txid in known_txids {
                     let txid_bytes = hex_decode(txid)?;
                     write_raw_bytes(w, &txid_bytes)?;
                 }
+            } else {
+                write_varint(w, NEGATIVE_ONE)?;
             }
             write_optional_bool(w, opts.return_txid_only.0)?;
             write_optional_bool(w, opts.no_send.0)?;
             // NoSendChange outpoints
-            if opts.no_send_change.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
-            } else {
-                let mut outpoint_buf = Vec::new();
-                write_varint(&mut outpoint_buf, opts.no_send_change.len() as u64)?;
-                for op in &opts.no_send_change {
-                    write_outpoint(&mut outpoint_buf, op)?;
+            if let Some(no_send_change) = &opts.no_send_change {
+                write_varint(w, no_send_change.len() as u64)?;
+                for op in no_send_change {
+                    write_outpoint(w, op)?;
                 }
-                write_bytes(w, &outpoint_buf)?;
+            } else {
+                write_varint(w, NEGATIVE_ONE)?;
             }
             // SendWith
-            if opts.send_with.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
-            } else {
-                write_varint(w, opts.send_with.len() as u64)?;
-                for txid in &opts.send_with {
+            if let Some(send_with) = &opts.send_with {
+                write_varint(w, send_with.len() as u64)?;
+                for txid in send_with {
                     let txid_bytes = hex_decode(txid)?;
                     write_raw_bytes(w, &txid_bytes)?;
                 }
+            } else {
+                write_varint(w, NEGATIVE_ONE)?;
             }
             write_optional_bool(w, opts.randomize_outputs.0)?;
         } else {
@@ -124,7 +108,7 @@ pub fn deserialize_create_action_args(data: &[u8]) -> Result<CreateActionArgs, W
     // Inputs
     let input_count = read_varint(&mut r)?;
     let inputs = if input_count == NEGATIVE_ONE {
-        Vec::new()
+        None
     } else {
         let mut inputs = Vec::with_capacity(input_count as usize);
         for _ in 0..input_count {
@@ -148,12 +132,12 @@ pub fn deserialize_create_action_args(data: &[u8]) -> Result<CreateActionArgs, W
                 sequence_number,
             });
         }
-        inputs
+        Some(inputs)
     };
     // Outputs
     let output_count = read_varint(&mut r)?;
     let outputs = if output_count == NEGATIVE_ONE {
-        Vec::new()
+        None
     } else {
         let mut outputs = Vec::with_capacity(output_count as usize);
         for _ in 0..output_count {
@@ -177,7 +161,7 @@ pub fn deserialize_create_action_args(data: &[u8]) -> Result<CreateActionArgs, W
             } else {
                 Some(custom_str)
             };
-            let tags = read_string_slice(&mut r)?.unwrap_or_default();
+            let tags = read_string_slice(&mut r)?;
             outputs.push(CreateActionOutput {
                 locking_script,
                 satoshis,
@@ -187,11 +171,11 @@ pub fn deserialize_create_action_args(data: &[u8]) -> Result<CreateActionArgs, W
                 tags,
             });
         }
-        outputs
+        Some(outputs)
     };
     let lock_time = read_optional_uint32(&mut r)?;
     let version = read_optional_uint32(&mut r)?;
-    let labels = read_string_slice(&mut r)?.unwrap_or_default();
+    let labels = read_string_slice(&mut r)?;
     // Options
     let options_flag = read_byte(&mut r)?;
     let options = if options_flag == 1 {
@@ -206,41 +190,40 @@ pub fn deserialize_create_action_args(data: &[u8]) -> Result<CreateActionArgs, W
         // KnownTxids
         let known_count = read_varint(&mut r)?;
         let known_txids = if known_count == NEGATIVE_ONE {
-            Vec::new()
+            None
         } else {
             let mut txids = Vec::with_capacity(known_count as usize);
             for _ in 0..known_count {
                 let txid_bytes = read_raw_bytes(&mut r, 32)?;
                 txids.push(hex_encode(&txid_bytes));
             }
-            txids
+            Some(txids)
         };
         let return_txid_only = BooleanDefaultFalse(read_optional_bool(&mut r)?);
         let no_send = BooleanDefaultFalse(read_optional_bool(&mut r)?);
         // NoSendChange
-        let no_send_change_data = read_optional_bytes_varint(&mut r)?;
-        let no_send_change = if let Some(data) = no_send_change_data {
-            let mut c = std::io::Cursor::new(data);
-            let count = read_varint(&mut c)?;
+        let no_send_change_count = read_varint(&mut r)?;
+        let no_send_change = if no_send_change_count == NEGATIVE_ONE {
+            None
+        } else {
+            let count = no_send_change_count;
             let mut outpoints = Vec::with_capacity(count as usize);
             for _ in 0..count {
-                outpoints.push(read_outpoint(&mut c)?);
+                outpoints.push(read_outpoint(&mut r)?);
             }
-            outpoints
-        } else {
-            Vec::new()
+            Some(outpoints)
         };
         // SendWith
         let send_count = read_varint(&mut r)?;
         let send_with = if send_count == NEGATIVE_ONE {
-            Vec::new()
+            None
         } else {
             let mut txids = Vec::with_capacity(send_count as usize);
             for _ in 0..send_count {
                 let txid_bytes = read_raw_bytes(&mut r, 32)?;
                 txids.push(hex_encode(&txid_bytes));
             }
-            txids
+            Some(txids)
         };
         let randomize_outputs = BooleanDefaultTrue(read_optional_bool(&mut r)?);
         Some(CreateActionOptions {
@@ -297,15 +280,13 @@ pub fn serialize_create_action_result(result: &CreateActionResult) -> Result<Vec
         // Tx (optional with flag, length-prefixed)
         write_optional_bytes_with_flag(w, result.tx.as_deref())?;
         // NoSendChange
-        if result.no_send_change.is_empty() {
-            write_varint(w, NEGATIVE_ONE)?;
-        } else {
-            let mut outpoint_buf = Vec::new();
-            write_varint(&mut outpoint_buf, result.no_send_change.len() as u64)?;
-            for op in &result.no_send_change {
-                write_outpoint(&mut outpoint_buf, op)?;
+        if let Some(no_send_change) = &result.no_send_change {
+            write_varint(w, no_send_change.len() as u64)?;
+            for op in no_send_change {
+                write_outpoint(w, op)?;
             }
-            write_bytes(w, &outpoint_buf)?;
+        } else {
+            write_varint(w, NEGATIVE_ONE)?;
         }
         // SendWithResults
         write_send_with_results(w, &result.send_with_results)?;
@@ -329,17 +310,16 @@ pub fn deserialize_create_action_result(data: &[u8]) -> Result<CreateActionResul
     // Tx
     let tx = read_optional_bytes_with_flag(&mut r)?;
     // NoSendChange
-    let no_send_change_data = read_optional_bytes_varint(&mut r)?;
-    let no_send_change = if let Some(data) = no_send_change_data {
-        let mut c = std::io::Cursor::new(data);
-        let count = read_varint(&mut c)?;
+    let no_send_change_count = read_varint(&mut r)?;
+    let no_send_change = if no_send_change_count == NEGATIVE_ONE {
+        None
+    } else {
+        let count = no_send_change_count;
         let mut outpoints = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            outpoints.push(read_outpoint(&mut c)?);
+            outpoints.push(read_outpoint(&mut r)?);
         }
-        outpoints
-    } else {
-        Vec::new()
+        Some(outpoints)
     };
     // SendWithResults
     let send_with_results = read_send_with_results(&mut r)?;
@@ -374,12 +354,12 @@ const ACTION_RESULT_STATUS_FAILED: u8 = 3;
 
 pub(crate) fn write_send_with_results(
     w: &mut impl std::io::Write,
-    results: &[SendWithResult],
+    results: &Option<Vec<SendWithResult>>,
 ) -> Result<(), WalletError> {
-    if results.is_empty() {
+    let Some(results) = results else {
         write_varint(w, NEGATIVE_ONE)?;
         return Ok(());
-    }
+    };
     write_varint(w, results.len() as u64)?;
     for res in results {
         let txid_bytes = hex_decode(&res.txid)?;
@@ -396,10 +376,10 @@ pub(crate) fn write_send_with_results(
 
 pub(crate) fn read_send_with_results(
     r: &mut impl std::io::Read,
-) -> Result<Vec<SendWithResult>, WalletError> {
+) -> Result<Option<Vec<SendWithResult>>, WalletError> {
     let count = read_varint(r)?;
-    if count == 0 || count == NEGATIVE_ONE {
-        return Ok(Vec::new());
+    if count == NEGATIVE_ONE {
+        return Ok(None);
     }
     let mut results = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -418,5 +398,5 @@ pub(crate) fn read_send_with_results(
         };
         results.push(SendWithResult { txid, status });
     }
-    Ok(results)
+    Ok(Some(results))
 }

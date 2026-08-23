@@ -188,18 +188,18 @@ fn validate_optional_privileged_reason(
 pub fn validate_create_action_args(args: &CreateActionArgs) -> Result<(), WalletError> {
     validate_description(&args.description, "description")?;
 
-    for label in &args.labels {
+    for label in args.labels.iter().flatten() {
         validate_label(label)?;
     }
 
-    for output in &args.outputs {
+    for output in args.outputs.iter().flatten() {
         if output.locking_script.is_none() && output.output_description.is_empty() {
             return Err(invalid(
                 "output",
                 "has locking_script or output_description",
             ));
         }
-        for tag in &output.tags {
+        for tag in output.tags.iter().flatten() {
             validate_tag(tag)?;
         }
         if let Some(ref basket) = output.basket {
@@ -207,7 +207,7 @@ pub fn validate_create_action_args(args: &CreateActionArgs) -> Result<(), Wallet
         }
     }
 
-    for input in &args.inputs {
+    for input in args.inputs.iter().flatten() {
         if input.unlocking_script.is_none() && input.unlocking_script_length.is_none() {
             return Err(invalid(
                 "input",
@@ -264,7 +264,7 @@ pub fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<
         return Err(invalid("outputs", "at least one output"));
     }
     validate_description(&args.description, "description")?;
-    for label in &args.labels {
+    for label in args.labels.iter().flatten() {
         validate_label(label)?;
     }
     // InternalizeOutput enum variants guarantee that the correct remittance
@@ -654,11 +654,11 @@ mod tests {
         let args = CreateActionArgs {
             description: "Valid description text".to_string(),
             input_beef: None,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: Some(vec![]),
+            outputs: Some(vec![]),
             lock_time: None,
             version: None,
-            labels: vec![],
+            labels: Some(vec![]),
             options: None,
             reference: None,
         };
@@ -670,11 +670,11 @@ mod tests {
         let args = CreateActionArgs {
             description: "Hi".to_string(),
             input_beef: None,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: Some(vec![]),
+            outputs: Some(vec![]),
             lock_time: None,
             version: None,
-            labels: vec![],
+            labels: Some(vec![]),
             options: None,
             reference: None,
         };
@@ -686,11 +686,11 @@ mod tests {
         let args = CreateActionArgs {
             description: "Valid description text".to_string(),
             input_beef: None,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: Some(vec![]),
+            outputs: Some(vec![]),
             lock_time: None,
             version: None,
-            labels: vec!["x".repeat(301)],
+            labels: Some(vec!["x".repeat(301)]),
             options: None,
             reference: None,
         };
@@ -702,17 +702,17 @@ mod tests {
         let args = CreateActionArgs {
             description: "Valid description text".to_string(),
             input_beef: None,
-            inputs: vec![CreateActionInput {
+            inputs: Some(vec![CreateActionInput {
                 outpoint: "abc.0".to_string(),
                 input_description: "test input".to_string(),
                 unlocking_script: None,
                 unlocking_script_length: None,
                 sequence_number: None,
-            }],
-            outputs: vec![],
+            }]),
+            outputs: Some(vec![]),
             lock_time: None,
             version: None,
-            labels: vec![],
+            labels: Some(vec![]),
             options: None,
             reference: None,
         };
@@ -882,7 +882,7 @@ mod tests {
         let args = InternalizeActionArgs {
             tx: vec![1, 2, 3],
             description: "Valid description text".to_string(),
-            labels: vec![],
+            labels: Some(vec![]),
             seek_permission: BooleanDefaultTrue(None),
             outputs: vec![InternalizeOutput::BasketInsertion {
                 output_index: 0,
@@ -901,7 +901,7 @@ mod tests {
         let args = InternalizeActionArgs {
             tx: vec![],
             description: "Valid description text".to_string(),
-            labels: vec![],
+            labels: Some(vec![]),
             seek_permission: BooleanDefaultTrue(None),
             outputs: vec![InternalizeOutput::BasketInsertion {
                 output_index: 0,
@@ -920,7 +920,7 @@ mod tests {
         let args = InternalizeActionArgs {
             tx: vec![1, 2, 3],
             description: "Valid description text".to_string(),
-            labels: vec![],
+            labels: Some(vec![]),
             seek_permission: BooleanDefaultTrue(None),
             outputs: vec![],
         };

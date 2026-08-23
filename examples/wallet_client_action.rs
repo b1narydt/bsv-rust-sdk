@@ -91,18 +91,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             CreateActionArgs {
                 description: "BSV SDK example action".to_string(),
                 input_beef: None,
-                inputs: Vec::new(),
-                outputs: vec![CreateActionOutput {
+                inputs: Some(Vec::new()),
+                outputs: Some(vec![CreateActionOutput {
                     locking_script: Some(script_bytes),
                     satoshis: 0,
                     output_description: "OP_RETURN data output".to_string(),
                     basket: None,
                     custom_instructions: None,
-                    tags: Vec::new(),
-                }],
+                    tags: Some(Vec::new()),
+                }]),
                 lock_time: None,
                 version: None,
-                labels: Vec::new(),
+                labels: Some(Vec::new()),
                 options: None,
                 reference: None,
             },
