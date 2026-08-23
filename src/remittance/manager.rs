@@ -248,6 +248,7 @@ pub struct RemittanceManagerState {
 /// Derived `Clone` + `Debug` only — not serialized. Deliver to all registered
 /// `on_event` listeners.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RemittanceEvent {
     ThreadCreated {
         thread_id: ThreadId,
@@ -355,6 +356,8 @@ pub struct RemittanceManagerConfig {
 // Inner state
 // ---------------------------------------------------------------------------
 
+type EventListener = (usize, Arc<dyn Fn(RemittanceEvent) + Send + Sync>);
+
 /// Mutable state owned by the manager.
 ///
 /// Lives behind `Arc<Mutex<ManagerInner>>` so multiple clones of `RemittanceManager`
@@ -363,7 +366,7 @@ struct ManagerInner {
     threads: HashMap<ThreadId, Thread>,
     default_payment_option_id: Option<String>,
     my_identity_key: Option<String>,
-    event_listeners: Vec<(usize, Arc<dyn Fn(RemittanceEvent) + Send + Sync>)>,
+    event_listeners: Vec<EventListener>,
     next_listener_id: usize,
 }
 
@@ -628,7 +631,7 @@ impl RemittanceManager {
     /// Public so that downstream code and integration tests can synthesise events.
     pub async fn emit_event(&self, event: RemittanceEvent) {
         // Clone the listener list so we can call outside the lock.
-        let listeners: Vec<(usize, Arc<dyn Fn(RemittanceEvent) + Send + Sync>)> = {
+        let listeners: Vec<EventListener> = {
             let guard = self.inner.lock().await;
             guard.event_listeners.clone()
         };
@@ -674,6 +677,7 @@ impl RemittanceManager {
     }
 
     /// Update a thread in place using a mutable closure.
+    #[allow(dead_code)]
     pub(crate) async fn update_thread<F>(
         &self,
         thread_id: &str,
@@ -758,11 +762,13 @@ impl RemittanceManager {
     }
 
     /// Expose the wallet reference for use by sub-flows.
+    #[allow(dead_code)]
     pub(crate) fn wallet(&self) -> &Arc<dyn WalletInterface> {
         &self.wallet
     }
 
     /// Expose inner my_identity_key.
+    #[allow(dead_code)]
     pub(crate) async fn my_identity_key(&self) -> Option<String> {
         let guard = self.inner.lock().await;
         guard.my_identity_key.clone()
@@ -778,7 +784,7 @@ impl RemittanceManager {
     /// clock as the manager itself.
     fn make_module_context(&self) -> ModuleContext {
         let now_fn: Arc<dyn Fn() -> u64 + Send + Sync> = match &self.config.now {
-            Some(f) => {
+            Some(_) => {
                 // Wrap the config closure in an Arc so ModuleContext can clone it.
                 let cfg = Arc::clone(&self.config);
                 Arc::new(move || (cfg.now.as_ref().unwrap())())
@@ -1178,7 +1184,7 @@ impl RemittanceManager {
             .filter(|t| {
                 matches!(t.my_role, ThreadRole::Taker)
                     && t.state == RemittanceThreadState::Invoiced
-                    && counterparty.map_or(true, |c| t.counterparty == c)
+                    && counterparty.is_none_or(|c| t.counterparty == c)
             })
             .map(|t| InvoiceHandle {
                 handle: ThreadHandle {
@@ -1200,7 +1206,7 @@ impl RemittanceManager {
             .filter(|t| {
                 matches!(t.my_role, ThreadRole::Maker)
                     && t.state == RemittanceThreadState::Invoiced
-                    && counterparty.map_or(true, |c| t.counterparty == c)
+                    && counterparty.is_none_or(|c| t.counterparty == c)
             })
             .map(|t| InvoiceHandle {
                 handle: ThreadHandle {

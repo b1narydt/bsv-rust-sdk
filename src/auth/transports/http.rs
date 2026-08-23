@@ -378,15 +378,6 @@ struct DeserializedRequest {
     body: Vec<u8>,
 }
 
-/// Deserialize a general message payload into an HTTP request structure.
-///
-/// Wire format (matching TS SDK):
-/// - 32 bytes: request ID
-/// - varint + bytes: method
-/// - varint + bytes: path
-/// - varint + bytes: search/query string
-/// - varint: number of headers, then for each: varint+key, varint+value
-/// - varint + bytes: body
 /// Sentinel value representing "absent/none" in varint-encoded payloads.
 /// The serializer writes varint(-1) as two's complement u64 (0xFFFFFFFFFFFFFFFF)
 /// to indicate an absent field (empty query string, no body, etc.).
@@ -397,6 +388,15 @@ fn varint_has_data(len: u64) -> bool {
     len > 0 && len != VARINT_ABSENT
 }
 
+/// Deserialize a general message payload into an HTTP request structure.
+///
+/// Wire format (matching TS SDK):
+/// - 32 bytes: request ID
+/// - varint + bytes: method
+/// - varint + bytes: path
+/// - varint + bytes: search/query string
+/// - varint: number of headers, then for each: varint+key, varint+value
+/// - varint + bytes: body
 fn deserialize_request_payload(payload: &[u8]) -> Result<DeserializedRequest, AuthError> {
     let mut pos = 0;
 
