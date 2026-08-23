@@ -384,6 +384,8 @@ mod tests {
             peer_identity_key: identity.to_string(),
             peer_nonce: format!("peer_{nonce}"),
             is_authenticated: authenticated,
+            certificates_required: false,
+            certificates_validated: true,
         }
     }
 
