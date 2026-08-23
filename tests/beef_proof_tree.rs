@@ -29,14 +29,16 @@ fn tx_with(inputs: &[(String, u32)], outputs: usize, sats: u64) -> Transaction {
             source_output_index: *vout,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
     }
     for _ in 0..outputs {
         tx.add_output(TransactionOutput {
             satoshis: Some(sats),
             locking_script: LockingScript::from_binary(&[0x51]),
             change: false,
-        });
+        })
+        .unwrap();
     }
     tx
 }

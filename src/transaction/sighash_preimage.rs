@@ -99,12 +99,14 @@ pub(crate) mod test_support {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffff_ffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(9_000),
             locking_script: lock.clone(),
             change: false,
-        });
+        })
+        .unwrap();
         tx.sighash_preimage(0, scope, 10_000, &lock)
             .expect("fixture preimage")
     }

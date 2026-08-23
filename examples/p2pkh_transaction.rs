@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence: 0xFFFFFFFF,
         ..Default::default()
     };
-    tx.add_input(input);
+    tx.add_input(input)?;
 
     // Add P2PKH output to recipient (50,000 satoshis)
     let recipient_p2pkh = P2PKH::from_address(&recipient_address)?;
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         satoshis: Some(50_000),
         locking_script: recipient_lock_script,
         change: false,
-    });
+    })?;
 
     // Add change output back to sender (49,500 satoshis, leaving 500 for fee)
     let change_lock_script = sender_p2pkh.lock()?;
@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         satoshis: Some(49_500),
         locking_script: change_lock_script,
         change: true,
-    });
+    })?;
 
     // -----------------------------------------------------------------------
     // 4. Sign the transaction input
