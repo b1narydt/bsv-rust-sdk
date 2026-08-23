@@ -64,7 +64,11 @@ pub async fn validate_certificates<W: WalletInterface + ?Sized>(
             // TS checks the certifier before the type. Preserve that order so
             // the first rejection reason agrees across implementations.
             let certifier = cert.certificate.certifier.to_der_hex();
-            if !req.certifiers.contains(&certifier) {
+            if !req
+                .certifiers
+                .iter()
+                .any(|requested| requested.eq_ignore_ascii_case(&certifier))
+            {
                 return Ok(false);
             }
 
@@ -116,14 +120,14 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
         }
     }
 
-    // TS forwards the requested certifier set to listCertificates verbatim.
-    // Rust's wallet API uses parsed public keys, so preserve the requested set
-    // while converting it to the strongly typed representation.
+    // TS forwards certifiers as opaque strings. Rust's wallet interface is
+    // strongly typed, so malformed strings cannot be forwarded; skip them
+    // rather than aborting the entire handshake response.
     let certifiers = requested
         .certifiers
         .iter()
-        .map(|certifier| PublicKey::from_string(certifier).map_err(AuthError::from))
-        .collect::<Result<Vec<_>, _>>()?;
+        .filter_map(|certifier| PublicKey::from_string(certifier).ok())
+        .collect();
 
     // Query wallet for matching certificates
     let list_result = wallet
@@ -131,7 +135,9 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
             ListCertificatesArgs {
                 certifiers,
                 types: cert_types,
-                limit: Some(100),
+                // TS omits this argument. `None` selects the wallet-interface
+                // default of 10 (`PositiveIntegerDefault10Max10000`).
+                limit: None,
                 offset: Some(0),
                 privileged: BooleanDefaultFalse(None),
                 privileged_reason: None,
@@ -149,7 +155,7 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
 
         // Check if this certificate type was requested and get requested fields
         let fields_to_reveal = match requested.get(&cert_type_b64) {
-            Some(fields) if !fields.is_empty() => fields.clone(),
+            Some(fields) => fields.clone(),
             _ => continue,
         };
 
@@ -221,6 +227,8 @@ mod tests {
     struct TestWallet {
         inner: ProtoWallet,
         listed_with: StdMutex<Option<ListCertificatesArgs>>,
+        certificates_to_list: StdMutex<Vec<CertificateResult>>,
+        proved_with: StdMutex<Vec<ProveCertificateArgs>>,
     }
 
     impl TestWallet {
@@ -228,6 +236,8 @@ mod tests {
             TestWallet {
                 inner: ProtoWallet::new(pk),
                 listed_with: StdMutex::new(None),
+                certificates_to_list: StdMutex::new(Vec::new()),
+                proved_with: StdMutex::new(Vec::new()),
             }
         }
     }
@@ -434,16 +444,24 @@ mod tests {
             _originator: Option<&str>,
         ) -> Result<ListCertificatesResult, WalletError> {
             *self.listed_with.lock().unwrap() = Some(args);
+            let certificates = self.certificates_to_list.lock().unwrap().clone();
             Ok(ListCertificatesResult {
-                total_certificates: 0,
-                certificates: Vec::new(),
+                total_certificates: certificates.len() as u32,
+                certificates,
             })
         }
-        stub_method!(
-            prove_certificate,
-            ProveCertificateArgs,
-            ProveCertificateResult
-        );
+        async fn prove_certificate(
+            &self,
+            args: ProveCertificateArgs,
+            _originator: Option<&str>,
+        ) -> Result<ProveCertificateResult, WalletError> {
+            self.proved_with.lock().unwrap().push(args);
+            Ok(ProveCertificateResult {
+                keyring_for_verifier: HashMap::new(),
+                certificate: None,
+                verifier: None,
+            })
+        }
         stub_method!(
             relinquish_certificate,
             RelinquishCertificateArgs,
@@ -739,5 +757,152 @@ mod tests {
         let listed_with = wallet.listed_with.lock().unwrap();
         let args = listed_with.as_ref().expect("wallet was queried");
         assert_eq!(args.certifiers, vec![requested_certifier]);
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_skips_unparseable_certifiers() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let valid = PrivateKey::from_random().unwrap().to_public_key();
+        let mut requested = RequestedCertificateSet {
+            certifiers: vec!["not-a-public-key".to_string(), valid.to_der_hex()],
+            ..Default::default()
+        };
+        requested.insert(base64_encode(&[11; 32]), vec!["name".to_string()]);
+
+        get_verifiable_certificates(
+            &wallet,
+            &requested,
+            &PrivateKey::from_random().unwrap().to_public_key(),
+        )
+        .await
+        .expect("an opaque malformed certifier must not abort the response");
+
+        let listed_with = wallet.listed_with.lock().unwrap();
+        assert_eq!(
+            listed_with.as_ref().unwrap().certifiers,
+            vec![valid],
+            "only parseable certifiers can be forwarded to the strongly typed Rust wallet"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_uses_wallet_default_limit() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(
+            PrivateKey::from_random()
+                .unwrap()
+                .to_public_key()
+                .to_der_hex(),
+        );
+        requested.insert(base64_encode(&[12; 32]), vec!["name".to_string()]);
+
+        get_verifiable_certificates(
+            &wallet,
+            &requested,
+            &PrivateKey::from_random().unwrap().to_public_key(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            wallet.listed_with.lock().unwrap().as_ref().unwrap().limit,
+            None,
+            "TS omits limit, selecting the wallet interface default of 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_proves_empty_requested_field_list() {
+        let subject = PrivateKey::from_random().unwrap();
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let cert = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([13; 32]),
+            &subject.to_public_key(),
+            HashMap::new(),
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap()
+        .certificate;
+        let wallet = TestWallet::new(subject);
+        wallet
+            .certificates_to_list
+            .lock()
+            .unwrap()
+            .push(CertificateResult {
+                certificate: cert.clone(),
+                keyring: None,
+                verifier: None,
+            });
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(cert.certifier.to_der_hex());
+        requested.insert(base64_encode(&cert.cert_type.0), Vec::new());
+
+        let result = get_verifiable_certificates(
+            &wallet,
+            &requested,
+            &PrivateKey::from_random().unwrap().to_public_key(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(wallet.proved_with.lock().unwrap().len(), 1);
+        assert!(wallet.proved_with.lock().unwrap()[0]
+            .fields_to_reveal
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_validate_certificates_matches_requested_certifier_case_insensitively() {
+        let certifier_pk = PrivateKey::from_random().unwrap();
+        let certifier_wallet = TestWallet::new(certifier_pk.clone());
+        let subject_pk = PrivateKey::from_random().unwrap();
+        let subject_wallet = TestWallet::new(subject_pk.clone());
+        let verifier_pk = PrivateKey::from_random().unwrap();
+        let verifier_wallet = TestWallet::new(verifier_pk.clone());
+        let cert_type = CertificateType([14; 32]);
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Case Test".to_string());
+        let master = MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            &subject_pk.to_public_key(),
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap();
+        let keyring = master
+            .create_keyring_for_verifier(
+                &verifier_pk.to_public_key(),
+                &["name".to_string()],
+                &certifier_pk.to_public_key(),
+                &subject_wallet,
+            )
+            .await
+            .unwrap();
+        let verifiable = VerifiableCertificate::new(master.certificate.clone(), keyring);
+        let mut requested = RequestedCertificateSet::default();
+        requested
+            .certifiers
+            .push(master.certificate.certifier.to_der_hex().to_uppercase());
+        requested.insert(base64_encode(&cert_type.0), vec!["name".to_string()]);
+
+        assert!(
+            validate_certificates(
+                &verifier_wallet,
+                &[verifiable],
+                &subject_pk.to_public_key(),
+                Some(&requested),
+            )
+            .await
+            .unwrap(),
+            "hex casing must not change certifier membership"
+        );
     }
 }

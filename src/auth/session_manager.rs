@@ -386,6 +386,7 @@ mod tests {
             is_authenticated: authenticated,
             certificates_required: false,
             certificates_validated: true,
+            certificate_validation_error: None,
         }
     }
 

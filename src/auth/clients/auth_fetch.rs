@@ -1494,6 +1494,279 @@ fn b64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::certificates::certificate::base64_encode as cert_base64_encode;
+    use crate::auth::certificates::master::{default_get_revocation_outpoint, MasterCertificate};
+    use crate::auth::certificates::VerifiableCertificate;
+    use crate::auth::types::{AuthMessage, MessageType};
+    use crate::primitives::private_key::PrivateKey;
+    use crate::wallet::interfaces::{CertificateType, GetPublicKeyArgs};
+    use crate::wallet::ProtoWallet;
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+    use tokio::sync::{mpsc, Notify};
+
+    struct MockTransport {
+        peer_tx: mpsc::Sender<AuthMessage>,
+        incoming_rx: StdMutex<Option<mpsc::Receiver<AuthMessage>>>,
+        wait_for_general_response: Option<Arc<Notify>>,
+        notify_general_response: Option<Arc<Notify>>,
+    }
+
+    fn mock_transport_pair() -> (Arc<MockTransport>, Arc<MockTransport>) {
+        let (tx_a, rx_a) = mpsc::channel(32);
+        let (tx_b, rx_b) = mpsc::channel(32);
+        let general_response = Arc::new(Notify::new());
+        (
+            Arc::new(MockTransport {
+                peer_tx: tx_b,
+                incoming_rx: StdMutex::new(Some(rx_a)),
+                wait_for_general_response: Some(general_response.clone()),
+                notify_general_response: None,
+            }),
+            Arc::new(MockTransport {
+                peer_tx: tx_a,
+                incoming_rx: StdMutex::new(Some(rx_b)),
+                wait_for_general_response: None,
+                notify_general_response: Some(general_response),
+            }),
+        )
+    }
+
+    #[async_trait]
+    impl Transport for MockTransport {
+        async fn send(&self, message: AuthMessage) -> Result<(), AuthError> {
+            let is_general = message.message_type == MessageType::General;
+            self.peer_tx
+                .send(message)
+                .await
+                .map_err(|error| AuthError::TransportError(error.to_string()))?;
+            if is_general {
+                if let Some(notify) = &self.notify_general_response {
+                    notify.notify_one();
+                }
+                if let Some(wait) = &self.wait_for_general_response {
+                    wait.notified().await;
+                }
+            }
+            Ok(())
+        }
+
+        fn subscribe(&self) -> mpsc::Receiver<AuthMessage> {
+            self.incoming_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("transport subscribed once")
+        }
+    }
+
+    async fn identity(wallet: &Arc<ProtoWallet>) -> String {
+        wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .public_key
+            .to_der_hex()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn auth_fetch_pumps_handler_mode_certificate_response_before_general_message() {
+        let client_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
+        let server_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
+        let client_identity = identity(&client_wallet).await;
+        let server_identity = identity(&server_wallet).await;
+        let certifier_key = PrivateKey::from_random().unwrap();
+        let certifier_wallet = Arc::new(ProtoWallet::new(certifier_key.clone()));
+        let cert_type = CertificateType([77; 32]);
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "handler mode".to_string());
+        let master = MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            &server_wallet
+                .get_public_key(
+                    GetPublicKeyArgs {
+                        identity_key: true,
+                        protocol_id: None,
+                        key_id: None,
+                        counterparty: None,
+                        privileged: false,
+                        privileged_reason: None,
+                        for_self: None,
+                        seek_permission: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap()
+                .public_key,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap();
+        let keyring = master
+            .create_keyring_for_verifier(
+                &client_wallet
+                    .get_public_key(
+                        GetPublicKeyArgs {
+                            identity_key: true,
+                            protocol_id: None,
+                            key_id: None,
+                            counterparty: None,
+                            privileged: false,
+                            privileged_reason: None,
+                            for_self: None,
+                            seek_permission: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .public_key,
+                &["name".to_string()],
+                &certifier_key.to_public_key(),
+                &server_wallet,
+            )
+            .await
+            .unwrap();
+        let verifiable = VerifiableCertificate::new(master.certificate.clone(), keyring);
+        let mut requested = RequestedCertificateSet::default();
+        requested
+            .certifiers
+            .push(master.certificate.certifier.to_der_hex());
+        requested.insert(cert_base64_encode(&cert_type.0), vec!["name".to_string()]);
+
+        let (client_transport, server_transport) = mock_transport_pair();
+        let client_peer = Arc::new(Peer::new(client_wallet.clone(), client_transport.clone()));
+        client_peer.set_certificates_to_request(requested);
+        let server_peer = Arc::new(Peer::new(server_wallet.clone(), server_transport.clone()));
+        let mut server_general = server_peer.on_general_message().unwrap();
+        let release_response = Arc::new(Notify::new());
+        let response_sent = Arc::new(Notify::new());
+        {
+            let server_peer = server_peer.clone();
+            let release_response = release_response.clone();
+            let response_sent = response_sent.clone();
+            let verifiable = verifiable.clone();
+            server_peer
+                .clone()
+                .listen_for_certificates_requested(Arc::new(move |verifier, _| {
+                    let server_peer = server_peer.clone();
+                    let release_response = release_response.clone();
+                    let response_sent = response_sent.clone();
+                    let verifiable = verifiable.clone();
+                    tokio::spawn(async move {
+                        release_response.notified().await;
+                        server_peer
+                            .send_certificate_response(&verifier, vec![verifiable])
+                            .await
+                            .unwrap();
+                        response_sent.notify_one();
+                    });
+                }));
+        }
+
+        let handshake = {
+            let client_peer = client_peer.clone();
+            tokio::spawn(async move { client_peer.get_authenticated_session("").await })
+        };
+        loop {
+            server_peer.process_pending().await.unwrap();
+            if handshake.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let session = handshake.await.unwrap().unwrap();
+        assert!(!session.certificates_validated);
+        release_response.notify_one();
+        response_sent.notified().await;
+
+        let general_rx = client_peer.on_general_message().unwrap();
+        let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
+        {
+            let router = router.clone();
+            tokio::spawn(async move {
+                let mut general_rx = general_rx;
+                while let Some((_sender, payload)) = general_rx.recv().await {
+                    if payload.len() >= 32 {
+                        if let Some(waiter) =
+                            router.lock().unwrap().remove(&b64_encode(&payload[..32]))
+                        {
+                            let _ = waiter.send(payload);
+                        }
+                    }
+                }
+            });
+        }
+        let auth_peer = Arc::new(AuthPeer {
+            peer: client_peer.clone(),
+            identity_key: RwLock::new(Some(server_identity.clone())),
+            router,
+            handshake_once: OnceCell::new(),
+            transport: client_transport,
+            pending_certificate_requests: Arc::new(StdMutex::new(Vec::new())),
+        });
+        auth_peer.handshake_once.set(()).unwrap();
+        let fetch = AuthFetch::new(client_wallet);
+        fetch
+            .peers
+            .write()
+            .await
+            .insert("https://handler.test".to_string(), auth_peer);
+
+        let server = {
+            let server_peer = server_peer.clone();
+            tokio::spawn(async move {
+                let request_payload = loop {
+                    server_peer.process_pending().await.unwrap();
+                    if let Ok((_sender, payload)) = server_general.try_recv() {
+                        break payload;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                let mut response_payload = request_payload[..32].to_vec();
+                write_varint_num(&mut response_payload, 200);
+                write_varint_num(&mut response_payload, 0);
+                write_varint_num(&mut response_payload, 2);
+                response_payload.extend_from_slice(b"ok");
+                server_peer
+                    .send_message(&client_identity, response_payload)
+                    .await
+                    .unwrap();
+            })
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch.fetch("https://handler.test/data", "GET", None, None),
+        )
+        .await
+        .expect("AuthFetch handler-mode flow must not hang");
+        if result.is_err() {
+            server.abort();
+        } else {
+            server.await.unwrap();
+        }
+        let response = result.expect("certificate response must be pumped before signing general");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"ok");
+        assert_eq!(response.server_identity_key, Some(server_identity));
+    }
 
     // -----------------------------------------------------------------------
     // Pre-existing tests
