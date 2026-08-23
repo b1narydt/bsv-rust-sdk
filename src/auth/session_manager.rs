@@ -355,9 +355,11 @@ impl SessionManager {
         reaped
     }
 
-    /// Test/introspection helper: number of remembered message nonces for a
-    /// session (0 if the session has no metadata).
-    #[doc(hidden)]
+    /// Return the number of remembered message nonces for caller diagnostics.
+    ///
+    /// Returns 0 if the session has no replay metadata. This is read-only:
+    /// [`SessionManager::mark_message_seen`] enforces the configured FIFO cap
+    /// during insertion, without requiring a caller to monitor this count.
     pub fn seen_nonce_count(&self, session_nonce: &str) -> usize {
         self.session_meta
             .get(session_nonce)
@@ -535,6 +537,24 @@ mod tests {
             mgr.mark_message_seen("ghost", "m1", 1_003),
             MarkSeen::SessionGone
         );
+    }
+
+    #[test]
+    fn test_seen_nonce_count_reports_replay_bookkeeping() {
+        let mut mgr = SessionManager::new();
+        mgr.add_session(make_session("sess1", "id_key_A", true));
+
+        assert_eq!(mgr.seen_nonce_count("sess1"), 0);
+        assert_eq!(mgr.seen_nonce_count("unknown"), 0);
+
+        assert_eq!(mgr.mark_message_seen("sess1", "m1", 1_000), MarkSeen::Fresh);
+        assert_eq!(mgr.seen_nonce_count("sess1"), 1);
+
+        assert_eq!(
+            mgr.mark_message_seen("sess1", "m1", 1_001),
+            MarkSeen::Replay
+        );
+        assert_eq!(mgr.seen_nonce_count("sess1"), 1);
     }
 
     /// Item 2: a session past its TTL is evicted and its seen-set freed.
