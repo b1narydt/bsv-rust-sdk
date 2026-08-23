@@ -187,7 +187,10 @@ pub fn verify(
         .map_err(|e| ServicesError::Messages(format!("derive verification key: {e}")))?;
 
     // Verify the signature.
-    if verification_key.verify(message, &signature) {
+    let verified = verification_key
+        .verify(message, &signature)
+        .map_err(|e| ServicesError::Messages(format!("invalid verification key: {e}")))?;
+    if verified {
         Ok(sender)
     } else {
         Err(ServicesError::Messages(

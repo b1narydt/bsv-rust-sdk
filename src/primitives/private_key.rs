@@ -386,7 +386,7 @@ mod tests {
 
         let msg_hash = sha256(b"Hello, BSV!");
         assert!(
-            ecdsa_verify(&msg_hash, &sig, pubkey.point()),
+            ecdsa_verify(&msg_hash, &sig, pubkey.point()).unwrap(),
             "Signature should verify"
         );
     }

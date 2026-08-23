@@ -17,10 +17,8 @@ API cannot represent. All other verdicts are `RUST_DEFECT`.
 
 | Vector | Rust evidence | TypeScript 2.3.1 evidence | Verdict |
 |---|---|---|---|
-| `ecdsa-013` | `ecdsa_verify` returns `false` for `Point::infinity()`; it does not throw. | `ECDSA.verify(..., new PublicKey(null))` throws. | `RUST_DEFECT` — invalid public-key handling differs. |
 | `sdk.crypto.ecies.3` | `ECIES::electrum_encrypt` has no `noKey` argument; its closest legal call embeds the sender key and the two ECDH-direction ciphertexts differ. | `electrumEncrypt(..., noKey=true)` produces equal ciphertexts and decrypts to “this is my ECDH test message”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
 | `sdk.crypto.ecies.18` | Same missing `noKey` input shape and asymmetric closest-call ciphertexts. | Produces equal ciphertexts and decrypts to “ECDH symmetric test”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
-| `sig-tocompact-err-002` | `Signature::to_compact_bsm(4, true)` accepts recovery factor 4 and emits bytes. | `Signature.toCompact(4, true)` throws. | `RUST_DEFECT` — recovery range is not validated. |
 | `mp-compound-001` | `MerklePath::from_hex` rejects the official BUMP with “Mismatched roots”. | `MerklePath.fromHex` parses it, round-trips byte-exactly, and computes the expected root for all four txids. | `RUST_DEFECT` — compound-BUMP parsing/root computation differs. |
 | `tx-007` | `Transaction::add_input(TransactionInput::default())` accepts a missing source reference. | `Transaction.addInput({})` throws “A reference to an an input transaction is required…”. | `RUST_DEFECT` — missing input-source validation. |
 | `tx-009` | `Transaction::add_output(TransactionOutput::default())` accepts neither satoshis nor `change=true`. | `Transaction.addOutput({ lockingScript })` throws “either satoshis must be defined or change must be set to true”. | `RUST_DEFECT` — missing output-value validation. |

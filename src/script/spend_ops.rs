@@ -925,7 +925,7 @@ impl Spend {
         let sighash = crate::primitives::hash::hash256(&preimage);
 
         // Verify
-        let valid = ecdsa_verify(&sighash, &signature, &pubkey);
+        let valid = ecdsa_verify(&sighash, &signature, &pubkey).unwrap_or(false);
         self.push_stack(Self::bool_to_stack(valid))?;
         Ok(())
     }
@@ -1020,7 +1020,7 @@ impl Spend {
             let preimage = self.sighash_preimage(&sub_script, sighash_type);
             let sighash = crate::primitives::hash::hash256(&preimage);
 
-            if ecdsa_verify(&sighash, &signature, &pubkey) {
+            if ecdsa_verify(&sighash, &signature, &pubkey).unwrap_or(false) {
                 sig_idx += 1;
             }
             pk_idx += 1;

@@ -76,7 +76,7 @@ impl BSM {
         let recovery = sig.calculate_recovery_factor(&pub_key, &msg_bn)?;
 
         // Return compact BSM format (65 bytes, always compressed)
-        Ok(sig.to_compact_bsm(recovery, true))
+        Ok(sig.to_compact_bsm(recovery, true)?)
     }
 
     /// Verify a BSM signed message.
@@ -92,7 +92,7 @@ impl BSM {
 
         let msg_hash = Self::magic_hash(message);
 
-        Ok(ecdsa_verify(&msg_hash, &signature, pub_key.point()))
+        Ok(ecdsa_verify(&msg_hash, &signature, pub_key.point())?)
     }
 }
 

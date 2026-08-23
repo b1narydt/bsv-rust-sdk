@@ -5,8 +5,6 @@
 
 mod conformance_harness;
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use bsv::compat::ecies::ECIES;
 use bsv::primitives::aes_gcm::aes_gcm_encrypt;
 use bsv::primitives::big_number::BigNumber;
@@ -76,11 +74,6 @@ const CORPORA: &[Corpus<'_>] = &[
 const GOVERNED_SKIPS: &[&str] = &["sdk.crypto.ecies.17"];
 const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
     KnownDivergence {
-        id: "ecdsa-013",
-        reason: "Rust ECDSA returns false for an infinity public key instead of throwing",
-        evidence: "point at infinity did not throw",
-    },
-    KnownDivergence {
         id: "sdk.crypto.ecies.3",
         reason: "TYPE_SHAPE: Rust ECIES has no noKey input mode",
         evidence: "noKey ciphertexts were not symmetric",
@@ -89,11 +82,6 @@ const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
         id: "sdk.crypto.ecies.18",
         reason: "TYPE_SHAPE: Rust ECIES has no noKey input mode",
         evidence: "noKey ciphertexts were not symmetric",
-    },
-    KnownDivergence {
-        id: "sig-tocompact-err-002",
-        reason: "Rust compact-signature encoding accepts recovery factor 4",
-        evidence: "recovery parameter 4 was accepted",
     },
 ];
 
@@ -270,12 +258,9 @@ fn dispatch_ecdsa(vector: &Vector) -> Result<(), String> {
         let signature = sign_hash(input, true)?;
         let infinity = Point::infinity();
         let hash = bytes32(string(input, "message_hex"))?;
-        let threw = catch_unwind(AssertUnwindSafe(|| {
-            let _ = ecdsa_verify(&hash, &signature, &infinity);
-        }))
-        .is_err();
-        return ensure(threw, || {
-            "ECDSA verification with the point at infinity did not throw".to_string()
+        let rejected = ecdsa_verify(&hash, &signature, &infinity).is_err();
+        return ensure(rejected, || {
+            "ECDSA verification with the point at infinity did not return an error".to_string()
         });
     }
     let operation = string(input, "operation");
@@ -299,7 +284,8 @@ fn dispatch_ecdsa(vector: &Vector) -> Result<(), String> {
             &bytes32(string(input, "message_hex"))?,
             &signature,
             key.to_public_key().point(),
-        );
+        )
+        .map_err(|error| error.to_string())?;
         let want = bool_value(expected, "valid");
         return ensure(got == want, || format!("expected verify={want}, got {got}"));
     }
@@ -326,7 +312,8 @@ fn dispatch_ecdsa(vector: &Vector) -> Result<(), String> {
             &bytes32(string(input, "message_hex"))?,
             &signature,
             wrong.to_public_key().point(),
-        );
+        )
+        .map_err(|error| error.to_string())?;
         let want = bool_value(expected, "valid");
         return ensure(got == want, || {
             format!("expected wrong-key verify={want}, got {got}")
@@ -489,12 +476,8 @@ fn dispatch_signature(vector: &Vector) -> Result<(), String> {
             let recovery = number(input, "recovery");
             if !(0..=3).contains(&recovery) {
                 let signature = Signature::new(BigNumber::zero(), BigNumber::zero());
-                let accepted = if let Ok(recovery) = u8::try_from(recovery) {
-                    let _ = signature.to_compact_bsm(recovery, true);
-                    true
-                } else {
-                    false
-                };
+                let accepted = u8::try_from(recovery)
+                    .is_ok_and(|recovery| signature.to_compact_bsm(recovery, true).is_ok());
                 return ensure(!accepted, || {
                     format!("invalid recovery parameter {recovery} was accepted")
                 });
@@ -522,7 +505,9 @@ fn dispatch_signature(vector: &Vector) -> Result<(), String> {
             .get("recovery")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u8;
-        let compact = signature.to_compact_bsm(recovery, bool_value(input, "compressed"));
+        let compact = signature
+            .to_compact_bsm(recovery, bool_value(input, "compressed"))
+            .map_err(|error| error.to_string())?;
         let want_compact = string(expected, "compact_hex");
         if !want_compact.is_empty() {
             let got = hex_string(&compact);

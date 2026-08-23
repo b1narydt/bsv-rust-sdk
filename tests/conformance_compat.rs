@@ -117,7 +117,8 @@ fn dispatch_bsm(vector: &Vector) -> Result<(), String> {
                     &magic_hash,
                     &signature,
                     public_key(string(input, "pubkey_hex"))?.point(),
-                ),
+                )
+                .map_err(|error| error.to_string())?,
                 Err(_) => false,
             };
             return ensure(got == want_valid, || {
