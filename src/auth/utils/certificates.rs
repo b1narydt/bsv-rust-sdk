@@ -28,16 +28,13 @@ use crate::wallet::types::BooleanDefaultFalse;
 /// 2. Verifies the certificate signature using AuthCertificate::verify
 /// 3. If a RequestedCertificateSet is provided, checks that the certifier
 ///    and certificate type are in the requested set
+/// 4. Decrypts the selectively revealed fields with the verifier wallet
 ///
 /// Returns Ok(true) if all certificates pass validation, Ok(false) if any fail.
-/// Returns Err on infrastructure errors (wallet, parsing).
+/// Returns Err on infrastructure errors and field-decryption failures.
 ///
 /// Translated from TS validateCertificates and Go ValidateCertificates.
 ///
-/// Unlike TS 2.4.1, this function does not yet call
-/// [`VerifiableCertificate::decrypt_fields`] as the final validation step.
-/// Signature/preimage interoperability is independent of that acceptance-policy
-/// gap; adding decryption requires a separately reviewed behavior change.
 pub async fn validate_certificates<W: WalletInterface + ?Sized>(
     verifier_wallet: &W,
     certificates: &[VerifiableCertificate],
@@ -64,12 +61,25 @@ pub async fn validate_certificates<W: WalletInterface + ?Sized>(
 
         // 3. Check against requested certificates if provided
         if let Some(req) = requested {
+            // TS checks the certifier before the type. Preserve that order so
+            // the first rejection reason agrees across implementations.
+            let certifier = cert.certificate.certifier.to_der_hex();
+            if !req.certifiers.contains(&certifier) {
+                return Ok(false);
+            }
+
             // Check certificate type is in the requested types
             let cert_type_b64 = base64_encode(&cert.certificate.cert_type.0);
             if !req.contains_key(&cert_type_b64) {
                 return Ok(false);
             }
         }
+
+        // 4. Prove that the selectively revealed fields are actually readable
+        // by this verifier. TS constructs a fresh VerifiableCertificate for
+        // validation, so decrypt a clone rather than mutating the inbound value.
+        let mut cert_to_verify = cert.clone();
+        cert_to_verify.decrypt_fields(verifier_wallet).await?;
     }
 
     Ok(true)
@@ -106,11 +116,20 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
         }
     }
 
+    // TS forwards the requested certifier set to listCertificates verbatim.
+    // Rust's wallet API uses parsed public keys, so preserve the requested set
+    // while converting it to the strongly typed representation.
+    let certifiers = requested
+        .certifiers
+        .iter()
+        .map(|certifier| PublicKey::from_string(certifier).map_err(AuthError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+
     // Query wallet for matching certificates
     let list_result = wallet
         .list_certificates(
             ListCertificatesArgs {
-                certifiers: Vec::new(),
+                certifiers,
                 types: cert_types,
                 limit: Some(100),
                 offset: Some(0),
@@ -193,6 +212,7 @@ mod tests {
     use crate::wallet::types::{Counterparty, CounterpartyType, Protocol as WalletProtocol};
     use crate::wallet::ProtoWallet;
     use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
 
     // -----------------------------------------------------------------------
     // TestWallet reuse (same pattern as master.rs tests)
@@ -200,12 +220,14 @@ mod tests {
 
     struct TestWallet {
         inner: ProtoWallet,
+        listed_with: StdMutex<Option<ListCertificatesArgs>>,
     }
 
     impl TestWallet {
         fn new(pk: PrivateKey) -> Self {
             TestWallet {
                 inner: ProtoWallet::new(pk),
+                listed_with: StdMutex::new(None),
             }
         }
     }
@@ -406,11 +428,17 @@ mod tests {
         }
 
         stub_method!(acquire_certificate, AcquireCertificateArgs, Certificate);
-        stub_method!(
-            list_certificates,
-            ListCertificatesArgs,
-            ListCertificatesResult
-        );
+        async fn list_certificates(
+            &self,
+            args: ListCertificatesArgs,
+            _originator: Option<&str>,
+        ) -> Result<ListCertificatesResult, WalletError> {
+            *self.listed_with.lock().unwrap() = Some(args);
+            Ok(ListCertificatesResult {
+                total_certificates: 0,
+                certificates: Vec::new(),
+            })
+        }
         stub_method!(
             prove_certificate,
             ProveCertificateArgs,
@@ -446,6 +474,7 @@ mod tests {
         let certifier_wallet = TestWallet::new(certifier_pk.clone());
 
         let subject_pk = PrivateKey::from_random().unwrap();
+        let subject_wallet = TestWallet::new(subject_pk.clone());
         let subject_pubkey = subject_pk.to_public_key();
 
         let cert_type = CertificateType([5u8; 32]);
@@ -464,20 +493,54 @@ mod tests {
         .await
         .expect("issue failed");
 
-        // Create a VerifiableCertificate from the master cert
-        let verifiable = VerifiableCertificate::new(
-            master_cert.certificate.clone(),
-            HashMap::new(), // empty keyring for validation test
-        );
-
         // Verification must work from an ordinary receiving wallet, not only
         // from a wallet whose identity happens to be the special anyone key.
-        let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let receiver_pk = PrivateKey::from_random().unwrap();
+        let receiver_wallet = TestWallet::new(receiver_pk.clone());
+        let verifier_keyring = master_cert
+            .create_keyring_for_verifier(
+                &receiver_pk.to_public_key(),
+                &["name".to_string()],
+                &certifier_pk.to_public_key(),
+                &subject_wallet,
+            )
+            .await
+            .expect("create verifier keyring");
+        let verifiable =
+            VerifiableCertificate::new(master_cert.certificate.clone(), verifier_keyring);
 
         let valid = validate_certificates(&receiver_wallet, &[verifiable], &subject_pubkey, None)
             .await
             .expect("validate_certificates failed");
         assert!(valid, "properly signed certificate should validate");
+    }
+
+    #[tokio::test]
+    async fn test_validate_certificates_rejects_undecryptable_keyring() {
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Test User".to_string());
+        let master_cert = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([8u8; 32]),
+            &subject_pubkey,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .expect("issue failed");
+        let verifiable = VerifiableCertificate::new(master_cert.certificate, HashMap::new());
+        let verifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+
+        let result =
+            validate_certificates(&verifier_wallet, &[verifiable], &subject_pubkey, None).await;
+
+        assert!(
+            matches!(result, Err(AuthError::CertificateValidation(_))),
+            "a certificate whose revealed-field keyring cannot decrypt must be rejected, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -579,6 +642,9 @@ mod tests {
 
         // Create a requested set that does NOT include this cert type
         let mut requested = RequestedCertificateSet::default();
+        requested
+            .certifiers
+            .push(master_cert.certificate.certifier.to_der_hex());
         let different_type_b64 = crate::auth::certificates::certificate::base64_encode(&[99u8; 32]);
         requested
             .types
@@ -605,5 +671,73 @@ mod tests {
             !valid,
             "certificate with unrequested type should not validate"
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_certificates_rejects_unrequested_certifier_before_decryption() {
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
+        let cert_type = CertificateType([9u8; 32]);
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Test User".to_string());
+        let master_cert = MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            &subject_pubkey,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .expect("issue failed");
+        let verifiable = VerifiableCertificate::new(master_cert.certificate, HashMap::new());
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(
+            PrivateKey::from_random()
+                .unwrap()
+                .to_public_key()
+                .to_der_hex(),
+        );
+        requested.insert(
+            crate::auth::certificates::certificate::base64_encode(&cert_type.0),
+            vec!["name".to_string()],
+        );
+        let verifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+
+        let valid = validate_certificates(
+            &verifier_wallet,
+            &[verifiable],
+            &subject_pubkey,
+            Some(&requested),
+        )
+        .await
+        .expect("certifier mismatch is a validation rejection");
+
+        assert!(
+            !valid,
+            "certificate from an unrequested certifier was accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_passes_requested_certifiers_to_wallet() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let requested_certifier = PrivateKey::from_random().unwrap().to_public_key();
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(requested_certifier.to_der_hex());
+        requested.insert(
+            crate::auth::certificates::certificate::base64_encode(&[10u8; 32]),
+            vec!["name".to_string()],
+        );
+        let verifier = PrivateKey::from_random().unwrap().to_public_key();
+
+        let certificates = get_verifiable_certificates(&wallet, &requested, &verifier)
+            .await
+            .expect("listing certificates should succeed");
+
+        assert!(certificates.is_empty());
+        let listed_with = wallet.listed_with.lock().unwrap();
+        let args = listed_with.as_ref().expect("wallet was queried");
+        assert_eq!(args.certifiers, vec![requested_certifier]);
     }
 }

@@ -42,6 +42,7 @@ struct RustVector {
 }
 
 fn main() {
+    let empty = std::env::args().any(|arg| arg == "--empty");
     let sender_private_key = PrivateKey::from_hex(&format!("{:064x}", 4)).unwrap();
     let receiver_private_key = PrivateKey::from_hex(&format!("{:064x}", 5)).unwrap();
     let certifier_private_key = PrivateKey::from_hex(&format!("{:064x}", 6)).unwrap();
@@ -66,7 +67,11 @@ fn main() {
     };
     let mut keyring = HashMap::new();
     keyring.insert("middle".to_string(), "cnVzdC1rZXlyaW5n".to_string());
-    let certificates = vec![VerifiableCertificate::new(certificate, keyring)];
+    let certificates = if empty {
+        Vec::new()
+    } else {
+        vec![VerifiableCertificate::new(certificate, keyring)]
+    };
     let preimage = serde_json::to_vec(&certificates).unwrap();
 
     let nonce = "REVFREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";

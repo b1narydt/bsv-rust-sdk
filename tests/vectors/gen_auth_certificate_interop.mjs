@@ -87,6 +87,35 @@ const tsSignatureCheck = await receiverWallet.verifySignature({
 })
 if (!tsSignatureCheck.valid) throw new Error('TS failed to verify its generated signature')
 
+const emptyPreimageUtf8 = JSON.stringify([])
+const emptyPreimageBytes = utf8Bytes(emptyPreimageUtf8)
+const emptyNonce = 'RU1QVFlDRVJUSUZJQ0FURVJFU1BPTlNFISE='
+const emptyKeyId = `${emptyNonce} ${sessionNonce}`
+const { signature: emptySignature } = await senderWallet.createSignature({
+  data: emptyPreimageBytes,
+  protocolID: [2, 'auth message signature'],
+  keyID: emptyKeyId,
+  counterparty: receiverPublicKey
+})
+const emptyTsMessage = {
+  version: '0.1',
+  messageType: 'certificateResponse',
+  identityKey: senderPublicKey,
+  nonce: emptyNonce,
+  yourNonce: sessionNonce,
+  initialNonce: 'dHMtaW5pdGlhbC1ub25jZS0wMDAwMDAwMA==',
+  certificates: [],
+  signature: emptySignature
+}
+const emptyTsSignatureCheck = await receiverWallet.verifySignature({
+  data: emptyPreimageBytes,
+  signature: emptySignature,
+  protocolID: [2, 'auth message signature'],
+  keyID: emptyKeyId,
+  counterparty: senderPublicKey
+})
+if (!emptyTsSignatureCheck.valid) throw new Error('TS failed to verify its empty response signature')
+
 // Cover every omission combination for the three optional Certificate members.
 const optionalFieldSerializations = []
 for (let mask = 0; mask < 8; mask++) {
@@ -105,26 +134,28 @@ for (let mask = 0; mask < 8; mask++) {
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '..', '..')
-const rust = spawnSync(
-  'cargo',
-  ['run', '--quiet', '--example', 'generate_auth_certificate_rust_vector', '--features', 'serde'],
-  { cwd: repositoryRoot, encoding: 'utf8' }
-)
-if (rust.status !== 0) {
-  throw new Error(`Rust vector generator failed:\n${rust.stderr}`)
+const rustVector = async empty => {
+  const args = ['run', '--quiet', '--example', 'generate_auth_certificate_rust_vector', '--features', 'serde']
+  if (empty) args.push('--', '--empty')
+  const rust = spawnSync('cargo', args, { cwd: repositoryRoot, encoding: 'utf8' })
+  if (rust.status !== 0) {
+    throw new Error(`Rust vector generator failed:\n${rust.stderr}`)
+  }
+  const vector = JSON.parse(rust.stdout.trim())
+  const signatureCheck = await new ProtoWallet(PrivateKey.fromHex(vector.receiverPrivateKey))
+    .verifySignature({
+      data: vector.preimageBytes,
+      signature: vector.message.signature,
+      protocolID: [2, 'auth message signature'],
+      keyID: vector.keyId,
+      counterparty: vector.senderPublicKey
+    })
+  if (!signatureCheck.valid) throw new Error('TS 2.4.1 rejected the Rust-produced signature')
+  vector.verifiedByTypeScript = true
+  return vector
 }
-const rustToTypeScript = JSON.parse(rust.stdout.trim())
-const rustMessage = rustToTypeScript.message
-const rustSignatureCheck = await new ProtoWallet(PrivateKey.fromHex(rustToTypeScript.receiverPrivateKey))
-  .verifySignature({
-    data: rustToTypeScript.preimageBytes,
-    signature: rustMessage.signature,
-    protocolID: [2, 'auth message signature'],
-    keyID: rustToTypeScript.keyId,
-    counterparty: rustToTypeScript.senderPublicKey
-  })
-if (!rustSignatureCheck.valid) throw new Error('TS 2.4.1 rejected the Rust-produced signature')
-rustToTypeScript.verifiedByTypeScript = true
+const rustToTypeScript = await rustVector(false)
+const emptyRustToTypeScript = await rustVector(true)
 
 const fixture = {
   sdk: { name: sdkPackage.name, version: sdkPackage.version },
@@ -140,10 +171,23 @@ const fixture = {
     preimageUtf8,
     message: tsMessage
   },
+  emptyTypeScriptToRust: {
+    producer: '@bsv/sdk 2.4.1',
+    senderPrivateKey: senderPrivateKey.toHex(),
+    senderPublicKey,
+    receiverPrivateKey: receiverPrivateKey.toHex(),
+    receiverPublicKey,
+    keyId: emptyKeyId,
+    preimageBytes: emptyPreimageBytes,
+    preimageHex: Buffer.from(emptyPreimageBytes).toString('hex'),
+    preimageUtf8: emptyPreimageUtf8,
+    message: emptyTsMessage
+  },
   rustToTypeScript,
+  emptyRustToTypeScript,
   optionalFieldSerializations
 }
 
 const fixturePath = resolve(scriptDir, 'auth_certificate_interop.json')
 writeFileSync(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`)
-console.log(`wrote ${fixturePath}; TS->Rust valid=${tsSignatureCheck.valid}; Rust->TS valid=${rustSignatureCheck.valid}`)
+console.log(`wrote ${fixturePath}; nonempty and empty TS<->Rust signatures valid`)

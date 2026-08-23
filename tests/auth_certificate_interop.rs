@@ -15,8 +15,12 @@ struct Fixture {
     sdk: Sdk,
     #[serde(rename = "typeScriptToRust")]
     type_script_to_rust: CertificateResponseVector,
+    #[serde(rename = "emptyTypeScriptToRust")]
+    empty_type_script_to_rust: CertificateResponseVector,
     #[serde(rename = "rustToTypeScript")]
     rust_to_type_script: CertificateResponseVector,
+    #[serde(rename = "emptyRustToTypeScript")]
+    empty_rust_to_type_script: CertificateResponseVector,
     #[serde(rename = "optionalFieldSerializations")]
     optional_field_serializations: Vec<OptionalFieldSerialization>,
 }
@@ -136,6 +140,27 @@ fn rust_certificate_response_vector_is_accepted_by_typescript_and_rust() {
 
     assert_eq!(&rust_preimage, expected_preimage);
     assert!(verify_vector_signature(vector, message, &rust_preimage));
+}
+
+#[test]
+fn empty_certificate_response_is_byte_exact_and_cross_verified() {
+    let fixture = vector_file();
+    for vector in [
+        &fixture.empty_type_script_to_rust,
+        &fixture.empty_rust_to_type_script,
+    ] {
+        let message = &vector.message;
+        let certificates = message
+            .certificates
+            .as_ref()
+            .expect("empty certificateResponse carries an explicit array");
+        assert!(certificates.is_empty());
+        let rust_preimage = serde_json::to_vec(certificates).unwrap();
+        assert_eq!(rust_preimage, b"[]");
+        assert_eq!(rust_preimage, vector.preimage_bytes);
+        assert!(verify_vector_signature(vector, message, &rust_preimage));
+    }
+    assert!(fixture.empty_rust_to_type_script.verified_by_type_script);
 }
 
 #[test]

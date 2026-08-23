@@ -16,12 +16,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peers computed different `certificateResponse` signature preimages and a TS
   peer could not decrypt fields from a Rust response. The signed `fields` and
   `keyring` maps both preserve JSON insertion order during verification.
-  `AuthMessage::certificates`, `Peer::send_certificate_response`, and
-  `Peer::on_certificates` therefore expose `VerifiableCertificate` rather than
-  bare `Certificate`; `VerifiableCertificate::keyring` is now an `IndexMap` so
+  `AuthMessage::certificates` and `Peer::send_certificate_response` therefore
+  expose `VerifiableCertificate` rather than bare `Certificate`;
+  `VerifiableCertificate::keyring` is now an `IndexMap` so
   an inbound signed map retains its wire order. Patched peers no longer
   interoperate with unpatched 0.7.1 Rust peers for certificate exchange because
   the corrected signed preimage intentionally includes `keyring`.
+- **Certificate validation now proves selective disclosure is readable.** After
+  subject and signature checks, Rust now rejects unrequested certifiers before
+  unrequested types, then decrypts every revealed field with the verifier wallet,
+  matching @bsv/sdk 2.4.1. Certificate discovery also forwards the requested
+  certifier set to `list_certificates` instead of querying every certifier.
+- **General messages are gated on required certificate validation.** Outbound
+  creation/sending now fails with the reference error until validation completes;
+  inbound verification waits on a per-session signal for up to 30 seconds and
+  times out without holding the session lock across the wait.
+- **Empty certificate responses are preserved end-to-end.** Standalone
+  certificate requests now receive a signed `[]` response when no certificate
+  matches, and every authenticated `certificateResponse` notifies listeners,
+  including an empty array.
+- **Certificate delivery is lossless and ordered.** The bounded 32-entry channel
+  has been replaced by sequentially awaited callbacks. Listener failures
+  propagate. Matching @bsv/sdk 2.4.1, non-empty certificate validation is
+  committed before listeners run, so a later listener failure does not roll it
+  back.
+
+### Changed — breaking
+
+- `Peer::on_certificates()` has been removed. Register an async callback with
+  `Peer::listen_for_certificates_received()` and remove it with
+  `Peer::stop_listening_for_certificates_received()`. Callbacks return
+  `CertificateReceivedFuture` (`Result<(), AuthError>`) so delivery backpressure
+  and failures are observable.
 
 ## [0.7.1] - 2026-08-23
 
