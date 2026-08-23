@@ -17,7 +17,7 @@ use crate::auth::peer::Peer;
 use crate::auth::transports::Transport;
 use crate::auth::types::RequestedCertificateSet;
 use crate::auth::utils::certificates::get_verifiable_certificates;
-use crate::wallet::interfaces::{Certificate, WalletInterface};
+use crate::wallet::interfaces::WalletInterface;
 
 /// Maximum time `fetch` will wait for in-flight certificate exchanges to
 /// complete before sending the general message. Matches TS SDK's
@@ -865,10 +865,8 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                                 get_verifiable_certificates(&wallet, &requested, &verifier_pubkey)
                                     .await?;
                             if !verifiable.is_empty() {
-                                let certs: Vec<Certificate> =
-                                    verifiable.into_iter().map(|vc| vc.certificate).collect();
                                 peer_arc
-                                    .send_certificate_response(&verifier_key, certs)
+                                    .send_certificate_response(&verifier_key, verifiable)
                                     .await?;
                             }
                             Ok(())

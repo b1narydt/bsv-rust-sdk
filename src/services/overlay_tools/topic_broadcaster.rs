@@ -686,6 +686,7 @@ impl Broadcaster for TopicBroadcaster {
 /// success response. Returns the same `ERR_BEEF_PARSE`/`ERR_TXID_COMPUTE`
 /// failure codes that `broadcast_beef`/`broadcast_beef_with_off_chain`
 /// surface to callers.
+#[allow(clippy::result_large_err)]
 fn parse_beef_for_txid(beef: &[u8]) -> Result<String, BroadcastFailure> {
     let beef_hex: String = beef.iter().map(|b| format!("{b:02x}")).collect();
     let tx = Transaction::from_beef(&beef_hex).map_err(|e| BroadcastFailure {

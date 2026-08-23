@@ -20,7 +20,7 @@ use super::utils::certificates::{get_verifiable_certificates, validate_certifica
 use super::utils::nonce::{create_nonce, verify_nonce};
 use crate::auth::certificates::VerifiableCertificate;
 use crate::wallet::interfaces::{
-    Certificate, CreateSignatureArgs, GetPublicKeyArgs, VerifySignatureArgs, WalletInterface,
+    CreateSignatureArgs, GetPublicKeyArgs, VerifySignatureArgs, WalletInterface,
 };
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
@@ -62,6 +62,8 @@ struct HandshakeState {
     /// Transport incoming message receiver (single-consumer).
     transport_rx: Option<mpsc::Receiver<AuthMessage>>,
 }
+
+type EventReceiver<T> = StdMutex<Option<mpsc::Receiver<T>>>;
 
 // ---------------------------------------------------------------------------
 // Base64 helpers (self-contained, matching nonce module pattern)
@@ -190,14 +192,14 @@ pub struct Peer<W: WalletInterface> {
     // Event channels (sender side -- Peer pushes events here). `mpsc::Sender`
     // is itself `&self`-cloneable/usable, so these need no extra wrapping.
     general_message_tx: mpsc::Sender<(String, Vec<u8>)>,
-    certificate_tx: mpsc::Sender<(String, Vec<Certificate>)>,
+    certificate_tx: mpsc::Sender<(String, Vec<VerifiableCertificate>)>,
     certificate_request_tx: mpsc::Sender<(String, RequestedCertificateSet)>,
 
     // Receiver side -- taken once by consumer. `StdMutex<Option<..>>` so the
     // `on_*` accessors can `.take()` under `&self` (they are called once,
     // before the Peer is shared, but must not require `&mut self`).
-    general_message_rx: StdMutex<Option<mpsc::Receiver<(String, Vec<u8>)>>>,
-    certificate_rx: StdMutex<Option<mpsc::Receiver<(String, Vec<Certificate>)>>>,
+    general_message_rx: EventReceiver<(String, Vec<u8>)>,
+    certificate_rx: EventReceiver<(String, Vec<VerifiableCertificate>)>,
     certificate_request_rx: StdMutex<Option<mpsc::Receiver<(String, RequestedCertificateSet)>>>,
 
     /// Mutable handshake/transport-drain surface behind a single async mutex.
@@ -274,7 +276,7 @@ impl<W: WalletInterface> Peer<W> {
     /// embedded in an `initialResponse` are covered by the handshake signature
     /// and delivered only when they satisfy the certificate request that caused
     /// the peer to include them.
-    pub fn on_certificates(&self) -> Option<mpsc::Receiver<(String, Vec<Certificate>)>> {
+    pub fn on_certificates(&self) -> Option<mpsc::Receiver<(String, Vec<VerifiableCertificate>)>> {
         self.certificate_rx
             .lock()
             .expect("certificate_rx lock poisoned")
@@ -553,7 +555,7 @@ impl<W: WalletInterface> Peer<W> {
     pub async fn send_certificate_response(
         &self,
         identity_key: &str,
-        certificates: Vec<Certificate>,
+        certificates: Vec<VerifiableCertificate>,
     ) -> Result<(), AuthError> {
         let session = self.get_authenticated_session(identity_key).await?;
         self.send_certificate_response_for_session(&session, certificates)
@@ -568,7 +570,7 @@ impl<W: WalletInterface> Peer<W> {
     async fn send_certificate_response_for_session(
         &self,
         session: &PeerSession,
-        certificates: Vec<Certificate>,
+        certificates: Vec<VerifiableCertificate>,
     ) -> Result<(), AuthError> {
         // TS parity (Peer.ts:778): outbound cert responses refresh session
         // activity, same as general messages.
@@ -850,14 +852,9 @@ impl<W: WalletInterface> Peer<W> {
             if let Some(ref certs) = response.certificates {
                 if !certs.is_empty() {
                     let peer_pubkey = parse_public_key(&response.identity_key)?;
-                    let verifiable: Vec<VerifiableCertificate> = certs
-                        .iter()
-                        .cloned()
-                        .map(|cert| VerifiableCertificate::new(cert, HashMap::new()))
-                        .collect();
                     let certificates_valid = validate_certificates(
                         &self.wallet,
-                        &verifiable,
+                        certs,
                         &peer_pubkey,
                         requested_certificates.as_ref(),
                     )
@@ -907,12 +904,10 @@ impl<W: WalletInterface> Peer<W> {
                         get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
                             .await?;
                     if !verifiable.is_empty() {
-                        let certs: Vec<Certificate> =
-                            verifiable.into_iter().map(|vc| vc.certificate).collect();
                         // Use the session we just authenticated (breaks the
                         // async recursion that would otherwise occur through
                         // `get_authenticated_session` → `initiate_handshake`).
-                        self.send_certificate_response_for_session(&session, certs)
+                        self.send_certificate_response_for_session(&session, verifiable)
                             .await?;
                     }
                 }
@@ -1093,8 +1088,7 @@ impl<W: WalletInterface> Peer<W> {
         if verifiable.is_empty() {
             return Ok(());
         }
-        let certs: Vec<Certificate> = verifiable.into_iter().map(|vc| vc.certificate).collect();
-        self.send_certificate_response_for_session(&session, certs)
+        self.send_certificate_response_for_session(&session, verifiable)
             .await
     }
 
@@ -1217,14 +1211,9 @@ impl<W: WalletInterface> Peer<W> {
 
         if let Some(certs) = msg.certificates {
             if !certs.is_empty() {
-                let verifiable: Vec<VerifiableCertificate> = certs
-                    .iter()
-                    .cloned()
-                    .map(|cert| VerifiableCertificate::new(cert, HashMap::new()))
-                    .collect();
                 let certificates_valid = validate_certificates(
                     &self.wallet,
-                    &verifiable,
+                    &certs,
                     &peer_pubkey,
                     msg.requested_certificates.as_ref(),
                 )
@@ -1300,7 +1289,7 @@ impl<W: WalletInterface> Peer<W> {
         // initialResponse (TS Peer.ts:509-528). Listener mode notifies the
         // handler and leaves `certificates_to_include` as None — the handler
         // can issue a separate certificateResponse if needed.
-        let mut certificates_to_include: Option<Vec<Certificate>> = None;
+        let mut certificates_to_include: Option<Vec<VerifiableCertificate>> = None;
         if let Some(ref requested) = msg.requested_certificates {
             if !requested.certifiers.is_empty() {
                 // Observer channel: non-blocking fire-and-forget.
@@ -1316,8 +1305,7 @@ impl<W: WalletInterface> Peer<W> {
                         get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
                             .await?;
                     if !verifiable.is_empty() {
-                        certificates_to_include =
-                            Some(verifiable.into_iter().map(|vc| vc.certificate).collect());
+                        certificates_to_include = Some(verifiable);
                     }
                 }
             }
@@ -1993,6 +1981,12 @@ mod tests {
         requested_certificates: Option<RequestedCertificateSet>,
         nonce: Option<String>,
     ) -> AuthMessage {
+        let certificates = certificates.map(|certificates| {
+            certificates
+                .into_iter()
+                .map(|certificate| VerifiableCertificate::new(certificate, HashMap::new()))
+                .collect::<Vec<_>>()
+        });
         let nonce =
             nonce.unwrap_or_else(|| base64_encode(&crate::primitives::random::random_bytes(32)));
         let sign_data = match certificates.as_ref() {
@@ -2044,6 +2038,12 @@ mod tests {
         requester_session_nonce: String,
         certificates: Option<Vec<Certificate>>,
     ) -> AuthMessage {
+        let certificates = certificates.map(|certificates| {
+            certificates
+                .into_iter()
+                .map(|certificate| VerifiableCertificate::new(certificate, HashMap::new()))
+                .collect::<Vec<_>>()
+        });
         let responder_session_nonce = create_nonce(responder_wallet).await.unwrap();
         let requester_nonce_bytes = base64_decode(&requester_session_nonce).unwrap();
         let responder_nonce_bytes = base64_decode(&responder_session_nonce).unwrap();
@@ -2123,7 +2123,7 @@ mod tests {
                     nonce: Some(base64_encode(&crate::primitives::random::random_bytes(32))),
                     your_nonce: Some(valid_b_nonce),
                     initial_nonce: None,
-                    certificates: Some(vec![cert]),
+                    certificates: Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
                     requested_certificates: None,
                     payload: None,
                     signature: Some(vec![1, 2, 3]),
@@ -3041,6 +3041,7 @@ mod tests {
             .run_until(async {
                 let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
                 let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let identity_a = parse_public_key(&wallet_identity(&wallet_a).await).unwrap();
 
                 let identity_b = wallet_b
                     .get_public_key(
@@ -3083,9 +3084,24 @@ mod tests {
                 let peer_a = send_handle.await.unwrap();
                 peer_b.process_pending().await.unwrap(); // absorb the general msg
 
-                // Now peer A explicitly sends an empty-cert-list response to B.
+                let certificate = Certificate {
+                    cert_type: CertificateType([0x21; 32]),
+                    serial_number: SerialNumber([0x22; 32]),
+                    subject: identity_a.clone(),
+                    certifier: identity_a,
+                    revocation_outpoint: None,
+                    fields: None,
+                    signature: None,
+                };
+                let mut keyring = HashMap::new();
+                keyring.insert("name".to_string(), "a2V5cmluZw==".to_string());
+
+                // Now peer A explicitly sends a verifier-ready response to B.
                 peer_a
-                    .send_certificate_response(&identity_b, Vec::new())
+                    .send_certificate_response(
+                        &identity_b,
+                        vec![VerifiableCertificate::new(certificate, keyring)],
+                    )
                     .await
                     .unwrap();
 
@@ -3103,6 +3119,10 @@ mod tests {
 
                 assert_eq!(msg.message_type, MessageType::CertificateResponse);
                 assert!(msg.nonce.is_some(), "request nonce must be populated");
+                assert_eq!(
+                    msg.certificates.as_ref().unwrap()[0].keyring["name"],
+                    "a2V5cmluZw=="
+                );
                 assert!(
                     msg.signature
                         .as_ref()

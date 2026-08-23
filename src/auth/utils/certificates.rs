@@ -33,6 +33,11 @@ use crate::wallet::types::BooleanDefaultFalse;
 /// Returns Err on infrastructure errors (wallet, parsing).
 ///
 /// Translated from TS validateCertificates and Go ValidateCertificates.
+///
+/// Unlike TS 2.4.1, this function does not yet call
+/// [`VerifiableCertificate::decrypt_fields`] as the final validation step.
+/// Signature/preimage interoperability is independent of that acceptance-policy
+/// gap; adding decryption requires a separately reviewed behavior change.
 pub async fn validate_certificates<W: WalletInterface + ?Sized>(
     verifier_wallet: &W,
     certificates: &[VerifiableCertificate],

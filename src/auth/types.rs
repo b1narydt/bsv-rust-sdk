@@ -132,7 +132,7 @@ pub struct AuthMessage {
 
     /// Certificates to share with the peer.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub certificates: Option<Vec<crate::wallet::interfaces::Certificate>>,
+    pub certificates: Option<Vec<crate::auth::certificates::VerifiableCertificate>>,
 
     /// Certificate types and fields being requested from the peer.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]

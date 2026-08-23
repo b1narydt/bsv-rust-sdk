@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Breaking wire correction:** authentication messages now carry
+  `VerifiableCertificate` values end-to-end, including the verifier keyring in
+  `JSON.stringify(certificates)` parity with @bsv/sdk 2.4.1. Previously Rust
+  discarded `keyring` both when receiving and sending, so TypeScript and Rust
+  peers computed different `certificateResponse` signature preimages and a TS
+  peer could not decrypt fields from a Rust response. The signed `fields` and
+  `keyring` maps both preserve JSON insertion order during verification.
+  `AuthMessage::certificates`, `Peer::send_certificate_response`, and
+  `Peer::on_certificates` therefore expose `VerifiableCertificate` rather than
+  bare `Certificate`; `VerifiableCertificate::keyring` is now an `IndexMap` so
+  an inbound signed map retains its wire order. Patched peers no longer
+  interoperate with unpatched 0.7.1 Rust peers for certificate exchange because
+  the corrected signed preimage intentionally includes `keyring`.
+
 ## [0.7.1] - 2026-08-23
 
 Fixes two regressions introduced by the certificate-verification work in 0.7.0. **0.7.0 is yanked**:

@@ -174,7 +174,7 @@ impl AckPolicy {
 ///
 /// Retained for backwards compatibility; new code should use [`AckPolicy`]
 /// directly. Convertible via `From<AcknowledgmentMode> for AckPolicy`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[deprecated(
     since = "0.2.83",
     note = "Use AckPolicy for full TS parity (per-topic-subset and per-host variants)."
@@ -183,10 +183,17 @@ pub enum AcknowledgmentMode {
     /// All hosts must acknowledge all topics.
     RequireFromAllHosts,
     /// At least one host must acknowledge all topics.
-    #[default]
     RequireFromAny,
     /// Fire-and-forget; do not check acknowledgments.
     DoNotRequire,
+}
+
+#[allow(deprecated)]
+#[allow(clippy::derivable_impls)]
+impl Default for AcknowledgmentMode {
+    fn default() -> Self {
+        Self::RequireFromAny
+    }
 }
 
 #[allow(deprecated)]

@@ -243,6 +243,8 @@ impl WalletInterface for MockWallet {
 // MockComms
 // ---------------------------------------------------------------------------
 
+type LiveCallback = Arc<StdMutex<Option<Arc<dyn Fn(PeerMessage) + Send + Sync>>>>;
+
 /// Tracks all sent messages (both live and queued) as (recipient, message_box, body).
 struct MockComms {
     sent: Arc<StdMutex<Vec<(String, String, String)>>>,
@@ -253,7 +255,7 @@ struct MockComms {
     /// Tracks acknowledged message IDs.
     acknowledged: Arc<StdMutex<Vec<String>>>,
     /// Stored live listener callback (for verifying start_listening).
-    live_callback: Arc<StdMutex<Option<Arc<dyn Fn(PeerMessage) + Send + Sync>>>>,
+    live_callback: LiveCallback,
     /// Flag set when listen_for_live_messages is called.
     listening_flag: Arc<AtomicBool>,
 }

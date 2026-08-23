@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
+use indexmap::IndexMap;
+
 use crate::auth::certificates::certificate::AuthCertificate;
 use crate::auth::error::AuthError;
 use crate::wallet::interfaces::{Certificate, WalletInterface};
@@ -24,7 +26,7 @@ pub struct VerifiableCertificate {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// Maps field names to base64-encoded encrypted symmetric keys for the verifier.
-    pub keyring: HashMap<String, String>,
+    pub keyring: IndexMap<String, String>,
     /// Cached decrypted fields (populated after decrypt_fields is called).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub decrypted_fields: Option<HashMap<String, String>>,
@@ -40,9 +42,15 @@ impl Deref for VerifiableCertificate {
 impl VerifiableCertificate {
     /// Create a VerifiableCertificate from a certificate and keyring.
     pub fn new(certificate: Certificate, keyring: HashMap<String, String>) -> Self {
+        // A keyring is part of the signed auth-message JSON. HashMap iteration
+        // is randomized, so establish a stable order for locally-created
+        // keyrings. Deserialized keyrings retain their exact wire order through
+        // IndexMap's serde implementation.
+        let mut keyring: Vec<_> = keyring.into_iter().collect();
+        keyring.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         VerifiableCertificate {
             certificate,
-            keyring,
+            keyring: keyring.into_iter().collect(),
             decrypted_fields: None,
         }
     }

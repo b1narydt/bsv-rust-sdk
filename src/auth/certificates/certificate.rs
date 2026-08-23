@@ -488,7 +488,7 @@ impl AuthCertificate {
     /// The counterparty is the subject (the party who encrypted the fields).
     pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
         encrypted_fields: &IndexMap<String, String>,
-        keyring: &HashMap<String, String>,
+        keyring: &IndexMap<String, String>,
         serial_number: &str,
         counterparty: &PublicKey,
         wallet: &W,
