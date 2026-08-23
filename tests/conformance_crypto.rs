@@ -76,21 +76,6 @@ const CORPORA: &[Corpus<'_>] = &[
 const GOVERNED_SKIPS: &[&str] = &["sdk.crypto.ecies.17"];
 const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
     KnownDivergence {
-        id: "sdk.crypto.aes.7",
-        reason: "Rust AES-GCM rejects the official AES-192 key size",
-        evidence: "AES key must be 16 or 32 bytes, got 24",
-    },
-    KnownDivergence {
-        id: "sdk.crypto.aes.12",
-        reason: "Rust AES-GCM rejects the official AES-192 key size",
-        evidence: "AES key must be 16 or 32 bytes, got 24",
-    },
-    KnownDivergence {
-        id: "sdk.crypto.aes.13",
-        reason: "Rust AES-GCM rejects the official AES-192 key size",
-        evidence: "AES key must be 16 or 32 bytes, got 24",
-    },
-    KnownDivergence {
         id: "ecdsa-013",
         reason: "Rust ECDSA returns false for an infinity public key instead of throwing",
         evidence: "point at infinity did not throw",

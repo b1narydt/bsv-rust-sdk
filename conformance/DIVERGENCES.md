@@ -17,9 +17,6 @@ API cannot represent. All other verdicts are `RUST_DEFECT`.
 
 | Vector | Rust evidence | TypeScript 2.3.1 evidence | Verdict |
 |---|---|---|---|
-| `sdk.crypto.aes.7` | `aes_gcm_encrypt` rejects the 24-byte key: “AES key must be 16 or 32 bytes.” | AESGCM accepts AES-192 and returns the expected empty ciphertext and tag `cd33…2435`. | `RUST_DEFECT` — AES-192 GCM unsupported. |
-| `sdk.crypto.aes.12` | Same 24-byte-key rejection. | Returns the expected ciphertext `98e7…f600` and tag `2ff5…f0fb`. | `RUST_DEFECT` — AES-192 GCM unsupported. |
-| `sdk.crypto.aes.13` | Same 24-byte-key rejection. | Returns the expected 64-byte ciphertext and tag `9924…4a14`. | `RUST_DEFECT` — AES-192 GCM unsupported. |
 | `ecdsa-013` | `ecdsa_verify` returns `false` for `Point::infinity()`; it does not throw. | `ECDSA.verify(..., new PublicKey(null))` throws. | `RUST_DEFECT` — invalid public-key handling differs. |
 | `sdk.crypto.ecies.3` | `ECIES::electrum_encrypt` has no `noKey` argument; its closest legal call embeds the sender key and the two ECDH-direction ciphertexts differ. | `electrumEncrypt(..., noKey=true)` produces equal ciphertexts and decrypts to “this is my ECDH test message”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
 | `sdk.crypto.ecies.18` | Same missing `noKey` input shape and asymmetric closest-call ciphertexts. | Produces equal ciphertexts and decrypts to “ECDH symmetric test”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
