@@ -712,7 +712,7 @@ mod tests {
                 .derive_public_key(&protocol, nonce, &cp_a, false)
                 .unwrap();
             assert!(
-                ecdsa_verify(&data, &sig, child_pub.point()),
+                ecdsa_verify(&data, &sig, child_pub.point()).unwrap(),
                 "signature must verify with warm cache for nonce {nonce}"
             );
         }

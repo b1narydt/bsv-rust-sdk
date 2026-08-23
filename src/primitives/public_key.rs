@@ -132,7 +132,7 @@ impl PublicKey {
     /// Verify a message signature using this public key.
     ///
     /// The message is hashed with SHA-256 before verification.
-    pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
+    pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool, PrimitivesError> {
         let msg_hash = sha256(message);
         ecdsa_verify(&msg_hash, signature, &self.point)
     }
@@ -286,13 +286,29 @@ mod tests {
         let sig = priv_key.sign(b"test verify", true).unwrap();
 
         assert!(
-            pub_key.verify(b"test verify", &sig),
+            pub_key.verify(b"test verify", &sig).unwrap(),
             "Should verify valid signature"
         );
         assert!(
-            !pub_key.verify(b"wrong message", &sig),
+            !pub_key.verify(b"wrong message", &sig).unwrap(),
             "Should reject wrong message"
         );
+    }
+
+    #[test]
+    fn test_public_key_verify_propagates_infinity_error() {
+        let private_key = PrivateKey::from_hex("1").unwrap();
+        let signature = private_key.sign(b"test verify", true).unwrap();
+        let infinity = PublicKey::from_point(Point::infinity());
+
+        assert!(matches!(
+            infinity.verify(b"test verify", &signature),
+            Err(PrimitivesError::InvalidPublicKey(_))
+        ));
+        assert!(matches!(
+            infinity.derive_shared_secret(&private_key),
+            Err(PrimitivesError::InvalidPublicKey(_))
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -368,7 +384,7 @@ mod tests {
 
             let sig = priv_key.sign(msg.as_bytes(), true).unwrap();
             assert!(
-                pub_key.verify(msg.as_bytes(), &sig),
+                pub_key.verify(msg.as_bytes(), &sig).unwrap(),
                 "Key {i} should verify"
             );
         }

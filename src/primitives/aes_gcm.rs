@@ -210,7 +210,7 @@ fn derive_j0(h: &[u8; 16], iv: &[u8]) -> [u8; 16] {
 /// Encrypt plaintext using AES-GCM.
 ///
 /// # Arguments
-/// * `key` - AES key (16 or 32 bytes)
+/// * `key` - AES key (16, 24, or 32 bytes)
 /// * `iv` - Initialization vector (typically 12 bytes; 32 bytes for TS SDK compat)
 /// * `plaintext` - Data to encrypt
 /// * `aad` - Additional authenticated data (authenticated but not encrypted)
@@ -223,9 +223,9 @@ pub fn aes_gcm_encrypt(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -263,7 +263,7 @@ pub fn aes_gcm_encrypt(
 /// Decrypt ciphertext using AES-GCM.
 ///
 /// # Arguments
-/// * `key` - AES key (16 or 32 bytes)
+/// * `key` - AES key (16, 24, or 32 bytes)
 /// * `iv` - Initialization vector
 /// * `ciphertext_with_tag` - Data to decrypt with 16-byte auth tag appended
 /// * `aad` - Additional authenticated data
@@ -276,9 +276,9 @@ pub fn aes_gcm_decrypt(
     ciphertext_with_tag: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -336,9 +336,9 @@ pub fn aes_gcm_encrypt_ts_compat(
     iv: &[u8],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -372,9 +372,9 @@ pub fn aes_gcm_decrypt_ts_compat(
     iv: &[u8],
     ciphertext_with_tag: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -725,8 +725,36 @@ mod tests {
 
     #[test]
     fn test_aes_gcm_invalid_key_length() {
-        let result = aes_gcm_encrypt(&[0u8; 24], &[0u8; 12], b"test", &[]);
+        let result = aes_gcm_encrypt(&[0u8; 20], &[0u8; 12], b"test", &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nist_aes192_gcm_encrypt_and_decrypt() {
+        let key = hex_to_bytes("000000000000000000000000000000000000000000000000");
+        let iv = hex_to_bytes("000000000000000000000000");
+        let plaintext = hex_to_bytes("00000000000000000000000000000000");
+        let expected =
+            hex_to_bytes("98e7247c07f0fe411c267e4384b0f6002ff58d80033927ab8ef4d4587514f0fb");
+
+        let encrypted = aes_gcm_encrypt(&key, &iv, &plaintext, &[]).unwrap();
+        assert_eq!(encrypted, expected);
+        assert_eq!(
+            aes_gcm_decrypt(&key, &iv, &encrypted, &[]).unwrap(),
+            plaintext
+        );
+    }
+
+    #[test]
+    fn test_aes192_gcm_ts_compat_roundtrip() {
+        let key = [0x42; 24];
+        let iv = [0x24; 32];
+        let plaintext = b"AES-192 TS compatibility";
+        let encrypted = aes_gcm_encrypt_ts_compat(&key, &iv, plaintext).unwrap();
+        assert_eq!(
+            aes_gcm_decrypt_ts_compat(&key, &iv, &encrypted).unwrap(),
+            plaintext
+        );
     }
 
     #[test]

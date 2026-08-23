@@ -225,8 +225,19 @@ pub fn ecdsa_sign_with_k(
 /// - signature: the (r, s) signature to verify
 /// - public_key: the signer's public key as a Point
 ///
-/// Returns true if the signature is valid.
-pub fn ecdsa_verify(message_hash: &[u8; 32], signature: &Signature, public_key: &Point) -> bool {
+/// Returns an error when the public key is the point at infinity, otherwise
+/// returns whether the signature is valid.
+pub fn ecdsa_verify(
+    message_hash: &[u8; 32],
+    signature: &Signature,
+    public_key: &Point,
+) -> Result<bool, PrimitivesError> {
+    if public_key.is_infinity() {
+        return Err(PrimitivesError::InvalidPublicKey(
+            "missing coordinates".to_string(),
+        ));
+    }
+
     let curve = Curve::secp256k1();
     let n = &curve.n;
 
@@ -238,28 +249,28 @@ pub fn ecdsa_verify(message_hash: &[u8; 32], signature: &Signature, public_key: 
 
     // Check r and s are in [1, n-1]
     if r.cmpn(1) < 0 || r.cmp(n) >= 0 {
-        return false;
+        return Ok(false);
     }
     if s.cmpn(1) < 0 || s.cmp(n) >= 0 {
-        return false;
+        return Ok(false);
     }
 
     // s_inv = s^-1 mod n
     let s_inv = match s.invm(n) {
         Ok(inv) => inv,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
 
     // u1 = hash * s_inv mod n
     let u1 = match msg_bn.mul(&s_inv).umod(n) {
         Ok(val) => val,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
 
     // u2 = r * s_inv mod n
     let u2 = match r.mul(&s_inv).umod(n) {
         Ok(val) => val,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
 
     // R = u1*G + u2*Q using Shamir's trick (shared doublings)
@@ -268,7 +279,7 @@ pub fn ecdsa_verify(message_hash: &[u8; 32], signature: &Signature, public_key: 
     let r_jac = JacobianPoint::shamir_mul_wnaf(&u1, base_point.table(), &u2, &q_jac);
 
     if r_jac.is_infinity() {
-        return false;
+        return Ok(false);
     }
 
     let (rx, _ry) = r_jac.to_affine();
@@ -276,11 +287,11 @@ pub fn ecdsa_verify(message_hash: &[u8; 32], signature: &Signature, public_key: 
     // v = R.x mod n
     let v = match rx.umod(n) {
         Ok(val) => val,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
 
     // Check v == r
-    v.cmp(r) == 0
+    Ok(v.cmp(r) == 0)
 }
 
 #[cfg(test)]
@@ -336,7 +347,7 @@ mod tests {
         let pubkey = base_point.mul(&key);
 
         assert!(
-            ecdsa_verify(&msg_hash, &sig, &pubkey),
+            ecdsa_verify(&msg_hash, &sig, &pubkey).unwrap(),
             "Valid signature should verify"
         );
     }
@@ -357,9 +368,31 @@ mod tests {
         let wrong_pubkey = base_point.mul(&wrong_key);
 
         assert!(
-            !ecdsa_verify(&msg_hash, &sig, &wrong_pubkey),
+            !ecdsa_verify(&msg_hash, &sig, &wrong_pubkey).unwrap(),
             "Wrong public key should fail verification"
         );
+    }
+
+    #[test]
+    fn test_ecdsa_verify_rejects_infinity_public_key() {
+        let key = BigNumber::from_number(1);
+        let msg_hash = sha256(b"test");
+        let signature = ecdsa_sign(&msg_hash, &key, false).unwrap();
+
+        let error = ecdsa_verify(&msg_hash, &signature, &Point::infinity()).unwrap_err();
+        assert!(matches!(error, PrimitivesError::InvalidPublicKey(_)));
+    }
+
+    #[test]
+    fn test_ecdsa_verify_off_curve_key_is_failed_verification() {
+        // The reference only throws for a key with missing coordinates. A
+        // coordinate pair which is off-curve remains a failed verification.
+        let key = BigNumber::from_number(1);
+        let msg_hash = sha256(b"test");
+        let signature = ecdsa_sign(&msg_hash, &key, false).unwrap();
+        let off_curve = Point::new(BigNumber::one(), BigNumber::one());
+
+        assert!(!ecdsa_verify(&msg_hash, &signature, &off_curve).unwrap());
     }
 
     // -----------------------------------------------------------------------
@@ -378,7 +411,7 @@ mod tests {
         let pubkey = base_point.mul(&key);
 
         assert!(
-            !ecdsa_verify(&wrong_hash, &sig, &pubkey),
+            !ecdsa_verify(&wrong_hash, &sig, &pubkey).unwrap(),
             "Wrong message should fail verification"
         );
     }
@@ -482,7 +515,7 @@ mod tests {
             let s = BigNumber::from_hex(&v.signature_s).unwrap();
             let sig = Signature::new(r, s);
 
-            let result = ecdsa_verify(&msg_hash, &sig, &pubkey);
+            let result = ecdsa_verify(&msg_hash, &sig, &pubkey).unwrap();
             assert_eq!(
                 result, v.expected_valid,
                 "Vector {}: expected valid={}, got {}",
@@ -509,7 +542,7 @@ mod tests {
         let bad_r = sig.r().addn(1);
         let bad_sig = Signature::new(bad_r, sig.s().clone());
         assert!(
-            !ecdsa_verify(&msg_hash, &bad_sig, &pubkey),
+            !ecdsa_verify(&msg_hash, &bad_sig, &pubkey).unwrap(),
             "Tampered r should fail"
         );
 
@@ -517,7 +550,7 @@ mod tests {
         let bad_s = sig.s().addn(1);
         let bad_sig = Signature::new(sig.r().clone(), bad_s);
         assert!(
-            !ecdsa_verify(&msg_hash, &bad_sig, &pubkey),
+            !ecdsa_verify(&msg_hash, &bad_sig, &pubkey).unwrap(),
             "Tampered s should fail"
         );
     }
@@ -538,7 +571,7 @@ mod tests {
             let pubkey = base_point.mul(&key);
 
             assert!(
-                ecdsa_verify(&msg_hash, &sig, &pubkey),
+                ecdsa_verify(&msg_hash, &sig, &pubkey).unwrap(),
                 "Key {i} should verify"
             );
         }

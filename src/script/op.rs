@@ -318,8 +318,8 @@ impl Op {
             Op::OpCheckMultiSig => "OP_CHECKMULTISIG",
             Op::OpCheckMultiSigVerify => "OP_CHECKMULTISIGVERIFY",
             Op::OpNop1 => "OP_NOP1",
-            Op::OpNop2 => "OP_NOP2",
-            Op::OpNop3 => "OP_NOP3",
+            Op::OpNop2 => "OP_CHECKLOCKTIMEVERIFY",
+            Op::OpNop3 => "OP_CHECKSEQUENCEVERIFY",
             Op::OpSubstr => "OP_SUBSTR",
             Op::OpLeft => "OP_LEFT",
             Op::OpRight => "OP_RIGHT",
@@ -512,19 +512,27 @@ impl Op {
             "OP_CHECKMULTISIG" => Some(Op::OpCheckMultiSig),
             "OP_CHECKMULTISIGVERIFY" => Some(Op::OpCheckMultiSigVerify),
             "OP_NOP1" => Some(Op::OpNop1),
-            "OP_NOP2" => Some(Op::OpNop2),
-            "OP_NOP3" => Some(Op::OpNop3),
+            "OP_NOP2" | "OP_CHECKLOCKTIMEVERIFY" => Some(Op::OpNop2),
+            "OP_NOP3" | "OP_CHECKSEQUENCEVERIFY" => Some(Op::OpNop3),
             "OP_NOP4" | "OP_SUBSTR" => Some(Op::OpSubstr),
             "OP_NOP5" | "OP_LEFT" => Some(Op::OpLeft),
             "OP_NOP6" | "OP_RIGHT" => Some(Op::OpRight),
             "OP_NOP7" | "OP_LSHIFTNUM" => Some(Op::OpLShiftNum),
             "OP_NOP8" | "OP_RSHIFTNUM" => Some(Op::OpRShiftNum),
+            "OP_SMALLDATA" => Some(Op::OpSmallData),
+            "OP_SMALLINTEGER" => Some(Op::OpSmallInteger),
+            "OP_PUBKEYS" => Some(Op::OpPubKeys),
+            "OP_PUBKEYHASH" => Some(Op::OpPubKeyHash),
+            "OP_PUBKEY" => Some(Op::OpPubKey),
             "OP_INVALIDOPCODE" => Some(Op::OpInvalidOpcode),
             _ => {
-                // Handle OP_NOP9..OP_NOP77 and template ops
+                // Handle the NOP9..NOP73 range plus the separately named
+                // NOP77. Bytes 0xf9..=0xfb are template opcodes, not NOP74-76.
                 if let Some(suffix) = name.strip_prefix("OP_NOP") {
                     if let Ok(n) = suffix.parse::<u8>() {
-                        return Some(Op::from(0xb8 + n.saturating_sub(9)));
+                        if (9..=73).contains(&n) || n == 77 {
+                            return Some(Op::from(0xb8 + (n - 9)));
+                        }
                     }
                 }
                 None
@@ -805,6 +813,8 @@ mod tests {
         assert_eq!(Op::OpCat.to_name(), "OP_CAT");
         assert_eq!(Op::OpMul.to_name(), "OP_MUL");
         assert_eq!(Op::OpSubstr.to_name(), "OP_SUBSTR");
+        assert_eq!(Op::OpNop2.to_name(), "OP_CHECKLOCKTIMEVERIFY");
+        assert_eq!(Op::OpNop3.to_name(), "OP_CHECKSEQUENCEVERIFY");
         assert_eq!(Op::OpInvalidOpcode.to_name(), "OP_INVALIDOPCODE");
     }
 
@@ -822,6 +832,13 @@ mod tests {
             "OP_CAT",
             "OP_MUL",
             "OP_SUBSTR",
+            "OP_CHECKLOCKTIMEVERIFY",
+            "OP_CHECKSEQUENCEVERIFY",
+            "OP_SMALLDATA",
+            "OP_SMALLINTEGER",
+            "OP_PUBKEYS",
+            "OP_PUBKEYHASH",
+            "OP_PUBKEY",
             "OP_INVALIDOPCODE",
             "OP_FALSE",
             "OP_TRUE",
@@ -834,6 +851,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("from_name failed for canonical {canonical}"));
             assert_eq!(op, op2);
         }
+    }
+
+    #[test]
+    fn test_reference_opcode_aliases() {
+        assert_eq!(Op::from_name("OP_NOP2"), Some(Op::OpNop2));
+        assert_eq!(Op::from_name("OP_NOP3"), Some(Op::OpNop3));
+        assert_eq!(Op::from_name("OP_NOP77"), Some(Op::OpNop77));
+        assert_eq!(Op::from_name("OP_NOP74"), None);
+        assert_eq!(Op::from_name("OP_NOP75"), None);
+        assert_eq!(Op::from_name("OP_NOP76"), None);
     }
 
     #[test]

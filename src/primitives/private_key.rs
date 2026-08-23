@@ -56,12 +56,20 @@ impl PrivateKey {
 
     /// Create a private key from a hexadecimal string.
     ///
-    /// The hex string is parsed as a big-endian 256-bit integer.
-    /// Must be in [1, n-1].
+    /// The hex string is parsed as a big-endian integer and reduced modulo the
+    /// secp256k1 curve order, matching the TypeScript SDK constructor.
     pub fn from_hex(hex: &str) -> Result<Self, PrimitivesError> {
         let bn = BigNumber::from_hex(hex)?;
-        Self::validate_range(&bn)?;
-        Ok(PrivateKey { inner: bn })
+        if bn.is_negative() {
+            return Err(PrimitivesError::InvalidPrivateKey(
+                "private key must not be negative".to_string(),
+            ));
+        }
+        let curve = Curve::secp256k1();
+        let inner = bn
+            .umod(&curve.n)
+            .map_err(|e| PrimitivesError::InvalidPrivateKey(format!("mod n: {e}")))?;
+        Ok(PrivateKey { inner })
     }
 
     /// Create a private key from a string (alias for from_hex).
@@ -272,19 +280,59 @@ mod tests {
     }
 
     #[test]
-    fn test_private_key_from_hex_zero_rejected() {
-        let result = PrivateKey::from_hex("0");
-        assert!(result.is_err(), "Zero should be rejected");
+    fn test_private_key_from_hex_zero_matches_reference() {
+        let key = PrivateKey::from_hex("0").unwrap();
+        assert_eq!(
+            key.to_hex(),
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
+        assert_eq!(
+            key.to_wif(&[0x80]),
+            "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73Nd2Mcv1"
+        );
     }
 
     #[test]
-    fn test_private_key_from_hex_too_large() {
-        // n = fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141
-        // n itself should be rejected
-        let result = PrivateKey::from_hex(
-            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+    fn test_private_key_from_hex_reduces_modulo_curve_order() {
+        let cases = [
+            (
+                // n reduces to zero, which fromHex accepts in the reference.
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+            (
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036414d",
+                "000000000000000000000000000000000000000000000000000000000000000c",
+            ),
+            (
+                "1fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8289",
+                "0000000000000000000000000000000000000000000000000000000000000007",
+            ),
+            (
+                "3e7fffffffffffffffffffffffffffffb093b0ee51cb3b1e9654dc1560d53eee663",
+                "000000000000000000000000000000000000000000000000000000000000007b",
+            ),
+            (
+                "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b",
+                "9d671cd581c69bc5e697f5e45bcd07c6741496c20e7cf878896cf21467d7d14b",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(PrivateKey::from_hex(input).unwrap().to_hex(), expected);
+        }
+    }
+
+    #[test]
+    fn test_private_key_strict_constructors_still_reject_zero() {
+        assert!(PrivateKey::from_bytes(&[0; 32]).is_err());
+        assert!(
+            PrivateKey::from_wif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73Nd2Mcv1").is_err()
         );
-        assert!(result.is_err(), "n should be rejected");
     }
 
     // -----------------------------------------------------------------------
@@ -386,7 +434,7 @@ mod tests {
 
         let msg_hash = sha256(b"Hello, BSV!");
         assert!(
-            ecdsa_verify(&msg_hash, &sig, pubkey.point()),
+            ecdsa_verify(&msg_hash, &sig, pubkey.point()).unwrap(),
             "Signature should verify"
         );
     }
