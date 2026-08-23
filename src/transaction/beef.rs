@@ -1556,6 +1556,18 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_bump_lookup_finds_every_level_zero_txid() {
+        let hex = "6401040002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0102bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0202cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0302dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let bump = MerklePath::from_hex(hex).expect("parse compound BUMP");
+        let mut beef = Beef::new(BEEF_V2);
+
+        assert_eq!(beef.merge_bump(&bump).unwrap(), 0);
+        for txid in ["aa", "bb", "cc", "dd"].map(|byte| byte.repeat(32)) {
+            assert_eq!(beef.find_bump(&txid), Some(&beef.bumps[0]));
+        }
+    }
+
+    #[test]
     fn test_into_transaction_sets_merkle_path_from_bumps() {
         // Vector 1 has 2 txs: a proven source tx and an unproven subject tx.
         // into_transaction should set merkle_path on the linked source tx.

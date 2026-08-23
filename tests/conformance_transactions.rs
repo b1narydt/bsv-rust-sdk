@@ -32,11 +32,6 @@ const CORPORA: &[Corpus<'_>] = &[
 ];
 const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
     KnownDivergence {
-        id: "mp-compound-001",
-        reason: "Rust rejects the official compound BUMP while TypeScript parses it",
-        evidence: "Mismatched roots",
-    },
-    KnownDivergence {
         id: "tx-007",
         reason: "Rust Transaction::add_input does not validate a missing source reference",
         evidence: "addInput accepted missing source",
