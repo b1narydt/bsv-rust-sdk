@@ -308,7 +308,7 @@ impl MasterCertificate {
             subject: subject.clone(),
             certifier: certifier_identity.public_key,
             revocation_outpoint: Some(revocation_outpoint),
-            fields: Some(encrypted_fields),
+            fields: Some(encrypted_fields.into_iter().collect()),
             signature: None,
         };
 

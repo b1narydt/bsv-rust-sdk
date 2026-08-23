@@ -895,7 +895,7 @@ test_result_vector!(
             subject: pk_from_hex(PUB_KEY_HEX),
             certifier: pk_from_hex(COUNTERPARTY_HEX),
             revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-            fields: Some(fields),
+            fields: Some(fields.into_iter().collect()),
             signature: Some(sig_from_hex(SIG_HEX)),
         }
     }
@@ -943,7 +943,7 @@ test_result_vector!(
                     subject: pk_from_hex(PUB_KEY_HEX),
                     certifier: pk_from_hex(COUNTERPARTY_HEX),
                     revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-                    fields: Some(fields),
+                    fields: Some(fields.into_iter().collect()),
                     signature: Some(sig_from_hex(SIG_HEX)),
                 },
                 keyring: None,
@@ -987,7 +987,7 @@ test_args_vector!(
                 subject: pk_from_hex(PUB_KEY_HEX),
                 certifier: pk_from_hex(COUNTERPARTY_HEX),
                 revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-                fields: Some(fields),
+                fields: Some(fields.into_iter().collect()),
                 signature: Some(sig_from_hex(SIG_HEX)),
             }
             .into(),
@@ -1083,7 +1083,7 @@ test_result_vector!(
                     subject: pk_from_hex(PUB_KEY_HEX),
                     certifier: pk_from_hex(COUNTERPARTY_HEX),
                     revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-                    fields: Some(fields),
+                    fields: Some(fields.into_iter().collect()),
                     signature: Some(sig_from_hex(SIG_HEX)),
                 },
                 certifier_info: IdentityCertifier {
@@ -1147,7 +1147,7 @@ test_result_vector!(
                     subject: pk_from_hex(PUB_KEY_HEX),
                     certifier: pk_from_hex(COUNTERPARTY_HEX),
                     revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-                    fields: Some(fields),
+                    fields: Some(fields.into_iter().collect()),
                     signature: Some(sig_from_hex(SIG_HEX)),
                 },
                 certifier_info: IdentityCertifier {
@@ -1863,7 +1863,7 @@ test_result_vector!(
             subject: pk_from_hex(PUB_KEY_HEX),
             certifier: pk_from_hex(COUNTERPARTY_HEX),
             revocation_outpoint: Some(OUTPOINT_STR.to_string()),
-            fields: Some(fields),
+            fields: Some(fields.into_iter().collect()),
             signature: Some(sig_from_hex(SIG_HEX)),
         }
     }

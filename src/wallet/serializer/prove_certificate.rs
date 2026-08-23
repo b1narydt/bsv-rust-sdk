@@ -5,6 +5,7 @@ use super::*;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use crate::wallet::types::BooleanDefaultFalse;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 pub fn serialize_prove_certificate_args(
@@ -110,7 +111,7 @@ pub fn deserialize_prove_certificate_args(
     };
     // Fields
     let fields_len = read_varint(&mut r)?;
-    let mut fields = HashMap::with_capacity(fields_len as usize);
+    let mut fields = IndexMap::with_capacity(fields_len as usize);
     for _ in 0..fields_len {
         let key = String::from_utf8(read_bytes(&mut r)?)
             .map_err(|e| WalletError::Internal(e.to_string()))?;

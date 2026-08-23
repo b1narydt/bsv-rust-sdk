@@ -2151,6 +2151,90 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_signature_survives_json_wire_round_trip() {
+        let sender = TestWallet::new(PrivateKey::from_random().unwrap());
+        let receiver = TestWallet::new(PrivateKey::from_random().unwrap());
+        let sender_public_key = parse_public_key(&wallet_identity(&sender).await).unwrap();
+        let receiver_public_key = parse_public_key(&wallet_identity(&receiver).await).unwrap();
+
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert("zeta".to_string(), "six".to_string());
+        fields.insert("alpha".to_string(), "one".to_string());
+        fields.insert("theta".to_string(), "five".to_string());
+        fields.insert("beta".to_string(), "two".to_string());
+        fields.insert("delta".to_string(), "four".to_string());
+        fields.insert("gamma".to_string(), "three".to_string());
+
+        let certificates = vec![Certificate {
+            cert_type: CertificateType([7; 32]),
+            serial_number: SerialNumber([8; 32]),
+            subject: sender_public_key.clone(),
+            certifier: sender_public_key.clone(),
+            revocation_outpoint: None,
+            fields: Some(fields),
+            signature: Some(vec![1, 2, 3]),
+        }];
+        let wire_bytes = serde_json::to_vec(&certificates).unwrap();
+        let key_id = "wire-order-regression".to_string();
+        let protocol_id = Protocol {
+            security_level: 2,
+            protocol: AUTH_PROTOCOL_ID.to_string(),
+        };
+        let signature = sender
+            .create_signature(
+                CreateSignatureArgs {
+                    data: Some(wire_bytes.clone()),
+                    hash_to_directly_sign: None,
+                    protocol_id: protocol_id.clone(),
+                    key_id: key_id.clone(),
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(receiver_public_key),
+                    },
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .signature;
+
+        // Exercise multiple independent deserializations so the old HashMap
+        // representation cannot pass by happening to choose the sender's order.
+        for _ in 0..32 {
+            let received: Vec<Certificate> = serde_json::from_slice(&wire_bytes).unwrap();
+            let reconstructed = serde_json::to_vec(&received).unwrap();
+            let result = receiver
+                .verify_signature(
+                    VerifySignatureArgs {
+                        data: Some(reconstructed),
+                        hash_to_directly_verify: None,
+                        signature: signature.clone(),
+                        protocol_id: protocol_id.clone(),
+                        key_id: key_id.clone(),
+                        counterparty: Counterparty {
+                            counterparty_type: CounterpartyType::Other,
+                            public_key: Some(sender_public_key.clone()),
+                        },
+                        for_self: None,
+                        privileged: false,
+                        privileged_reason: None,
+                        seek_permission: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(
+                result.valid,
+                "certificate response signature changed across the JSON wire round-trip"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn test_certificate_response_with_bad_signature_is_refused() {
         let local = tokio::task::LocalSet::new();
         local

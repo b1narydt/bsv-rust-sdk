@@ -208,7 +208,7 @@ impl WalletInterface for MockWallet {
             subject: anyone_pubkey(),
             certifier: anyone_pubkey(),
             revocation_outpoint: None,
-            fields: Some(HashMap::new()),
+            fields: Some(indexmap::IndexMap::new()),
             signature: None,
         })
     }

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use indexmap::IndexMap;
 
 use crate::primitives::public_key::PublicKey;
 use crate::wallet::error::WalletError;
@@ -732,7 +733,7 @@ pub struct Certificate {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub fields: Option<HashMap<String, String>>,
+    pub fields: Option<IndexMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
@@ -796,7 +797,7 @@ impl From<Certificate> for PartialCertificate {
             subject: Some(c.subject),
             certifier: Some(c.certifier),
             revocation_outpoint: c.revocation_outpoint,
-            fields: c.fields,
+            fields: c.fields.map(|fields| fields.into_iter().collect()),
             signature: c.signature,
         }
     }
@@ -2822,7 +2823,7 @@ mod certificate_serde_tests {
     #[test]
     fn a_populated_certificate_still_round_trips() {
         // The default must not swallow real values.
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("role".to_string(), "admin".to_string());
         let cert = Certificate {
             revocation_outpoint: Some("aa".repeat(32) + ".1"),
