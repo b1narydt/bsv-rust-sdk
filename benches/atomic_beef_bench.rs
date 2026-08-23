@@ -80,7 +80,8 @@ fn build_chain(depth: usize) -> (Vec<Transaction>, String, MerklePath) {
         satoshis: Some(100000),
         locking_script: locking_script.clone(),
         change: false,
-    });
+    })
+    .unwrap();
     let base_txid = tx.id().unwrap();
     let merkle_path = make_merkle_path(&base_txid);
     tx.merkle_path = Some(merkle_path.clone());
@@ -88,18 +89,22 @@ fn build_chain(depth: usize) -> (Vec<Transaction>, String, MerklePath) {
 
     for i in 1..depth {
         let mut new_tx = Transaction::new();
-        new_tx.add_input(TransactionInput {
-            source_transaction: Some(Box::new(tx.clone())),
-            source_txid: Some(tx.id().unwrap()),
-            source_output_index: 0,
-            unlocking_script: None,
-            sequence: 0xffffffff,
-        });
-        new_tx.add_output(TransactionOutput {
-            satoshis: Some(100000u64.saturating_sub(i as u64)),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        new_tx
+            .add_input(TransactionInput {
+                source_transaction: Some(Box::new(tx.clone())),
+                source_txid: Some(tx.id().unwrap()),
+                source_output_index: 0,
+                unlocking_script: None,
+                sequence: 0xffffffff,
+            })
+            .unwrap();
+        new_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(100000u64.saturating_sub(i as u64)),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
 
         let source_satoshis = tx.outputs[0].satoshis.unwrap();
         let source_ls = tx.outputs[0].locking_script.clone();

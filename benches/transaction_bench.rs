@@ -79,24 +79,29 @@ fn deep_chain_sign(depth: usize) {
         satoshis: Some(100000),
         locking_script: locking_script.clone(),
         change: false,
-    });
+    })
+    .unwrap();
     let txid = tx.id().unwrap();
     tx.merkle_path = Some(make_merkle_path(&txid));
 
     for i in 1..=depth {
         let mut new_tx = Transaction::new();
-        new_tx.add_input(TransactionInput {
-            source_transaction: Some(Box::new(tx.clone())),
-            source_txid: Some(tx.id().unwrap()),
-            source_output_index: 0,
-            unlocking_script: None,
-            sequence: 0xffffffff,
-        });
-        new_tx.add_output(TransactionOutput {
-            satoshis: Some(100000 - (i as u64) * 10),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        new_tx
+            .add_input(TransactionInput {
+                source_transaction: Some(Box::new(tx.clone())),
+                source_txid: Some(tx.id().unwrap()),
+                source_output_index: 0,
+                unlocking_script: None,
+                sequence: 0xffffffff,
+            })
+            .unwrap();
+        new_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(100000 - (i as u64) * 10),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
 
         let source_satoshis = tx.outputs[0].satoshis.unwrap();
         let source_ls = tx.outputs[0].locking_script.clone();
@@ -119,11 +124,13 @@ fn wide_transaction_sign(input_count: usize) {
     let mut source_txs = Vec::with_capacity(input_count);
     for _ in 0..input_count {
         let mut source_tx = Transaction::new();
-        source_tx.add_output(TransactionOutput {
-            satoshis: Some(1000),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        source_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(1000),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
         let txid = source_tx.id().unwrap();
         source_tx.merkle_path = Some(make_merkle_path(&txid));
         source_txs.push(source_tx);
@@ -137,13 +144,15 @@ fn wide_transaction_sign(input_count: usize) {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
     }
     tx.add_output(TransactionOutput {
         satoshis: Some((input_count as u64) * 1000 - 1000),
         locking_script: locking_script.clone(),
         change: false,
-    });
+    })
+    .unwrap();
 
     for (i, source_tx) in source_txs.iter().enumerate() {
         let source_satoshis = source_tx.outputs[0].satoshis.unwrap();
@@ -164,11 +173,13 @@ fn large_tx_sign(input_count: usize, output_count: usize) {
     let mut source_txs = Vec::with_capacity(input_count);
     for _ in 0..input_count {
         let mut source_tx = Transaction::new();
-        source_tx.add_output(TransactionOutput {
-            satoshis: Some(2000),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        source_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(2000),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
         let txid = source_tx.id().unwrap();
         source_tx.merkle_path = Some(make_merkle_path(&txid));
         source_txs.push(source_tx);
@@ -182,14 +193,16 @@ fn large_tx_sign(input_count: usize, output_count: usize) {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
     }
     for _ in 0..output_count {
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
             locking_script: locking_script.clone(),
             change: false,
-        });
+        })
+        .unwrap();
     }
 
     for (i, source_tx) in source_txs.iter().enumerate() {
@@ -212,11 +225,13 @@ fn nested_inputs_sign(depth: usize, fan_out: usize) {
     let mut txs: Vec<Transaction> = Vec::with_capacity(fan_out);
     for _ in 0..fan_out {
         let mut base_tx = Transaction::new();
-        base_tx.add_output(TransactionOutput {
-            satoshis: Some(100000),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        base_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(100000),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
         let txid = base_tx.id().unwrap();
         base_tx.merkle_path = Some(make_merkle_path(&txid));
         txs.push(base_tx);
@@ -228,20 +243,24 @@ fn nested_inputs_sign(depth: usize, fan_out: usize) {
             let mut new_tx = Transaction::new();
             // The TS version adds fan_out inputs all from the same source tx
             for _ in 0..fan_out {
-                new_tx.add_input(TransactionInput {
-                    source_transaction: Some(Box::new(tx.clone())),
-                    source_txid: Some(tx.id().unwrap()),
-                    source_output_index: 0,
-                    unlocking_script: None,
-                    sequence: 0xffffffff,
-                });
+                new_tx
+                    .add_input(TransactionInput {
+                        source_transaction: Some(Box::new(tx.clone())),
+                        source_txid: Some(tx.id().unwrap()),
+                        source_output_index: 0,
+                        unlocking_script: None,
+                        sequence: 0xffffffff,
+                    })
+                    .unwrap();
             }
             let prev_sats = tx.outputs[0].satoshis.unwrap_or(0);
-            new_tx.add_output(TransactionOutput {
-                satoshis: Some(prev_sats.saturating_sub(1000 * fan_out as u64)),
-                locking_script: locking_script.clone(),
-                change: false,
-            });
+            new_tx
+                .add_output(TransactionOutput {
+                    satoshis: Some(prev_sats.saturating_sub(1000 * fan_out as u64)),
+                    locking_script: locking_script.clone(),
+                    change: false,
+                })
+                .unwrap();
 
             let source_satoshis = tx.outputs[0].satoshis.unwrap();
             let source_ls = tx.outputs[0].locking_script.clone();
@@ -266,11 +285,13 @@ fn bench_transaction(c: &mut Criterion) {
         let locking_script = p2pkh.lock().unwrap();
 
         let mut source_tx = Transaction::new();
-        source_tx.add_output(TransactionOutput {
-            satoshis: Some(50000),
-            locking_script: locking_script.clone(),
-            change: false,
-        });
+        source_tx
+            .add_output(TransactionOutput {
+                satoshis: Some(50000),
+                locking_script: locking_script.clone(),
+                change: false,
+            })
+            .unwrap();
 
         let mut tx = Transaction::new();
         tx.add_input(TransactionInput {
@@ -279,12 +300,14 @@ fn bench_transaction(c: &mut Criterion) {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(49000),
             locking_script: locking_script.clone(),
             change: false,
-        });
+        })
+        .unwrap();
         now_or_never(tx.sign(
             0,
             &p2pkh,

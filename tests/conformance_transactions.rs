@@ -30,23 +30,7 @@ const CORPORA: &[Corpus<'_>] = &[
         expected_count: 15,
     },
 ];
-const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
-    KnownDivergence {
-        id: "tx-007",
-        reason: "Rust Transaction::add_input does not validate a missing source reference",
-        evidence: "addInput accepted missing source",
-    },
-    KnownDivergence {
-        id: "tx-009",
-        reason: "Rust Transaction::add_output accepts neither satoshis nor change",
-        evidence: "addOutput accepted missing satoshis/change",
-    },
-    KnownDivergence {
-        id: "tx-014",
-        reason: "Rust fee calculation accepts an input with no source value",
-        evidence: "getFee without source value succeeded",
-    },
-];
+const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[];
 
 fn merkle_root_from_display_txids(txids: &[serde_json::Value]) -> Result<String, String> {
     if txids.is_empty() {
@@ -363,11 +347,15 @@ fn dispatch_serialization_operation(vector: &Vector, operation: &str) -> Result<
                 // Mirrors sdk.ts:607-611. The missing source is representable
                 // by Rust's public TransactionInput, so this exercises it.
                 let mut tx = Transaction::new();
-                tx.add_input(TransactionInput::default());
-                return Err(format!(
-                    "addInput accepted missing source (inputs={})",
-                    tx.inputs.len()
-                ));
+                let error = tx
+                    .add_input(TransactionInput::default())
+                    .expect_err("addInput accepted missing source");
+                return ensure(
+                    error
+                        .to_string()
+                        .contains(string(expected, "error_pattern")),
+                    || format!("unexpected addInput error: {error}"),
+                );
             }
             // Mirrors sdk.ts:612-615: this branch only asserts corpus metadata.
             if expected.get("sequence").is_some() {
@@ -387,25 +375,35 @@ fn dispatch_serialization_operation(vector: &Vector, operation: &str) -> Result<
                 return Ok(());
             }
             let mut tx = Transaction::new();
-            tx.add_output(TransactionOutput::default());
-            Err(format!(
-                "addOutput accepted missing satoshis/change (outputs={})",
-                tx.outputs.len()
-            ))
+            let error = tx
+                .add_output(TransactionOutput::default())
+                .expect_err("addOutput accepted missing satoshis/change");
+            ensure(
+                error
+                    .to_string()
+                    .contains(string(expected, "error_pattern")),
+                || format!("unexpected addOutput error: {error}"),
+            )
         }
         "getFee_no_source" => {
-            // Mirrors sdk.ts:618-628. Rust's public fee model currently does
-            // not reject an input whose source value is unavailable.
+            // Mirrors sdk.ts:618-628. A source txid is enough to add the input,
+            // but it does not provide the source value needed for a fee.
             let mut tx = Transaction::new();
             tx.add_input(TransactionInput {
                 source_txid: Some(string(input, "source_txid").to_string()),
                 source_output_index: input["source_output_index"].as_u64().unwrap_or(0) as u32,
                 ..Default::default()
-            });
-            let result = SatoshisPerKilobyte::new(1).compute_fee(&tx);
-            ensure(result.is_err(), || {
-                format!("getFee without source value succeeded with {result:?}")
             })
+            .map_err(|error| error.to_string())?;
+            let error = SatoshisPerKilobyte::new(1)
+                .compute_fee(&tx)
+                .expect_err("getFee without source value succeeded");
+            ensure(
+                error
+                    .to_string()
+                    .contains(string(expected, "error_pattern")),
+                || format!("unexpected getFee error: {error}"),
+            )
         }
         "parseScriptOffsets" => {
             // Mirrors sdk.ts:630-637.

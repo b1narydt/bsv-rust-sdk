@@ -19,9 +19,6 @@ API cannot represent. All other verdicts are `RUST_DEFECT`.
 |---|---|---|---|
 | `sdk.crypto.ecies.3` | `ECIES::electrum_encrypt` has no `noKey` argument; its closest legal call embeds the sender key and the two ECDH-direction ciphertexts differ. | `electrumEncrypt(..., noKey=true)` produces equal ciphertexts and decrypts to “this is my ECDH test message”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
 | `sdk.crypto.ecies.18` | Same missing `noKey` input shape and asymmetric closest-call ciphertexts. | Produces equal ciphertexts and decrypts to “ECDH symmetric test”. | `TYPE_SHAPE` — legal `noKey=true` cannot be represented. |
-| `tx-007` | `Transaction::add_input(TransactionInput::default())` accepts a missing source reference. | `Transaction.addInput({})` throws “A reference to an an input transaction is required…”. | `RUST_DEFECT` — missing input-source validation. |
-| `tx-009` | `Transaction::add_output(TransactionOutput::default())` accepts neither satoshis nor `change=true`. | `Transaction.addOutput({ lockingScript })` throws “either satoshis must be defined or change must be set to true”. | `RUST_DEFECT` — missing output-value validation. |
-| `tx-014` | `SatoshisPerKilobyte::compute_fee` succeeds for an input with no source value. | `Transaction.getFee()` throws “Source transactions or sourceSatoshis are required…”. | `RUST_DEFECT` — fee calculation does not require source value. |
 
 ## Governed skip (not a divergence)
 

@@ -45,6 +45,23 @@ impl FeeModel for SatoshisPerKilobyte {
     ///
     /// Uses ceiling division: `(size * value + 999) / 1000`.
     fn compute_fee(&self, tx: &Transaction) -> Result<u64, TransactionError> {
+        for (input_index, input) in tx.inputs.iter().enumerate() {
+            let source_transaction = input
+                .source_transaction
+                .as_ref()
+                .ok_or(TransactionError::MissingInputSourceValue)?;
+            if source_transaction
+                .outputs
+                .get(input.source_output_index as usize)
+                .is_none()
+            {
+                return Err(TransactionError::MissingSourceOutput {
+                    input_index,
+                    output_index: input.source_output_index,
+                });
+            }
+        }
+
         let mut size: u64 = 4; // version
 
         // Input count varint
@@ -104,6 +121,18 @@ mod tests {
     use crate::transaction::transaction_input::TransactionInput;
     use crate::transaction::transaction_output::TransactionOutput;
 
+    fn source_transaction(satoshis: Option<u64>) -> Transaction {
+        let mut source = Transaction::new();
+        source
+            .add_output(TransactionOutput {
+                satoshis,
+                change: satoshis.is_none(),
+                ..Default::default()
+            })
+            .unwrap();
+        source
+    }
+
     #[test]
     fn test_fee_model_empty_tx() {
         let model = SatoshisPerKilobyte::new(1000);
@@ -120,7 +149,11 @@ mod tests {
         let mut tx = Transaction::new();
 
         // Add unsigned input (will use default 107 estimate)
-        tx.add_input(TransactionInput::default());
+        tx.add_input(TransactionInput {
+            source_transaction: Some(Box::new(source_transaction(Some(50_000)))),
+            ..Default::default()
+        })
+        .unwrap();
 
         // Add P2PKH output (25 bytes script)
         let p2pkh = P2PKH::from_public_key_hash([0xab; 20]);
@@ -129,7 +162,8 @@ mod tests {
             satoshis: Some(50000),
             locking_script: lock_script,
             change: false,
-        });
+        })
+        .unwrap();
 
         let fee = model.compute_fee(&tx).unwrap();
         // version(4) + varint_inputs(1) + input(40 + varint(107)=1 + 107) + varint_outputs(1) + output(8 + varint(25)=1 + 25) + locktime(4)
@@ -177,17 +211,19 @@ mod tests {
 
         let input = TransactionInput {
             unlocking_script: Some(unlock),
+            source_transaction: Some(Box::new(source_transaction(Some(50_000)))),
             source_txid: Some("00".repeat(32)),
             ..Default::default()
         };
-        tx.add_input(input);
+        tx.add_input(input).unwrap();
 
         let p2pkh_lock = P2PKH::from_public_key_hash([0xab; 20]);
         tx.add_output(TransactionOutput {
             satoshis: Some(50000),
             locking_script: p2pkh_lock.lock().unwrap(),
             change: false,
-        });
+        })
+        .unwrap();
 
         let fee = model.compute_fee(&tx).unwrap();
 
@@ -196,5 +232,60 @@ mod tests {
             4 + 1 + (40 + varint_size(unlock_len) + unlock_len) + 1 + (8 + 1 + 25) + 4;
         let expected_fee = (expected_size * 1000).div_ceil(1000);
         assert_eq!(fee, expected_fee);
+    }
+
+    #[test]
+    fn test_fee_model_requires_source_transaction_for_every_input() {
+        let model = SatoshisPerKilobyte::new(1000);
+        let tx = Transaction {
+            inputs: vec![TransactionInput {
+                source_txid: Some("00".repeat(32)),
+                ..Default::default()
+            }],
+            ..Transaction::new()
+        };
+
+        let error = model.compute_fee(&tx).unwrap_err();
+        assert!(matches!(error, TransactionError::MissingInputSourceValue));
+        assert_eq!(
+            error.to_string(),
+            "Source transactions or sourceSatoshis are required for all inputs to calculate fee"
+        );
+    }
+
+    #[test]
+    fn test_fee_model_accepts_input_with_source_transaction() {
+        let model = SatoshisPerKilobyte::new(1000);
+        let mut tx = Transaction::new();
+        tx.add_input(TransactionInput {
+            // The reference treats an existing source output with undefined
+            // satoshis as zero rather than rejecting it.
+            source_transaction: Some(Box::new(source_transaction(None))),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(model.compute_fee(&tx).unwrap(), 158);
+    }
+
+    #[test]
+    fn test_fee_model_rejects_missing_source_output() {
+        let model = SatoshisPerKilobyte::new(1000);
+        let mut tx = Transaction::new();
+        tx.add_input(TransactionInput {
+            source_transaction: Some(Box::new(source_transaction(Some(1)))),
+            source_output_index: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let error = model.compute_fee(&tx).unwrap_err();
+        assert!(matches!(
+            error,
+            TransactionError::MissingSourceOutput {
+                input_index: 0,
+                output_index: 1
+            }
+        ));
     }
 }
