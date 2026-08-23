@@ -880,7 +880,7 @@ impl Spend {
     fn op_checksig(&mut self) -> Result<(), ScriptError> {
         use crate::primitives::ecdsa::ecdsa_verify;
         use crate::primitives::point::Point;
-        use crate::primitives::signature::Signature;
+        use crate::primitives::transaction_signature::TransactionSignature;
 
         let pubkey_bytes = self.pop_stack()?;
         let sig_bytes = self.pop_stack()?;
@@ -891,21 +891,18 @@ impl Spend {
             return Ok(());
         }
 
-        // SAFETY: guarded by is_empty() check above which returns early
-        let sighash_type = *sig_bytes.last().unwrap() as u32;
-        let der_sig = &sig_bytes[..sig_bytes.len() - 1];
-
-        // Parse DER signature
-        let signature = match Signature::from_der(der_sig) {
-            Ok(s) => s,
-            Err(_) => {
-                self.push_stack(Self::bool_to_stack(false))?;
-                return Ok(());
-            }
-        };
+        // Parse the complete checksig value (DER signature + sighash byte).
+        let transaction_signature =
+            match TransactionSignature::from_checksig_format(&sig_bytes, false) {
+                Ok(signature) => signature,
+                Err(_) => {
+                    self.push_stack(Self::bool_to_stack(false))?;
+                    return Ok(());
+                }
+            };
 
         // In non-relaxed mode, require low-S
-        if !self.is_relaxed() && !signature.has_low_s() {
+        if !self.is_relaxed() && !transaction_signature.has_low_s() {
             self.push_stack(Self::bool_to_stack(false))?;
             return Ok(());
         }
@@ -921,11 +918,12 @@ impl Spend {
 
         // Compute sighash
         let sub_script = self.get_subscript();
-        let preimage = self.sighash_preimage(&sub_script, sighash_type);
+        let preimage = self.sighash_preimage(&sub_script, transaction_signature.scope());
         let sighash = crate::primitives::hash::hash256(&preimage);
 
         // Verify
-        let valid = ecdsa_verify(&sighash, &signature, &pubkey).unwrap_or(false);
+        let valid =
+            ecdsa_verify(&sighash, transaction_signature.signature(), &pubkey).unwrap_or(false);
         self.push_stack(Self::bool_to_stack(valid))?;
         Ok(())
     }
@@ -934,7 +932,7 @@ impl Spend {
     fn op_checkmultisig(&mut self) -> Result<(), ScriptError> {
         use crate::primitives::ecdsa::ecdsa_verify;
         use crate::primitives::point::Point;
-        use crate::primitives::signature::Signature;
+        use crate::primitives::transaction_signature::TransactionSignature;
 
         // Pop n (number of public keys)
         let n_bytes = self.pop_stack()?;
@@ -992,19 +990,16 @@ impl Spend {
                 continue;
             }
 
-            // SAFETY: guarded by is_empty() check above which continues
-            let sighash_type = *sig_bytes.last().unwrap() as u32;
-            let der_sig = &sig_bytes[..sig_bytes.len() - 1];
+            let transaction_signature =
+                match TransactionSignature::from_checksig_format(sig_bytes, false) {
+                    Ok(signature) => signature,
+                    Err(_) => {
+                        success = false;
+                        break;
+                    }
+                };
 
-            let signature = match Signature::from_der(der_sig) {
-                Ok(s) => s,
-                Err(_) => {
-                    success = false;
-                    break;
-                }
-            };
-
-            if !self.is_relaxed() && !signature.has_low_s() {
+            if !self.is_relaxed() && !transaction_signature.has_low_s() {
                 success = false;
                 break;
             }
@@ -1017,10 +1012,10 @@ impl Spend {
                 }
             };
 
-            let preimage = self.sighash_preimage(&sub_script, sighash_type);
+            let preimage = self.sighash_preimage(&sub_script, transaction_signature.scope());
             let sighash = crate::primitives::hash::hash256(&preimage);
 
-            if ecdsa_verify(&sighash, &signature, &pubkey).unwrap_or(false) {
+            if ecdsa_verify(&sighash, transaction_signature.signature(), &pubkey).unwrap_or(false) {
                 sig_idx += 1;
             }
             pk_idx += 1;
