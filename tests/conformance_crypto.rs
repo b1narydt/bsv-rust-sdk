@@ -96,16 +96,6 @@ const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[
         evidence: "point at infinity did not throw",
     },
     KnownDivergence {
-        id: "sdk.crypto.ecies.3",
-        reason: "TYPE_SHAPE: Rust ECIES has no noKey input mode",
-        evidence: "noKey ciphertexts were not symmetric",
-    },
-    KnownDivergence {
-        id: "sdk.crypto.ecies.18",
-        reason: "TYPE_SHAPE: Rust ECIES has no noKey input mode",
-        evidence: "noKey ciphertexts were not symmetric",
-    },
-    KnownDivergence {
         id: "sig-tocompact-err-002",
         reason: "Rust compact-signature encoding accepts recovery factor 4",
         evidence: "recovery parameter 4 was accepted",
@@ -413,9 +403,12 @@ fn dispatch_ecies(vector: &Vector) -> Result<(), String> {
         if ciphertext.is_empty() || recipient_private_hex.is_empty() {
             return Ok(());
         }
-        let plaintext =
-            ECIES::electrum_decrypt(&bytes(ciphertext)?, &private_key(recipient_private_hex)?)
-                .map_err(|error| error.to_string())?;
+        let plaintext = ECIES::electrum_decrypt(
+            &bytes(ciphertext)?,
+            &private_key(recipient_private_hex)?,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
         let got = hex_string(plaintext);
         let want = string(expected, "decrypted_message");
         return ensure(got == want, || {
@@ -426,21 +419,21 @@ fn dispatch_ecies(vector: &Vector) -> Result<(), String> {
     let sender = private_key(sender_hex)?;
     let message = message_bytes(string(input, "message"), string(input, "message_encoding"))?;
     if bool_value(input, "no_key") {
-        // Mirrors sdk.ts:252-273. Rust currently has no `noKey` ECIES mode;
-        // exercising its closest public operation makes the resulting
-        // cross-implementation disagreement explicit rather than dropping it.
+        // Mirrors sdk.ts:252-273, including the sender-key-free ECDH mode.
         let alice = private_key(string(input, "alice_private_key"))?;
         let bob = private_key(string(input, "bob_private_key"))?;
         let ct1 = ECIES::electrum_encrypt(
             &message,
             &public_key(string(input, "bob_public_key"))?,
             Some(&alice),
+            true,
         )
         .map_err(|error| error.to_string())?;
         let ct2 = ECIES::electrum_encrypt(
             &message,
             &public_key(string(input, "alice_public_key"))?,
             Some(&bob),
+            true,
         )
         .map_err(|error| error.to_string())?;
         if bool_value(expected, "ciphertext_symmetric") {
@@ -450,7 +443,9 @@ fn dispatch_ecies(vector: &Vector) -> Result<(), String> {
         }
         let want_utf8 = string(expected, "decrypted_message_utf8");
         if !want_utf8.is_empty() {
-            let plain = ECIES::electrum_decrypt(&ct1, &bob).map_err(|error| error.to_string())?;
+            let alice_public = public_key(string(input, "alice_public_key"))?;
+            let plain = ECIES::electrum_decrypt(&ct1, &bob, Some(&alice_public))
+                .map_err(|error| error.to_string())?;
             ensure(String::from_utf8_lossy(&plain) == want_utf8, || {
                 format!("expected UTF-8 plaintext {want_utf8:?}, got {plain:?}")
             })?;
@@ -464,7 +459,7 @@ fn dispatch_ecies(vector: &Vector) -> Result<(), String> {
     let mut produced = None;
     if !want_ciphertext.is_empty() {
         let recipient = public_key(string(input, "recipient_public_key"))?;
-        let ciphertext = ECIES::electrum_encrypt(&message, &recipient, Some(&sender))
+        let ciphertext = ECIES::electrum_encrypt(&message, &recipient, Some(&sender), false)
             .map_err(|error| error.to_string())?;
         let got = hex_string(&ciphertext);
         ensure(got == want_ciphertext, || {
@@ -482,7 +477,7 @@ fn dispatch_ecies(vector: &Vector) -> Result<(), String> {
             bytes(want_ciphertext)?
         };
         let got = hex_string(
-            ECIES::electrum_decrypt(&ciphertext, &private_key(recipient_private_hex)?)
+            ECIES::electrum_decrypt(&ciphertext, &private_key(recipient_private_hex)?, None)
                 .map_err(|error| error.to_string())?,
         );
         ensure(got == want_plaintext, || {

@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Electrum variant (BIE1) ---
     println!("\n--- Electrum ECIES (BIE1) ---");
 
-    let electrum_ct = ECIES::electrum_encrypt(plaintext, &recipient_pub, None)?;
+    let electrum_ct = ECIES::electrum_encrypt(plaintext, &recipient_pub, None, false)?;
     println!(
         "Ciphertext:       {} ({} bytes)",
         electrum_ct
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         electrum_ct.len()
     );
 
-    let electrum_pt = ECIES::electrum_decrypt(&electrum_ct, &recipient_key)?;
+    let electrum_pt = ECIES::electrum_decrypt(&electrum_ct, &recipient_key, None)?;
     let electrum_text = std::str::from_utf8(&electrum_pt)?;
     println!("Decrypted:        \"{electrum_text}\"");
     assert_eq!(plaintext.as_slice(), electrum_pt.as_slice());
