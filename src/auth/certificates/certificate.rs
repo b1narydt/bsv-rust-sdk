@@ -10,13 +10,11 @@ use std::ops::Deref;
 use indexmap::IndexMap;
 
 use crate::auth::AuthError;
-use crate::primitives::ecdsa::ecdsa_verify;
-use crate::primitives::hash::sha256;
 use crate::primitives::public_key::PublicKey;
-use crate::primitives::signature::Signature;
 use crate::primitives::symmetric_key::SymmetricKey;
 use crate::wallet::interfaces::{
-    Certificate, CreateSignatureArgs, DecryptArgs, EncryptArgs, GetPublicKeyArgs, WalletInterface,
+    Certificate, CreateSignatureArgs, DecryptArgs, EncryptArgs, GetPublicKeyArgs,
+    VerifySignatureArgs, WalletInterface,
 };
 use crate::wallet::types::{Counterparty, CounterpartyType, Protocol};
 
@@ -351,10 +349,15 @@ impl AuthCertificate {
 
     /// Verify the certificate's signature.
     ///
-    /// Derives the public signing key for the protocol's special `anyone`
-    /// counterparty and verifies that the certifier signed this certificate.
+    /// Verification is performed with an `anyone` ProtoWallet, mirroring
+    /// TS `Certificate.verify()`, which constructs `new ProtoWallet('anyone')`
+    /// for exactly this: a certificate signature is made for the special
+    /// `anyone` counterparty, so any party can check it and the result must not
+    /// depend on the identity of whichever wallet happens to hold the
+    /// certificate. The `wallet` parameter is therefore not consulted.
     ///
-    /// Translated from TS SDK Certificate.prototype.verify().
+    /// Translated from TS SDK Certificate.prototype.verify()
+    /// (packages/sdk/src/auth/certificates/Certificate.ts:213-229).
     pub async fn verify<W: WalletInterface + ?Sized>(
         cert: &Certificate,
         _wallet: &W,
@@ -366,22 +369,33 @@ impl AuthCertificate {
             base64_encode(&cert.cert_type.0),
             base64_encode(&cert.serial_number.0)
         );
-        let invoice_number = format!(
-            "{}-{}-{}",
-            SECURITY_LEVEL, CERTIFICATE_SIGNATURE_PROTOCOL, key_id
-        );
 
-        // Certificate signatures are created for the special `anyone`
-        // counterparty. Its private key is scalar 1, so the BRC-42 shared
-        // secret is the certifier public key itself. Derive the signing public
-        // key directly so verification does not depend on the identity key of
-        // whichever wallet received the certificate.
-        let signing_key = cert
-            .certifier
-            .derive_child_with_secret(cert.certifier.point(), &invoice_number)?;
-        let signature = Signature::from_der(&signature)?;
-        let hash = sha256(&preimage);
-        Ok(ecdsa_verify(&hash, &signature, signing_key.point())?)
+        let verifier = crate::wallet::proto_wallet::ProtoWallet::anyone();
+        let result = verifier
+            .verify_signature(
+                VerifySignatureArgs {
+                    data: Some(preimage),
+                    hash_to_directly_verify: None,
+                    signature,
+                    protocol_id: Protocol {
+                        security_level: SECURITY_LEVEL,
+                        protocol: CERTIFICATE_SIGNATURE_PROTOCOL.to_string(),
+                    },
+                    key_id,
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(cert.certifier.clone()),
+                    },
+                    for_self: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .map_err(AuthError::from)?;
+        Ok(result.valid)
     }
 
     /// Get the protocol ID and key ID for certificate field encryption.
