@@ -14,6 +14,21 @@ pub enum TransactionError {
     #[error("missing source transaction")]
     MissingSourceTransaction,
 
+    #[error("A reference to an an input transaction is required. If the input transaction itself cannot be referenced, its TXID must still be provided.")]
+    MissingInputSourceReference,
+
+    #[error("either satoshis must be defined or change must be set to true")]
+    MissingOutputValue,
+
+    #[error("Source transactions or sourceSatoshis are required for all inputs to calculate fee")]
+    MissingInputSourceValue,
+
+    #[error("input {input_index} references missing source output {output_index}")]
+    MissingSourceOutput {
+        input_index: usize,
+        output_index: u32,
+    },
+
     #[error("missing unlocking script")]
     MissingUnlockingScript,
 

@@ -277,7 +277,16 @@ impl Signature {
     ///
     /// Format: [27 + recovery + (4 if compressed), r(32 BE), s(32 BE)]
     /// The first byte encodes the recovery factor and compression flag.
-    pub fn to_compact_bsm(&self, recovery: u8, compressed: bool) -> Vec<u8> {
+    pub fn to_compact_bsm(
+        &self,
+        recovery: u8,
+        compressed: bool,
+    ) -> Result<Vec<u8>, PrimitivesError> {
+        if recovery > 3 {
+            return Err(PrimitivesError::InvalidSignature(
+                "invalid recovery parameter (must be 0-3)".to_string(),
+            ));
+        }
         let mut compact_byte = 27 + recovery;
         if compressed {
             compact_byte += 4;
@@ -286,7 +295,7 @@ impl Signature {
         result.push(compact_byte);
         result.extend_from_slice(&self.r.to_array(Endian::Big, Some(32)));
         result.extend_from_slice(&self.s.to_array(Endian::Big, Some(32)));
-        result
+        Ok(result)
     }
 
     /// Parse a BSM-format compact signature (65 bytes).
@@ -689,7 +698,7 @@ mod tests {
                 .unwrap();
         let sig = Signature::new(r, s);
 
-        let compact = sig.to_compact_bsm(0, true);
+        let compact = sig.to_compact_bsm(0, true).unwrap();
         assert_eq!(compact.len(), 65);
         assert_eq!(compact[0], 31); // 27 + 0 + 4 (compressed)
 
@@ -710,7 +719,7 @@ mod tests {
                 .unwrap();
         let sig = Signature::new(r, s);
 
-        let compact = sig.to_compact_bsm(1, false);
+        let compact = sig.to_compact_bsm(1, false).unwrap();
         assert_eq!(compact.len(), 65);
         assert_eq!(compact[0], 28); // 27 + 1 + 0 (uncompressed)
 
@@ -726,7 +735,7 @@ mod tests {
         let sig = Signature::new(BigNumber::one(), BigNumber::one());
         for rec in 0..4u8 {
             for &comp in &[true, false] {
-                let compact = sig.to_compact_bsm(rec, comp);
+                let compact = sig.to_compact_bsm(rec, comp).unwrap();
                 let (_, got_rec, got_comp) = Signature::from_compact_bsm(&compact).unwrap();
                 assert_eq!(got_rec, rec, "recovery mismatch for rec={rec} comp={comp}");
                 assert_eq!(
@@ -750,6 +759,13 @@ mod tests {
         assert!(Signature::from_compact_bsm(&data).is_err());
         data[0] = 35; // too high
         assert!(Signature::from_compact_bsm(&data).is_err());
+    }
+
+    #[test]
+    fn test_compact_bsm_rejects_out_of_range_recovery() {
+        let signature = Signature::new(BigNumber::one(), BigNumber::one());
+        assert!(signature.to_compact_bsm(4, false).is_err());
+        assert!(signature.to_compact_bsm(u8::MAX, true).is_err());
     }
 
     // -- Public key recovery tests --

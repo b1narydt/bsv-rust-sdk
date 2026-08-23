@@ -106,9 +106,9 @@ pub fn serialize_list_certificates_result(
                     write_byte(w, 0)?;
                 }
             }
-            // Verifier as length-prefixed bytes
+            // Verifier as length-prefixed UTF-8, matching WalletWireTransceiver.
             if let Some(ref v) = cert_result.verifier {
-                write_bytes(w, v)?;
+                write_bytes(w, v.as_bytes())?;
             } else {
                 write_bytes(w, &[])?;
             }
@@ -146,7 +146,10 @@ pub fn deserialize_list_certificates_result(
         let verifier = if verifier_bytes.is_empty() {
             None
         } else {
-            Some(verifier_bytes)
+            // Utils.toUTF8 uses TextDecoder's replacement semantics in the
+            // TypeScript transceiver, so malformed historical bytes are not
+            // a wire error.
+            Some(String::from_utf8_lossy(&verifier_bytes).into_owned())
         };
         certificates.push(CertificateResult {
             certificate,

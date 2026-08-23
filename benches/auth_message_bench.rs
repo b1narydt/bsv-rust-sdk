@@ -618,7 +618,7 @@ fn auth_benchmarks(c: &mut Criterion) {
         let pub_point = base.mul(&priv_bn);
         let msg_hash: [u8; 32] = sha256(b"hello from peer A over a warm session");
         let sig = ecdsa_sign(&msg_hash, &priv_bn, true).unwrap();
-        assert!(ecdsa_verify(&msg_hash, &sig, &pub_point));
+        assert!(ecdsa_verify(&msg_hash, &sig, &pub_point).unwrap());
 
         let mut group = c.benchmark_group("auth_raw_ecdsa");
         group.measurement_time(Duration::from_secs(5));
@@ -631,7 +631,7 @@ fn auth_benchmarks(c: &mut Criterion) {
         });
         group.bench_function("raw_ecdsa_verify", |b| {
             b.iter(|| {
-                criterion::black_box(ecdsa_verify(&msg_hash, &sig, &pub_point));
+                criterion::black_box(ecdsa_verify(&msg_hash, &sig, &pub_point).unwrap());
             });
         });
 

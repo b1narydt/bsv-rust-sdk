@@ -26,11 +26,11 @@ fn ecies_benchmarks(c: &mut Criterion) {
 
     // Pre-encrypt for decrypt benchmarks
     let electrum_enc_small =
-        ECIES::electrum_encrypt(&small, &receiver_pub, Some(&sender)).expect("encrypt");
+        ECIES::electrum_encrypt(&small, &receiver_pub, Some(&sender), false).expect("encrypt");
     let electrum_enc_medium =
-        ECIES::electrum_encrypt(&medium, &receiver_pub, Some(&sender)).expect("encrypt");
+        ECIES::electrum_encrypt(&medium, &receiver_pub, Some(&sender), false).expect("encrypt");
     let electrum_enc_large =
-        ECIES::electrum_encrypt(&large, &receiver_pub, Some(&sender)).expect("encrypt");
+        ECIES::electrum_encrypt(&large, &receiver_pub, Some(&sender), false).expect("encrypt");
 
     let bitcore_enc_small =
         ECIES::bitcore_encrypt(&small, &receiver_pub, Some(&sender)).expect("encrypt");
@@ -40,7 +40,7 @@ fn ecies_benchmarks(c: &mut Criterion) {
         ECIES::bitcore_encrypt(&large, &receiver_pub, Some(&sender)).expect("encrypt");
 
     // Correctness: round-trip
-    let dec = ECIES::electrum_decrypt(&electrum_enc_small, &receiver).expect("decrypt");
+    let dec = ECIES::electrum_decrypt(&electrum_enc_small, &receiver, None).expect("decrypt");
     assert_eq!(dec, small, "Electrum round-trip must match");
     let dec = ECIES::bitcore_decrypt(&bitcore_enc_small, &receiver).expect("decrypt");
     assert_eq!(dec, small, "Bitcore round-trip must match");
@@ -50,7 +50,7 @@ fn ecies_benchmarks(c: &mut Criterion) {
     group.bench_function("electrum_encrypt_32B", |bencher| {
         bencher.iter(|| {
             criterion::black_box(
-                ECIES::electrum_encrypt(&small, &receiver_pub, Some(&sender)).unwrap(),
+                ECIES::electrum_encrypt(&small, &receiver_pub, Some(&sender), false).unwrap(),
             );
         });
     });
@@ -59,7 +59,7 @@ fn ecies_benchmarks(c: &mut Criterion) {
     group.bench_function("electrum_encrypt_1KB", |bencher| {
         bencher.iter(|| {
             criterion::black_box(
-                ECIES::electrum_encrypt(&medium, &receiver_pub, Some(&sender)).unwrap(),
+                ECIES::electrum_encrypt(&medium, &receiver_pub, Some(&sender), false).unwrap(),
             );
         });
     });
@@ -68,7 +68,7 @@ fn ecies_benchmarks(c: &mut Criterion) {
     group.bench_function("electrum_encrypt_64KB", |bencher| {
         bencher.iter(|| {
             criterion::black_box(
-                ECIES::electrum_encrypt(&large, &receiver_pub, Some(&sender)).unwrap(),
+                ECIES::electrum_encrypt(&large, &receiver_pub, Some(&sender), false).unwrap(),
             );
         });
     });
@@ -77,21 +77,27 @@ fn ecies_benchmarks(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(32));
     group.bench_function("electrum_decrypt_32B", |bencher| {
         bencher.iter(|| {
-            criterion::black_box(ECIES::electrum_decrypt(&electrum_enc_small, &receiver).unwrap());
+            criterion::black_box(
+                ECIES::electrum_decrypt(&electrum_enc_small, &receiver, None).unwrap(),
+            );
         });
     });
 
     group.throughput(Throughput::Bytes(1024));
     group.bench_function("electrum_decrypt_1KB", |bencher| {
         bencher.iter(|| {
-            criterion::black_box(ECIES::electrum_decrypt(&electrum_enc_medium, &receiver).unwrap());
+            criterion::black_box(
+                ECIES::electrum_decrypt(&electrum_enc_medium, &receiver, None).unwrap(),
+            );
         });
     });
 
     group.throughput(Throughput::Bytes(65536));
     group.bench_function("electrum_decrypt_64KB", |bencher| {
         bencher.iter(|| {
-            criterion::black_box(ECIES::electrum_decrypt(&electrum_enc_large, &receiver).unwrap());
+            criterion::black_box(
+                ECIES::electrum_decrypt(&electrum_enc_large, &receiver, None).unwrap(),
+            );
         });
     });
 

@@ -25,7 +25,7 @@ fn ecdsa_benchmarks(c: &mut Criterion) {
     // Correctness: round-trip sign then verify
     let sig = ecdsa_sign(&msg_hash, &priv_bn, true).expect("signing must succeed");
     assert!(
-        ecdsa_verify(&msg_hash, &sig, &pub_point),
+        ecdsa_verify(&msg_hash, &sig, &pub_point).unwrap(),
         "signature must verify"
     );
 
@@ -40,7 +40,7 @@ fn ecdsa_benchmarks(c: &mut Criterion) {
     group.bench_function("verify", |bencher| {
         bencher.iter(|| {
             let s = ecdsa_sign(&msg_hash, &priv_bn, true).unwrap();
-            criterion::black_box(ecdsa_verify(&msg_hash, &s, &pub_point));
+            criterion::black_box(ecdsa_verify(&msg_hash, &s, &pub_point).unwrap());
         });
     });
 

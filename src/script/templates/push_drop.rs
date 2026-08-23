@@ -754,12 +754,14 @@ mod tests {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffff_ffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(900),
             locking_script: lock.clone(),
             change: false,
-        });
+        })
+        .unwrap();
 
         let unlocker = pd.unlock(protocol(), "k", cpty());
         tx.sign(0, &unlocker, scope, 1_000, &lock)

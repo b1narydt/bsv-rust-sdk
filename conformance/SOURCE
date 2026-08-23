@@ -1,0 +1,6 @@
+# Upstream conformance vector pin.
+# Update via ./conformance/scripts/refresh-vectors.sh
+upstream_repo=bsv-blockchain/ts-stack
+upstream_sha=8b074a06481389edfcd4be624960d7849b0da59b
+upstream_ref=8b074a06
+fetched_at=2026-08-22

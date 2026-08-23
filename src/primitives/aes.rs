@@ -68,19 +68,20 @@ const RCON: [u32; 11] = [
 pub struct AesKey {
     /// Expanded round keys as u32 words.
     pub round_keys: Vec<u32>,
-    /// Number of rounds (10 for AES-128, 14 for AES-256).
+    /// Number of rounds (10 for AES-128, 12 for AES-192, 14 for AES-256).
     pub rounds: usize,
 }
 
 impl AesKey {
-    /// Create a new AES key from raw bytes (16 or 32 bytes).
+    /// Create a new AES key from raw bytes (16, 24, or 32 bytes).
     pub fn new(key: &[u8]) -> Result<Self, PrimitivesError> {
         let rounds = match key.len() {
             16 => 10,
+            24 => 12,
             32 => 14,
             _ => {
                 return Err(PrimitivesError::InvalidLength(format!(
-                    "AES key must be 16 or 32 bytes, got {}",
+                    "AES key must be 16, 24, or 32 bytes, got {}",
                     key.len()
                 )))
             }
@@ -140,16 +141,18 @@ fn rot_word(w: u32) -> u32 {
     w.rotate_left(8)
 }
 
-/// AES key expansion. Accepts 16-byte (AES-128) or 32-byte (AES-256) keys.
+/// AES key expansion. Accepts 16-byte (AES-128), 24-byte (AES-192), or
+/// 32-byte (AES-256) keys.
 /// Returns the expanded round key words.
 pub fn aes_key_expansion(key: &[u8]) -> Result<Vec<u32>, PrimitivesError> {
-    let nk = key.len() / 4; // Number of 32-bit words in key (4 or 8)
+    let nk = key.len() / 4; // Number of 32-bit words in key (4, 6, or 8)
     let nr = match nk {
         4 => 10,
+        6 => 12,
         8 => 14,
         _ => {
             return Err(PrimitivesError::InvalidLength(format!(
-                "invalid AES key length: {} bytes (expected 16 or 32)",
+                "invalid AES key length: {} bytes (expected 16, 24, or 32)",
                 key.len()
             )))
         }
@@ -433,6 +436,21 @@ mod tests {
     }
 
     #[test]
+    fn test_aes192_nist_fips197() {
+        // FIPS 197 Appendix C.2 - AES-192
+        let key = hex_to_bytes("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b");
+        let plaintext = hex_to_bytes("6bc1bee22e409f96e93d7e117393172a");
+        let expected = hex_to_bytes("bd334f1d6e45f25ff712a214571fa5cc");
+
+        let round_keys = aes_key_expansion(&key).unwrap();
+        let block: [u8; 16] = plaintext.try_into().unwrap();
+        let encrypted = aes_encrypt_block(&block, &round_keys);
+
+        assert_eq!(encrypted.as_slice(), expected);
+        assert_eq!(aes_decrypt_block(&encrypted, &round_keys), block);
+    }
+
+    #[test]
     fn test_aes128_encrypt_decrypt_roundtrip() {
         let key = hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c");
         let plaintext = hex_to_bytes("3243f6a8885a308d313198a2e0370734");
@@ -491,6 +509,16 @@ mod tests {
     }
 
     #[test]
+    fn test_aes192_key_expansion_length() {
+        let key = hex_to_bytes("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b");
+        let round_keys = aes_key_expansion(&key).unwrap();
+        assert_eq!(round_keys.len(), 52);
+
+        let aes_key = AesKey::new(&key).unwrap();
+        assert_eq!(aes_key.rounds, 12);
+    }
+
+    #[test]
     fn test_aes_key_struct() {
         let key_bytes = hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c");
         let aes_key = AesKey::new(&key_bytes).unwrap();
@@ -506,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_aes_key_invalid_length() {
-        let result = AesKey::new(&[0u8; 24]);
+        let result = AesKey::new(&[0u8; 20]);
         assert!(result.is_err());
     }
 }

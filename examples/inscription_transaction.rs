@@ -63,14 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence: 0xFFFFFFFF,
         ..Default::default()
     };
-    tx.add_input(input);
+    tx.add_input(input)?;
 
     // Inscription output (0 satoshis -- unspendable OP_FALSE OP_RETURN)
     tx.add_output(TransactionOutput {
         satoshis: Some(0),
         locking_script: inscription_script,
         change: false,
-    });
+    })?;
 
     // Change output back to sender
     let change_script = sender_p2pkh.lock()?;
@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         satoshis: Some(49_500),
         locking_script: change_script,
         change: true,
-    });
+    })?;
 
     // -----------------------------------------------------------------------
     // 4. Sign the input

@@ -30,7 +30,7 @@ fn ecc_scalar_benchmarks(c: &mut Criterion) {
     let sig = ecdsa_sign(&msg_hash, &priv_bn, true).expect("signing must succeed");
     let pub_point = base_point.mul(&priv_bn);
     assert!(
-        ecdsa_verify(&msg_hash, &sig, &pub_point),
+        ecdsa_verify(&msg_hash, &sig, &pub_point).unwrap(),
         "signature must verify"
     );
 
@@ -53,7 +53,7 @@ fn ecc_scalar_benchmarks(c: &mut Criterion) {
         let sig = ecdsa_sign(&msg_hash, &priv_bn, true).unwrap();
         let pub_point = base_point.mul(&priv_bn);
         bencher.iter(|| {
-            criterion::black_box(ecdsa_verify(&msg_hash, &sig, &pub_point));
+            criterion::black_box(ecdsa_verify(&msg_hash, &sig, &pub_point).unwrap());
         });
     });
 

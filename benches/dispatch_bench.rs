@@ -44,8 +44,8 @@ impl WalletInterface for NoOpWallet {
         Ok(CreateActionResult {
             txid: None,
             tx: None,
-            no_send_change: vec![],
-            send_with_results: vec![],
+            no_send_change: Some(vec![]),
+            send_with_results: Some(vec![]),
             signable_transaction: None,
         })
     }
@@ -58,7 +58,7 @@ impl WalletInterface for NoOpWallet {
         Ok(SignActionResult {
             txid: None,
             tx: None,
-            send_with_results: vec![],
+            send_with_results: Some(vec![]),
         })
     }
 

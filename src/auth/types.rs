@@ -162,4 +162,8 @@ pub struct PeerSession {
     pub peer_nonce: String,
     /// Whether the handshake has completed successfully.
     pub is_authenticated: bool,
+    /// Whether this session was established with a non-empty certificate request.
+    pub certificates_required: bool,
+    /// Whether the peer's certificates have been validated for this session.
+    pub certificates_validated: bool,
 }

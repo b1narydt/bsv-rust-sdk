@@ -1019,6 +1019,47 @@ mod tests {
     }
 
     #[test]
+    fn test_op_checksig_parses_transaction_signature_checksig_format() {
+        use crate::primitives::ecdsa::ecdsa_sign;
+        use crate::primitives::hash::hash256;
+        use crate::primitives::private_key::PrivateKey;
+        use crate::primitives::transaction_signature::{
+            TransactionSignature, SIGHASH_ALL, SIGHASH_FORKID,
+        };
+        use crate::script::script::Script;
+        use crate::script::script_chunk::ScriptChunk;
+
+        let locking_script = LockingScript::from_asm("OP_CHECKSIG");
+        let mut spend = Spend::new(SpendParams {
+            locking_script: locking_script.clone(),
+            unlocking_script: UnlockingScript::from_asm(""),
+            source_txid: "00".repeat(32),
+            source_output_index: 0,
+            source_satoshis: 1_000,
+            transaction_version: 1,
+            transaction_lock_time: 0,
+            transaction_sequence: 0xffff_ffff,
+            other_inputs: vec![],
+            other_outputs: vec![],
+            input_index: 0,
+        });
+
+        let scope = SIGHASH_ALL | SIGHASH_FORKID;
+        let preimage = spend.sighash_preimage(&locking_script.0, scope);
+        let private_key = PrivateKey::from_hex("1").unwrap();
+        let signature = ecdsa_sign(&hash256(&preimage), private_key.bn(), true).unwrap();
+        let checksig_signature = TransactionSignature::new(signature, scope).to_checksig_format();
+        let public_key = private_key.to_public_key().to_der();
+
+        spend.unlocking_script = UnlockingScript::from_script(Script::from_chunks(vec![
+            ScriptChunk::new_raw(checksig_signature.len() as u8, Some(checksig_signature)),
+            ScriptChunk::new_raw(public_key.len() as u8, Some(public_key)),
+        ]));
+
+        assert!(spend.validate().unwrap());
+    }
+
+    #[test]
     fn test_relaxed_mode_gating() {
         // In relaxed mode, clean stack not enforced
         let mut spend = make_relaxed_spend("OP_1 OP_2 OP_3", "");

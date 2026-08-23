@@ -291,16 +291,16 @@ impl WalletInterface for CapturingMockWallet {
             return Ok(CreateActionResult {
                 txid: None,
                 tx: None,
-                no_send_change: vec![],
-                send_with_results: vec![],
+                no_send_change: Some(vec![]),
+                send_with_results: Some(vec![]),
                 signable_transaction: None,
             });
         }
         Ok(CreateActionResult {
             txid: Some("abcd1234".to_string()),
             tx: Some(MOCK_TX_BYTES.to_vec()),
-            no_send_change: vec![],
-            send_with_results: vec![],
+            no_send_change: Some(vec![]),
+            send_with_results: Some(vec![]),
             signable_transaction: None,
         })
     }
@@ -1103,8 +1103,9 @@ async fn test_build_settlement_calls_create_action_with_correct_args() {
     let args = &calls[0];
 
     // Outputs: exactly one output
-    assert_eq!(args.outputs.len(), 1);
-    let output = &args.outputs[0];
+    let outputs = args.outputs.as_ref().expect("outputs must be present");
+    assert_eq!(outputs.len(), 1);
+    let output = &outputs[0];
     assert_eq!(
         output.satoshis, 5000,
         "satoshis must match option.amount_satoshis"
@@ -1408,7 +1409,7 @@ async fn test_accept_settlement_success_calls_internalize_with_correct_args() {
     assert_eq!(args.tx, MOCK_TX_BYTES);
     assert_eq!(args.description, "BRC-29 payment received");
     // labels must match config default
-    assert_eq!(args.labels, vec!["brc29".to_string()]);
+    assert_eq!(args.labels, Some(vec!["brc29".to_string()]));
 
     // outputs: one WalletPayment
     assert_eq!(args.outputs.len(), 1);

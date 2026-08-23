@@ -62,3 +62,10 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt -- --check
+
+  unwired:
+    name: Unwired pub fns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/unwired-pub-fns.py

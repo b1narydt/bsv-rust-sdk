@@ -67,13 +67,16 @@ fn derive_bitcore_keys(priv_key: &PrivateKey, pub_key: &PublicKey) -> ([u8; 32],
 impl ECIES {
     /// Encrypt plaintext using the Electrum ECIES variant (BIE1 format).
     ///
-    /// Format: "BIE1" (4 bytes) || ephemeral_pubkey (33 bytes) || ciphertext || HMAC (32 bytes)
+    /// Format: "BIE1" (4 bytes) || [sender_pubkey] || ciphertext || HMAC (32 bytes)
     ///
     /// If sender_priv_key is provided, it is used instead of an ephemeral key.
+    /// When `no_key` is true, the sender public key is omitted and decryptors
+    /// must supply it separately to [`Self::electrum_decrypt`].
     pub fn electrum_encrypt(
         plaintext: &[u8],
         recipient_pub_key: &PublicKey,
         sender_priv_key: Option<&PrivateKey>,
+        no_key: bool,
     ) -> Result<Vec<u8>, CompatError> {
         let ephemeral_key = match sender_priv_key {
             Some(key) => key.clone(),
@@ -85,13 +88,12 @@ impl ECIES {
         // Encrypt with AES-128-CBC (16-byte key)
         let ct = aes_cbc_encrypt(&k_e, &iv, plaintext)?;
 
-        // Build payload: "BIE1" + ephemeral compressed pubkey + ciphertext
-        let ephemeral_pub = ephemeral_key.to_public_key();
-        let r_buf = ephemeral_pub.to_der(); // compressed 33 bytes
-
-        let mut payload = Vec::with_capacity(4 + 33 + ct.len() + 32);
+        // Build payload: "BIE1" + optional sender compressed pubkey + ciphertext.
+        let mut payload = Vec::with_capacity(4 + usize::from(!no_key) * 33 + ct.len() + 32);
         payload.extend_from_slice(b"BIE1");
-        payload.extend_from_slice(&r_buf);
+        if !no_key {
+            payload.extend_from_slice(&ephemeral_key.to_public_key().to_der());
+        }
         payload.extend_from_slice(&ct);
 
         // HMAC over payload (before appending HMAC)
@@ -103,16 +105,17 @@ impl ECIES {
 
     /// Decrypt ciphertext using the Electrum ECIES variant (BIE1 format).
     ///
-    /// Expects format: "BIE1" (4) || pubkey (33) || ciphertext || HMAC (32)
-    /// Minimum length: 4 + 33 + 16 + 32 = 85 (at least one AES block)
+    /// The sender key is normally read from the ciphertext. For `no_key`
+    /// ciphertexts, pass the sender public key explicitly.
     pub fn electrum_decrypt(
         ciphertext: &[u8],
         recipient_priv_key: &PrivateKey,
+        sender_pub_key: Option<&PublicKey>,
     ) -> Result<Vec<u8>, CompatError> {
-        // Minimum: 4 (BIE1) + 33 (pubkey) + 16 (min ciphertext block) + 32 (hmac) = 85
-        if ciphertext.len() < 85 {
+        // Minimum no-key payload: BIE1 + one AES block + HMAC.
+        if ciphertext.len() < 52 {
             return Err(CompatError::InvalidCiphertext(format!(
-                "electrum ciphertext too short: {} bytes (min 85)",
+                "electrum ciphertext too short: {} bytes (min 52)",
                 ciphertext.len()
             )));
         }
@@ -122,17 +125,29 @@ impl ECIES {
             return Err(CompatError::InvalidMagic);
         }
 
-        // Extract components
-        let ephemeral_pub_bytes = &ciphertext[4..37];
         let hmac_start = ciphertext.len() - 32;
-        let encrypted_data = &ciphertext[37..hmac_start];
+        let embedded_key_len = if hmac_start - 4 >= 33 {
+            match ciphertext[4] {
+                0x02 | 0x03 => Some(33),
+                0x04 if hmac_start - 4 >= 65 => Some(65),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let encrypted_start = 4 + embedded_key_len.unwrap_or(0);
+        let encrypted_data = &ciphertext[encrypted_start..hmac_start];
         let mac = &ciphertext[hmac_start..];
 
-        // Parse ephemeral public key
-        let ephemeral_pub = PublicKey::from_der_bytes(ephemeral_pub_bytes)?;
+        let embedded_pub = embedded_key_len
+            .map(|len| PublicKey::from_der_bytes(&ciphertext[4..4 + len]))
+            .transpose()?;
+        let sender_pub = sender_pub_key
+            .or(embedded_pub.as_ref())
+            .ok_or(CompatError::SenderKeyRequired)?;
 
         // Derive keys
-        let (iv, k_e, k_m) = derive_electrum_keys(recipient_priv_key, &ephemeral_pub);
+        let (iv, k_e, k_m) = derive_electrum_keys(recipient_priv_key, sender_pub);
 
         // Verify HMAC over everything except the HMAC itself
         let expected_mac = sha256_hmac(&k_m, &ciphertext[0..hmac_start]);
@@ -328,8 +343,8 @@ mod tests {
 
         let plaintext = b"this is my test message";
         let encrypted =
-            ECIES::electrum_encrypt(plaintext, &recipient_pub, Some(&sender_key)).unwrap();
-        let decrypted = ECIES::electrum_decrypt(&encrypted, &recipient_key).unwrap();
+            ECIES::electrum_encrypt(plaintext, &recipient_pub, Some(&sender_key), false).unwrap();
+        let decrypted = ECIES::electrum_decrypt(&encrypted, &recipient_key, None).unwrap();
 
         assert_eq!(decrypted, plaintext);
     }
@@ -342,7 +357,7 @@ mod tests {
         .unwrap();
         let recipient_pub = recipient_key.to_public_key();
 
-        let encrypted = ECIES::electrum_encrypt(b"hello", &recipient_pub, None).unwrap();
+        let encrypted = ECIES::electrum_encrypt(b"hello", &recipient_pub, None, false).unwrap();
         assert_eq!(
             &encrypted[0..4],
             b"BIE1",
@@ -363,13 +378,13 @@ mod tests {
         let recipient_pub = recipient_key.to_public_key();
 
         let mut encrypted =
-            ECIES::electrum_encrypt(b"hello", &recipient_pub, Some(&sender_key)).unwrap();
+            ECIES::electrum_encrypt(b"hello", &recipient_pub, Some(&sender_key), false).unwrap();
 
         // Tamper with a byte in the middle (ciphertext area)
         let mid = encrypted.len() / 2;
         encrypted[mid] ^= 0xff;
 
-        let result = ECIES::electrum_decrypt(&encrypted, &recipient_key);
+        let result = ECIES::electrum_decrypt(&encrypted, &recipient_key, None);
         assert!(result.is_err(), "should reject tampered ciphertext");
     }
 
@@ -390,9 +405,9 @@ mod tests {
 
         let recipient_pub = recipient_key.to_public_key();
         let encrypted =
-            ECIES::electrum_encrypt(b"secret", &recipient_pub, Some(&sender_key)).unwrap();
+            ECIES::electrum_encrypt(b"secret", &recipient_pub, Some(&sender_key), false).unwrap();
 
-        let result = ECIES::electrum_decrypt(&encrypted, &wrong_key);
+        let result = ECIES::electrum_decrypt(&encrypted, &wrong_key, None);
         assert!(result.is_err(), "should fail with wrong private key");
     }
 
@@ -410,7 +425,7 @@ mod tests {
             "QklFMQM55QTWSSsILaluEejwOXlrBs1IVcEB4kkqbxDz4Fap53XHOt6L3tKmrXho6yj6phfoiMkBOhUldRPnEI4fSZXbvZJHgyAzxA6SoujduvJXv+A9ri3po9veilrmc8p6dwo="
         );
 
-        let plaintext = ECIES::electrum_decrypt(&ciphertext, &bob_key).unwrap();
+        let plaintext = ECIES::electrum_decrypt(&ciphertext, &bob_key, None).unwrap();
         assert_eq!(
             std::str::from_utf8(&plaintext).unwrap(),
             "this is my test message"
@@ -429,7 +444,7 @@ mod tests {
             "QklFMQOGFyMXLo9Qv047K3BYJhmnJgt58EC8skYP/R2QU/U0yXXHOt6L3tKmrXho6yj6phfoiMkBOhUldRPnEI4fSZXbiaH4FsxKIOOvzolIFVAS0FplUmib2HnlAM1yP/iiPsU="
         );
 
-        let plaintext = ECIES::electrum_decrypt(&ciphertext, &alice_key).unwrap();
+        let plaintext = ECIES::electrum_decrypt(&ciphertext, &alice_key, None).unwrap();
         assert_eq!(
             std::str::from_utf8(&plaintext).unwrap(),
             "this is my test message"
@@ -450,9 +465,40 @@ mod tests {
         let bob_pub = bob_key.to_public_key();
 
         let message = b"this is my test message";
-        let encrypted = ECIES::electrum_encrypt(message, &bob_pub, Some(&alice_key)).unwrap();
+        let encrypted =
+            ECIES::electrum_encrypt(message, &bob_pub, Some(&alice_key), false).unwrap();
         let expected_b64 = "QklFMQM55QTWSSsILaluEejwOXlrBs1IVcEB4kkqbxDz4Fap53XHOt6L3tKmrXho6yj6phfoiMkBOhUldRPnEI4fSZXbvZJHgyAzxA6SoujduvJXv+A9ri3po9veilrmc8p6dwo=";
         assert_eq!(base64_encode(&encrypted), expected_b64);
+    }
+
+    #[test]
+    fn test_electrum_no_key_is_symmetric_and_requires_sender_key_to_decrypt() {
+        let alice = PrivateKey::from_hex(
+            "77e06abc52bf065cb5164c5deca839d0276911991a2730be4d8d0a0307de7ceb",
+        )
+        .unwrap();
+        let bob = PrivateKey::from_hex(
+            "2b57c7c5e408ce927eef5e2efb49cfdadde77961d342daa72284bb3d6590862d",
+        )
+        .unwrap();
+        let alice_public = alice.to_public_key();
+        let bob_public = bob.to_public_key();
+        let message = b"this is my ECDH test message";
+
+        let alice_to_bob =
+            ECIES::electrum_encrypt(message, &bob_public, Some(&alice), true).unwrap();
+        let bob_to_alice =
+            ECIES::electrum_encrypt(message, &alice_public, Some(&bob), true).unwrap();
+        assert_eq!(alice_to_bob, bob_to_alice);
+        assert_eq!(&alice_to_bob[..4], b"BIE1");
+        assert!(matches!(
+            ECIES::electrum_decrypt(&alice_to_bob, &bob, None),
+            Err(CompatError::SenderKeyRequired)
+        ));
+        assert_eq!(
+            ECIES::electrum_decrypt(&alice_to_bob, &bob, Some(&alice_public)).unwrap(),
+            message
+        );
     }
 
     // ---- Bitcore tests ----
@@ -547,8 +593,8 @@ mod tests {
         let recipient_pub = recipient_key.to_public_key();
 
         let plaintext = b"ephemeral key test message";
-        let encrypted = ECIES::electrum_encrypt(plaintext, &recipient_pub, None).unwrap();
-        let decrypted = ECIES::electrum_decrypt(&encrypted, &recipient_key).unwrap();
+        let encrypted = ECIES::electrum_encrypt(plaintext, &recipient_pub, None, false).unwrap();
+        let decrypted = ECIES::electrum_decrypt(&encrypted, &recipient_key, None).unwrap();
         assert_eq!(decrypted, plaintext);
     }
 }

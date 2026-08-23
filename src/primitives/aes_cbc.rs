@@ -50,7 +50,7 @@ pub fn pkcs7_unpad(data: &[u8], block_size: usize) -> Result<Vec<u8>, Primitives
 /// Encrypt plaintext using AES-CBC mode with PKCS7 padding.
 ///
 /// # Arguments
-/// * `key` - AES key (16 or 32 bytes)
+/// * `key` - AES key (16, 24, or 32 bytes)
 /// * `iv` - Initialization vector (16 bytes)
 /// * `plaintext` - Data to encrypt (any length)
 ///
@@ -61,9 +61,9 @@ pub fn aes_cbc_encrypt(
     iv: &[u8; 16],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -92,7 +92,7 @@ pub fn aes_cbc_encrypt(
 /// Decrypt ciphertext using AES-CBC mode, removing PKCS7 padding.
 ///
 /// # Arguments
-/// * `key` - AES key (16 or 32 bytes)
+/// * `key` - AES key (16, 24, or 32 bytes)
 /// * `iv` - Initialization vector (16 bytes)
 /// * `ciphertext` - Data to decrypt (must be a multiple of 16 bytes)
 ///
@@ -103,9 +103,9 @@ pub fn aes_cbc_decrypt(
     iv: &[u8; 16],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, PrimitivesError> {
-    if key.len() != 16 && key.len() != 32 {
+    if !matches!(key.len(), 16 | 24 | 32) {
         return Err(PrimitivesError::InvalidLength(format!(
-            "AES key must be 16 or 32 bytes, got {}",
+            "AES key must be 16, 24, or 32 bytes, got {}",
             key.len()
         )));
     }
@@ -388,10 +388,22 @@ mod tests {
 
     #[test]
     fn test_aes_cbc_invalid_key_length() {
-        let key = vec![0u8; 24]; // 24 bytes, not supported
+        let key = vec![0u8; 20];
         let iv = [0u8; 16];
         let result = aes_cbc_encrypt(&key, &iv, b"hello");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aes192_cbc_roundtrip() {
+        let key = hex_to_bytes("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b");
+        let iv: [u8; 16] = hex_to_bytes("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        let plaintext = b"Hello AES-192-CBC world!";
+
+        let ciphertext = aes_cbc_encrypt(&key, &iv, plaintext).unwrap();
+        assert_eq!(aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap(), plaintext);
     }
 
     #[test]

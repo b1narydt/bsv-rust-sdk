@@ -138,8 +138,8 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
                 CreateActionArgs {
                     description: format!("Register a new {} item", def_type_str(&def_type)),
                     input_beef: None,
-                    inputs: vec![],
-                    outputs: vec![CreateActionOutput {
+                    inputs: Some(vec![]),
+                    outputs: Some(vec![CreateActionOutput {
                         satoshis: REGISTRANT_TOKEN_AMOUNT,
                         locking_script: Some(fields_json),
                         output_description: format!(
@@ -147,12 +147,12 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
                             def_type_str(&def_type)
                         ),
                         basket: Some(basket_name),
-                        tags: vec![],
+                        tags: Some(vec![]),
                         custom_instructions: None,
-                    }],
+                    }]),
                     lock_time: None,
                     version: None,
-                    labels: vec![],
+                    labels: Some(vec![]),
                     options: None,
                     reference: None,
                 },
@@ -337,14 +337,14 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
                         record.data.name()
                     ),
                     input_beef: Some(token.beef.clone()),
-                    inputs: vec![CreateActionInput {
+                    inputs: Some(vec![CreateActionInput {
                         outpoint,
                         unlocking_script_length: Some(74),
                         input_description: format!("Updating {} token", def_type_str(&def_type)),
                         sequence_number: None,
                         unlocking_script: None,
-                    }],
-                    outputs: vec![CreateActionOutput {
+                    }]),
+                    outputs: Some(vec![CreateActionOutput {
                         satoshis: REGISTRANT_TOKEN_AMOUNT,
                         locking_script: Some(new_fields_json),
                         output_description: format!(
@@ -352,12 +352,12 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
                             def_type_str(&def_type)
                         ),
                         basket: Some(basket_name),
-                        tags: vec![],
+                        tags: Some(vec![]),
                         custom_instructions: None,
-                    }],
+                    }]),
                     lock_time: None,
                     version: None,
-                    labels: vec![],
+                    labels: Some(vec![]),
                     options: None,
                     reference: None,
                 },
@@ -412,17 +412,17 @@ impl<W: WalletInterface + ?Sized> RegistryClient<W> {
                         record.data.name()
                     ),
                     input_beef: Some(token.beef.clone()),
-                    inputs: vec![CreateActionInput {
+                    inputs: Some(vec![CreateActionInput {
                         outpoint,
                         unlocking_script_length: Some(74),
                         input_description: format!("Removing {} token", def_type_str(&def_type)),
                         sequence_number: None,
                         unlocking_script: None,
-                    }],
-                    outputs: vec![], // No outputs = deletion.
+                    }]),
+                    outputs: Some(vec![]), // No outputs = deletion.
                     lock_time: None,
                     version: None,
-                    labels: vec![],
+                    labels: Some(vec![]),
                     options: None,
                     reference: None,
                 },

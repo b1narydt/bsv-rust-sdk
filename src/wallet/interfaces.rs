@@ -889,9 +889,9 @@ pub struct CreateActionOutput {
     pub custom_instructions: Option<String>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub tags: Vec<OutputTagStringUnder300Bytes>,
+    pub tags: Option<Vec<OutputTagStringUnder300Bytes>>,
 }
 
 /// Optional parameters for creating a new transaction.
@@ -922,9 +922,9 @@ pub struct CreateActionOptions {
     pub trust_self: Option<TrustSelf>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub known_txids: Vec<TXIDHexString>,
+    pub known_txids: Option<Vec<TXIDHexString>>,
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -943,14 +943,14 @@ pub struct CreateActionOptions {
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub no_send_change: Vec<OutpointString>,
+    pub no_send_change: Option<Vec<OutpointString>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub send_with: Vec<TXIDHexString>,
+    pub send_with: Option<Vec<TXIDHexString>>,
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -979,14 +979,14 @@ pub struct CreateActionArgs {
     pub input_beef: Option<Vec<u8>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub inputs: Vec<CreateActionInput>,
+    pub inputs: Option<Vec<CreateActionInput>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub outputs: Vec<CreateActionOutput>,
+    pub outputs: Option<Vec<CreateActionOutput>>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -999,9 +999,9 @@ pub struct CreateActionArgs {
     pub version: Option<u32>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub labels: Vec<LabelStringUnder300Bytes>,
+    pub labels: Option<Vec<LabelStringUnder300Bytes>>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -1087,14 +1087,14 @@ pub struct CreateActionResult {
     pub tx: Option<Vec<u8>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub no_send_change: Vec<OutpointString>,
+    pub no_send_change: Option<Vec<OutpointString>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub send_with_results: Vec<SendWithResult>,
+    pub send_with_results: Option<Vec<SendWithResult>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signable_transaction: Option<SignableTransaction>,
 }
@@ -1144,9 +1144,9 @@ pub struct SignActionOptions {
     pub no_send: BooleanDefaultFalse,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub send_with: Vec<TXIDHexString>,
+    pub send_with: Option<Vec<TXIDHexString>>,
 }
 
 /// Arguments for signing a previously created transaction.
@@ -1183,9 +1183,9 @@ pub struct SignActionResult {
     pub tx: Option<Vec<u8>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub send_with_results: Vec<SendWithResult>,
+    pub send_with_results: Option<Vec<SendWithResult>>,
 }
 
 /// Arguments for aborting a transaction.
@@ -1267,21 +1267,21 @@ pub struct Action {
     pub description: String,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub labels: Vec<String>,
+    pub labels: Option<Vec<String>>,
     pub version: u32,
     pub lock_time: u32,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub inputs: Vec<ActionInput>,
+    pub inputs: Option<Vec<ActionInput>>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub outputs: Vec<ActionOutput>,
+    pub outputs: Option<Vec<ActionOutput>>,
 }
 
 /// Maximum number of actions or outputs that can be returned.
@@ -1452,9 +1452,9 @@ pub struct InternalizeActionArgs {
     pub description: String,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub labels: Vec<LabelStringUnder300Bytes>,
+    pub labels: Option<Vec<LabelStringUnder300Bytes>>,
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -1532,7 +1532,7 @@ pub struct ListOutputsArgs {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub offset: Option<PositiveIntegerOrZero>,
+    pub offset: Option<i64>,
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -1563,15 +1563,15 @@ pub struct Output {
     pub custom_instructions: Option<String>,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub tags: Vec<String>,
+    pub tags: Option<Vec<String>>,
     pub outpoint: OutpointString,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub labels: Vec<String>,
+    pub labels: Option<Vec<String>>,
 }
 
 /// Paginated list of wallet outputs.
@@ -2043,12 +2043,11 @@ pub struct CertificateResult {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub keyring: Option<HashMap<String, String>>,
-    #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
     )]
-    pub verifier: Option<Vec<u8>>,
+    pub verifier: Option<String>,
 }
 
 /// Paginated list of certificates.

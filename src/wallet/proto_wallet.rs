@@ -209,7 +209,7 @@ impl ProtoWallet {
                 "either data or hash_to_directly_verify must be provided".to_string(),
             ));
         };
-        Ok(ecdsa_verify(&hash, &sig, derived_pub.point()))
+        Ok(ecdsa_verify(&hash, &sig, derived_pub.point())?)
     }
 
     /// Encrypt plaintext using a derived symmetric key (AES-GCM).

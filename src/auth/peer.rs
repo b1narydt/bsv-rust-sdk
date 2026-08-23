@@ -16,8 +16,9 @@ use super::transports::Transport;
 use super::types::{
     AuthMessage, MessageType, PeerSession, RequestedCertificateSet, AUTH_PROTOCOL_ID, AUTH_VERSION,
 };
-use super::utils::certificates::get_verifiable_certificates;
+use super::utils::certificates::{get_verifiable_certificates, validate_certificates};
 use super::utils::nonce::{create_nonce, verify_nonce};
+use crate::auth::certificates::VerifiableCertificate;
 use crate::wallet::interfaces::{
     Certificate, CreateSignatureArgs, GetPublicKeyArgs, VerifySignatureArgs, WalletInterface,
 };
@@ -265,6 +266,14 @@ impl<W: WalletInterface> Peer<W> {
     }
 
     /// Take the certificates receiver. Returns None if already taken.
+    ///
+    /// The receiver observes non-empty certificate sets delivered by an
+    /// authenticated peer. Standalone `certificateResponse` messages are
+    /// checked for our nonce, an active session, a valid auth-message
+    /// signature, replay, and certificate validity before delivery. Certificates
+    /// embedded in an `initialResponse` are covered by the handshake signature
+    /// and delivered only when they satisfy the certificate request that caused
+    /// the peer to include them.
     pub fn on_certificates(&self) -> Option<mpsc::Receiver<(String, Vec<Certificate>)>> {
         self.certificate_rx
             .lock()
@@ -664,12 +673,22 @@ impl<W: WalletInterface> Peer<W> {
         // so idle reaping has a baseline, and opportunistically reap on this
         // low-frequency handshake path (keeps the hot verify path reap-free).
         {
+            let requested_certificates = self
+                .certificates_to_request
+                .read()
+                .expect("certificates_to_request lock poisoned")
+                .clone();
+            let certificates_required = requested_certificates
+                .as_ref()
+                .is_some_and(|requested| !requested.certifiers.is_empty());
             let mut mgr = self.session_manager.write().await;
             mgr.add_session(PeerSession {
                 session_nonce: session_nonce.clone(),
                 peer_identity_key: identity_key.to_string(),
                 peer_nonce: String::new(),
                 is_authenticated: false,
+                certificates_required,
+                certificates_validated: !certificates_required,
             });
             let now = now_ms();
             mgr.touch(&session_nonce, now);
@@ -798,12 +817,23 @@ impl<W: WalletInterface> Peer<W> {
             ));
         }
 
+        let requested_certificates = self
+            .certificates_to_request
+            .read()
+            .expect("certificates_to_request lock poisoned")
+            .clone();
+        let certificates_required = requested_certificates
+            .as_ref()
+            .is_some_and(|requested| !requested.certifiers.is_empty());
+
         // Update session to authenticated
-        let session = PeerSession {
+        let mut session = PeerSession {
             session_nonce: session_nonce.to_string(),
             peer_identity_key: response.identity_key.clone(),
             peer_nonce,
             is_authenticated: true,
+            certificates_required,
+            certificates_validated: !certificates_required,
         };
 
         // Write lock: promote the session to authenticated, refresh its activity
@@ -816,13 +846,44 @@ impl<W: WalletInterface> Peer<W> {
             mgr.reap_idle(now);
         }
 
-        // Push certificates to channel if any
-        if let Some(certs) = response.certificates {
-            if !certs.is_empty() {
-                let _ = self
-                    .certificate_tx
-                    .send((response.identity_key.clone(), certs))
-                    .await;
+        if certificates_required {
+            if let Some(ref certs) = response.certificates {
+                if !certs.is_empty() {
+                    let peer_pubkey = parse_public_key(&response.identity_key)?;
+                    let verifiable: Vec<VerifiableCertificate> = certs
+                        .iter()
+                        .cloned()
+                        .map(|cert| VerifiableCertificate::new(cert, HashMap::new()))
+                        .collect();
+                    let certificates_valid = validate_certificates(
+                        &self.wallet,
+                        &verifiable,
+                        &peer_pubkey,
+                        requested_certificates.as_ref(),
+                    )
+                    .await?;
+                    if !certificates_valid {
+                        return Err(AuthError::CertificateValidation(format!(
+                            "initialResponse certificate validation failed from: {}",
+                            response.identity_key
+                        )));
+                    }
+
+                    session.certificates_validated = true;
+                    {
+                        let mut mgr = self.session_manager.write().await;
+                        mgr.update_session(session_nonce, session.clone());
+                        mgr.touch(session_nonce, now_ms());
+                    }
+
+                    // TS passes `message.identityKey` to listeners. After the
+                    // signature check above, the identity key is the verified
+                    // initial-response signer, so consumers can rely on it.
+                    let _ = self
+                        .certificate_tx
+                        .send((response.identity_key.clone(), certs.clone()))
+                        .await;
+                }
             }
         }
 
@@ -882,17 +943,7 @@ impl<W: WalletInterface> Peer<W> {
                 Ok(())
             }
             MessageType::CertificateRequest => self.process_certificate_request(msg).await,
-            MessageType::CertificateResponse => {
-                if let Some(certs) = msg.certificates {
-                    if !certs.is_empty() {
-                        let _ = self
-                            .certificate_tx
-                            .send((msg.identity_key.clone(), certs))
-                            .await;
-                    }
-                }
-                Ok(())
-            }
+            MessageType::CertificateResponse => self.process_certificate_response(msg).await,
             MessageType::General => self.handle_general_message(msg).await,
         }
     }
@@ -1047,6 +1098,160 @@ impl<W: WalletInterface> Peer<W> {
             .await
     }
 
+    /// Process an inbound `certificateResponse` message.
+    ///
+    /// Mirrors TS SDK `Peer.processCertificateResponse` and the sibling
+    /// `process_certificate_request` path:
+    /// 1. Verify `yourNonce` was created by us.
+    /// 2. Look up the active session for that nonce.
+    /// 3. Verify the signature over `JSON.stringify(certificates)`.
+    /// 4. Apply the per-message replay gate.
+    /// 5. Validate non-empty certificate sets before notifying consumers.
+    async fn process_certificate_response(&self, msg: AuthMessage) -> Result<(), AuthError> {
+        let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
+            AuthError::InvalidMessage("missing yourNonce in certificateResponse".to_string())
+        })?;
+
+        // 1. Verify our nonce.
+        let valid_nonce = verify_nonce(&self.wallet, your_nonce).await?;
+        if !valid_nonce {
+            return Err(AuthError::InvalidNonce(format!(
+                "Unable to verify nonce for certificate response from: {}",
+                msg.identity_key
+            )));
+        }
+
+        // A signed, session-bound certificateResponse is replay-protected just
+        // like a certificateRequest/general message: require a per-message nonce.
+        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
+        if msg_nonce.is_empty() {
+            return Err(AuthError::InvalidMessage(format!(
+                "missing per-message nonce in certificateResponse from: {}",
+                msg.identity_key
+            )));
+        }
+
+        // 2. Look up session (brief read lock; clone out before crypto await).
+        //    TTL-honoring so a stale/captured `yourNonce` stops resolving.
+        let now = now_ms();
+        let mut session = self
+            .session_manager
+            .read()
+            .await
+            .get_active_session(your_nonce, now)
+            .cloned()
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!("Session not found for nonce: {}", your_nonce))
+            })?;
+
+        // 3. Verify signature over JSON.stringify(certificates). The TS SDK
+        // signs absent certificates as an empty byte string; Rust senders always
+        // populate the array, but accepting the empty-byte absent case preserves
+        // wire parity for verified empty responses.
+        let sign_data = match msg.certificates.as_ref() {
+            Some(certs) => serde_json::to_vec(certs).map_err(|e| {
+                AuthError::SerializationError(format!(
+                    "failed to serialize certificates for verification: {}",
+                    e
+                ))
+            })?,
+            None => Vec::new(),
+        };
+        let key_id = format!("{} {}", msg_nonce, session.session_nonce);
+        let peer_pubkey = parse_public_key(&msg.identity_key)?;
+
+        let verify_result = self
+            .wallet
+            .verify_signature(
+                VerifySignatureArgs {
+                    data: Some(sign_data),
+                    hash_to_directly_verify: None,
+                    signature: msg.signature.clone().unwrap_or_default(),
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id,
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(peer_pubkey.clone()),
+                    },
+                    for_self: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await?;
+
+        if !verify_result.valid {
+            return Err(AuthError::InvalidSignature(format!(
+                "Unable to verify certificate response signature for peer: {}",
+                msg.identity_key
+            )));
+        }
+
+        // Anti-replay gate (after signature verification, before validation and
+        // dispatch). Shares the per-session seen-set with general messages and
+        // certificate requests.
+        match self.session_manager.write().await.mark_message_seen(
+            &session.session_nonce,
+            msg_nonce,
+            now,
+        ) {
+            MarkSeen::Fresh => {}
+            MarkSeen::Replay => {
+                return Err(AuthError::ReplayDetected(format!(
+                    "duplicate certificateResponse nonce on session from {}",
+                    msg.identity_key
+                )));
+            }
+            MarkSeen::SessionGone => {
+                return Err(AuthError::SessionNotFound(format!(
+                    "session evicted during verify for nonce: {}",
+                    your_nonce
+                )));
+            }
+        }
+
+        if let Some(certs) = msg.certificates {
+            if !certs.is_empty() {
+                let verifiable: Vec<VerifiableCertificate> = certs
+                    .iter()
+                    .cloned()
+                    .map(|cert| VerifiableCertificate::new(cert, HashMap::new()))
+                    .collect();
+                let certificates_valid = validate_certificates(
+                    &self.wallet,
+                    &verifiable,
+                    &peer_pubkey,
+                    msg.requested_certificates.as_ref(),
+                )
+                .await?;
+                if !certificates_valid {
+                    return Err(AuthError::CertificateValidation(format!(
+                        "certificateResponse certificate validation failed from: {}",
+                        msg.identity_key
+                    )));
+                }
+
+                session.certificates_validated = true;
+                self.session_manager
+                    .write()
+                    .await
+                    .update_session(&session.session_nonce, session.clone());
+
+                // TS passes `message.identityKey` to listeners. After the
+                // signature check above, the envelope key is the verified
+                // certificate-response signer, so consumers can rely on it.
+                let _ = self.certificate_tx.send((msg.identity_key, certs)).await;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle an incoming initialRequest message.
     ///
     /// Creates a session, signs a response, and sends the initialResponse back.
@@ -1068,12 +1273,22 @@ impl<W: WalletInterface> Peer<W> {
         // verification). Write lock. Touch for the idle-reaping baseline and
         // opportunistically reap idle sessions on this handshake path.
         {
+            let requested_certificates = self
+                .certificates_to_request
+                .read()
+                .expect("certificates_to_request lock poisoned")
+                .clone();
+            let certificates_required = requested_certificates
+                .as_ref()
+                .is_some_and(|requested| !requested.certifiers.is_empty());
             let mut mgr = self.session_manager.write().await;
             mgr.add_session(PeerSession {
                 session_nonce: session_nonce.clone(),
                 peer_identity_key: msg.identity_key.clone(),
                 peer_nonce: peer_initial_nonce.to_string(),
                 is_authenticated: true,
+                certificates_required,
+                certificates_validated: !certificates_required,
             });
             let now = now_ms();
             mgr.touch(&session_nonce, now);
@@ -1378,7 +1593,10 @@ impl<W: WalletInterface> Peer<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::certificates::certificate as cert_codec;
+    use crate::auth::certificates::master::{default_get_revocation_outpoint, MasterCertificate};
     use crate::primitives::private_key::PrivateKey;
+    use crate::primitives::public_key::PublicKey;
     use crate::wallet::error::WalletError;
     use crate::wallet::interfaces::*;
     use crate::wallet::types::Protocol as WalletProtocol;
@@ -1684,9 +1902,704 @@ mod tests {
         }
     }
 
+    async fn wallet_identity(wallet: &TestWallet) -> String {
+        wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .public_key
+            .to_der_hex()
+    }
+
+    async fn complete_mock_handshake(
+        peer_a: Peer<TestWallet>,
+        peer_b: &Peer<TestWallet>,
+        identity_b: &str,
+    ) -> Peer<TestWallet> {
+        let identity_b = identity_b.to_string();
+        let send_handle = tokio::task::spawn_local(async move {
+            peer_a
+                .send_message(&identity_b, b"setup".to_vec())
+                .await
+                .unwrap();
+            peer_a
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        peer_b.process_pending().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let peer_a = send_handle.await.unwrap();
+        peer_b.process_pending().await.unwrap();
+        peer_a
+    }
+
+    async fn issue_certificate_for_subject(
+        subject: &PublicKey,
+        cert_type: CertificateType,
+    ) -> Certificate {
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Test User".to_string());
+        MasterCertificate::issue_certificate_for_subject(
+            &cert_type,
+            subject,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap()
+        .certificate
+    }
+
+    fn requested_for_certificate(cert: &Certificate) -> RequestedCertificateSet {
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(cert.certifier.to_der_hex());
+        requested.insert(
+            cert_codec::base64_encode(&cert.cert_type.0),
+            vec!["name".to_string()],
+        );
+        requested
+    }
+
+    fn anyone_private_key() -> PrivateKey {
+        PrivateKey::from_bytes(&{
+            let mut buf = [0u8; 32];
+            buf[31] = 1;
+            buf
+        })
+        .unwrap()
+    }
+
+    async fn signed_certificate_response(
+        sender_wallet: &TestWallet,
+        sender_identity: String,
+        receiver_identity: &str,
+        receiver_session_nonce: String,
+        certificates: Option<Vec<Certificate>>,
+        requested_certificates: Option<RequestedCertificateSet>,
+        nonce: Option<String>,
+    ) -> AuthMessage {
+        let nonce =
+            nonce.unwrap_or_else(|| base64_encode(&crate::primitives::random::random_bytes(32)));
+        let sign_data = match certificates.as_ref() {
+            Some(certs) => serde_json::to_vec(certs).unwrap(),
+            None => Vec::new(),
+        };
+        let signature = sender_wallet
+            .create_signature(
+                CreateSignatureArgs {
+                    data: Some(sign_data),
+                    hash_to_directly_sign: None,
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id: format!("{} {}", nonce, receiver_session_nonce),
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(parse_public_key(receiver_identity).unwrap()),
+                    },
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .signature;
+
+        AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::CertificateResponse,
+            identity_key: sender_identity,
+            nonce: Some(nonce),
+            your_nonce: Some(receiver_session_nonce),
+            initial_nonce: None,
+            certificates,
+            requested_certificates,
+            payload: None,
+            signature: Some(signature),
+        }
+    }
+
+    async fn signed_initial_response(
+        responder_wallet: &TestWallet,
+        responder_identity: String,
+        requester_identity: &str,
+        requester_session_nonce: String,
+        certificates: Option<Vec<Certificate>>,
+    ) -> AuthMessage {
+        let responder_session_nonce = create_nonce(responder_wallet).await.unwrap();
+        let requester_nonce_bytes = base64_decode(&requester_session_nonce).unwrap();
+        let responder_nonce_bytes = base64_decode(&responder_session_nonce).unwrap();
+        let mut sign_data = requester_nonce_bytes;
+        sign_data.extend_from_slice(&responder_nonce_bytes);
+
+        let signature = responder_wallet
+            .create_signature(
+                CreateSignatureArgs {
+                    data: Some(sign_data),
+                    hash_to_directly_sign: None,
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id: format!("{} {}", requester_session_nonce, responder_session_nonce),
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(parse_public_key(requester_identity).unwrap()),
+                    },
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .signature;
+
+        AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::InitialResponse,
+            identity_key: responder_identity,
+            nonce: None,
+            your_nonce: Some(requester_session_nonce),
+            initial_nonce: Some(responder_session_nonce),
+            certificates,
+            requested_certificates: None,
+            payload: None,
+            signature: Some(signature),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Integration tests
     // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_before_handshake_is_refused_and_not_recorded() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let pk_a = PrivateKey::from_random().unwrap();
+                let pk_b = PrivateKey::from_random().unwrap();
+                let wallet_a = TestWallet::new(pk_a.clone());
+                let wallet_b = TestWallet::new(pk_b.clone());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_a).unwrap(),
+                    CertificateType([45; 32]),
+                )
+                .await;
+                let valid_b_nonce = create_nonce(&TestWallet::new(pk_b.clone())).await.unwrap();
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+                let mut cert_rx = peer_b.on_certificates().unwrap();
+
+                let early_response = AuthMessage {
+                    version: AUTH_VERSION.to_string(),
+                    message_type: MessageType::CertificateResponse,
+                    identity_key: identity_a.clone(),
+                    nonce: Some(base64_encode(&crate::primitives::random::random_bytes(32))),
+                    your_nonce: Some(valid_b_nonce),
+                    initial_nonce: None,
+                    certificates: Some(vec![cert]),
+                    requested_certificates: None,
+                    payload: None,
+                    signature: Some(vec![1, 2, 3]),
+                };
+
+                let err = peer_b.dispatch_message(early_response).await.unwrap_err();
+                assert!(
+                    matches!(err, AuthError::SessionNotFound(_)),
+                    "expected no-session certificateResponse to be refused, got {err:?}"
+                );
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "certificateResponse processed before handshake must not reach consumers"
+                );
+
+                let peer_a = complete_mock_handshake(peer_a, &peer_b, &identity_b).await;
+                assert!(!peer_a.sessions_for_identity(&identity_b).await.is_empty());
+                assert!(!peer_b.sessions_for_identity(&identity_a).await.is_empty());
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "normal handshake must not expose certificates from the refused early frame"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_with_bad_signature_is_refused() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let pk_a = PrivateKey::from_random().unwrap();
+                let wallet_a = TestWallet::new(pk_a.clone());
+                let wallet_b = TestWallet::new(anyone_private_key());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+                let mut cert_rx = peer_b.on_certificates().unwrap();
+                let peer_a = complete_mock_handshake(peer_a, &peer_b, &identity_b).await;
+                let session_b = peer_b
+                    .sessions_for_identity(&identity_a)
+                    .await
+                    .pop()
+                    .expect("receiver session for sender");
+
+                let cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_a).unwrap(),
+                    CertificateType([46; 32]),
+                )
+                .await;
+                let attacker_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+                let msg = signed_certificate_response(
+                    &attacker_wallet,
+                    identity_a,
+                    &identity_b,
+                    session_b.session_nonce,
+                    Some(vec![cert]),
+                    None,
+                    None,
+                )
+                .await;
+
+                let err = peer_b.dispatch_message(msg).await.unwrap_err();
+                assert!(
+                    matches!(err, AuthError::InvalidSignature(_)),
+                    "expected bad certificateResponse signature to be refused, got {err:?}"
+                );
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "badly signed certificateResponse must not reach consumers"
+                );
+                drop(peer_a);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_replayed_message_nonce_is_refused() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let pk_a = PrivateKey::from_random().unwrap();
+                let wallet_a = TestWallet::new(pk_a.clone());
+                let wallet_b = TestWallet::new(anyone_private_key());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+                let mut cert_rx = peer_b.on_certificates().unwrap();
+                let peer_a = complete_mock_handshake(peer_a, &peer_b, &identity_b).await;
+                let session_b = peer_b
+                    .sessions_for_identity(&identity_a)
+                    .await
+                    .pop()
+                    .expect("receiver session for sender");
+
+                let cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_a).unwrap(),
+                    CertificateType([47; 32]),
+                )
+                .await;
+                let msg = signed_certificate_response(
+                    &peer_a.wallet,
+                    identity_a.clone(),
+                    &identity_b,
+                    session_b.session_nonce,
+                    Some(vec![cert]),
+                    None,
+                    None,
+                )
+                .await;
+
+                peer_b.dispatch_message(msg.clone()).await.unwrap();
+                let (sender, certs) = cert_rx.try_recv().expect("first response delivered");
+                assert_eq!(sender, identity_a);
+                assert_eq!(certs.len(), 1);
+
+                let err = peer_b.dispatch_message(msg).await.unwrap_err();
+                assert!(
+                    matches!(err, AuthError::ReplayDetected(_)),
+                    "expected replayed certificateResponse nonce to be refused, got {err:?}"
+                );
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "replayed certificateResponse must not reach consumers"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_with_unissued_your_nonce_is_refused() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(anyone_private_key());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let _peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+
+                let msg = AuthMessage {
+                    version: AUTH_VERSION.to_string(),
+                    message_type: MessageType::CertificateResponse,
+                    identity_key: identity_a,
+                    nonce: Some(base64_encode(&crate::primitives::random::random_bytes(32))),
+                    your_nonce: Some(base64_encode(&crate::primitives::random::random_bytes(48))),
+                    initial_nonce: None,
+                    certificates: Some(Vec::new()),
+                    requested_certificates: None,
+                    payload: None,
+                    signature: Some(Vec::new()),
+                };
+
+                let err = peer_b.dispatch_message(msg).await.unwrap_err();
+                assert!(
+                    matches!(err, AuthError::InvalidNonce(_)),
+                    "expected unissued yourNonce to be refused before session lookup, got {err:?}"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_delivers_validated_certificates() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let pk_a = PrivateKey::from_random().unwrap();
+                let wallet_a = TestWallet::new(pk_a.clone());
+                let wallet_b = TestWallet::new(anyone_private_key());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+                let mut cert_rx = peer_b.on_certificates().unwrap();
+                let peer_a = complete_mock_handshake(peer_a, &peer_b, &identity_b).await;
+                let session_b = peer_b
+                    .sessions_for_identity(&identity_a)
+                    .await
+                    .pop()
+                    .expect("receiver session for sender");
+
+                let cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_a).unwrap(),
+                    CertificateType([48; 32]),
+                )
+                .await;
+                let serial = cert.serial_number.clone();
+                let requested = requested_for_certificate(&cert);
+                let msg = signed_certificate_response(
+                    &peer_a.wallet,
+                    identity_a.clone(),
+                    &identity_b,
+                    session_b.session_nonce,
+                    Some(vec![cert]),
+                    Some(requested),
+                    None,
+                )
+                .await;
+
+                peer_b.dispatch_message(msg).await.unwrap();
+                let (sender, certs) = cert_rx.try_recv().expect("valid response delivered");
+                assert_eq!(sender, identity_a);
+                assert_eq!(certs.len(), 1);
+                assert_eq!(certs[0].serial_number, serial);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_certificate_response_rejected_certificates_do_not_reach_consumers() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let pk_a = PrivateKey::from_random().unwrap();
+                let wrong_subject = PrivateKey::from_random().unwrap();
+                let wallet_a = TestWallet::new(pk_a);
+                let wallet_b = TestWallet::new(anyone_private_key());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_b = Peer::new(wallet_b, transport_b);
+                let mut cert_rx = peer_b.on_certificates().unwrap();
+                let peer_a = complete_mock_handshake(peer_a, &peer_b, &identity_b).await;
+                let session_b = peer_b
+                    .sessions_for_identity(&identity_a)
+                    .await
+                    .pop()
+                    .expect("receiver session for sender");
+
+                let cert = issue_certificate_for_subject(
+                    &wrong_subject.to_public_key(),
+                    CertificateType([49; 32]),
+                )
+                .await;
+                let requested = requested_for_certificate(&cert);
+                let msg = signed_certificate_response(
+                    &peer_a.wallet,
+                    identity_a,
+                    &identity_b,
+                    session_b.session_nonce,
+                    Some(vec![cert]),
+                    Some(requested),
+                    None,
+                )
+                .await;
+
+                let err = peer_b.dispatch_message(msg).await.unwrap_err();
+                assert!(
+                    matches!(err, AuthError::CertificateValidation(_)),
+                    "expected invalid certificate set to be refused, got {err:?}"
+                );
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "certificateResponse rejected by validate_certificates must not reach consumers"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_initial_response_rejected_certificates_do_not_reach_consumers() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(anyone_private_key());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wrong_subject = PrivateKey::from_random().unwrap();
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, _transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let mut cert_rx = peer_a.on_certificates().unwrap();
+
+                let cert = issue_certificate_for_subject(
+                    &wrong_subject.to_public_key(),
+                    CertificateType([50; 32]),
+                )
+                .await;
+                peer_a.set_certificates_to_request(requested_for_certificate(&cert));
+                let session_nonce = create_nonce(&peer_a.wallet).await.unwrap();
+                let response = signed_initial_response(
+                    &wallet_b,
+                    identity_b.clone(),
+                    &identity_a,
+                    session_nonce.clone(),
+                    Some(vec![cert]),
+                )
+                .await;
+
+                let err = peer_a
+                    .complete_handshake(&session_nonce, response)
+                    .await
+                    .unwrap_err();
+                match err {
+                    AuthError::CertificateValidation(message) => {
+                        assert!(
+                            message.contains("initialResponse certificate validation failed"),
+                            "error should name initialResponse certificate validation, got {message}"
+                        );
+                        assert!(
+                            message.contains(&identity_b),
+                            "error should identify the verified peer, got {message}"
+                        );
+                    }
+                    other => panic!("expected certificate validation error, got {other:?}"),
+                }
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "initialResponse certificates rejected by validate_certificates must not reach consumers"
+                );
+                let session = peer_a
+                    .sessions_for_identity(&identity_b)
+                    .await
+                    .pop()
+                    .expect("signature-verified initialResponse still authenticates the session");
+                assert!(session.is_authenticated);
+                assert!(session.certificates_required);
+                assert!(!session.certificates_validated);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_initial_response_delivers_validated_certificates() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(anyone_private_key());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, _transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let mut cert_rx = peer_a.on_certificates().unwrap();
+
+                let cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_b).unwrap(),
+                    CertificateType([51; 32]),
+                )
+                .await;
+                let serial = cert.serial_number.clone();
+                peer_a.set_certificates_to_request(requested_for_certificate(&cert));
+                let session_nonce = create_nonce(&peer_a.wallet).await.unwrap();
+                let response = signed_initial_response(
+                    &wallet_b,
+                    identity_b.clone(),
+                    &identity_a,
+                    session_nonce.clone(),
+                    Some(vec![cert]),
+                )
+                .await;
+
+                let session = peer_a
+                    .complete_handshake(&session_nonce, response)
+                    .await
+                    .unwrap();
+                assert_eq!(session.peer_identity_key, identity_b);
+                assert!(session.is_authenticated);
+                assert!(session.certificates_required);
+                assert!(session.certificates_validated);
+
+                let (sender, certs) = cert_rx
+                    .try_recv()
+                    .expect("validated initialResponse certificates delivered");
+                assert_eq!(sender, identity_b);
+                assert_eq!(certs.len(), 1);
+                assert_eq!(certs[0].serial_number, serial);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_initial_response_ignores_certificates_when_none_requested() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wrong_subject = PrivateKey::from_random().unwrap();
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, _transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let mut cert_rx = peer_a.on_certificates().unwrap();
+
+                let cert = issue_certificate_for_subject(
+                    &wrong_subject.to_public_key(),
+                    CertificateType([52; 32]),
+                )
+                .await;
+                let session_nonce = create_nonce(&peer_a.wallet).await.unwrap();
+                let response = signed_initial_response(
+                    &wallet_b,
+                    identity_b.clone(),
+                    &identity_a,
+                    session_nonce.clone(),
+                    Some(vec![cert]),
+                )
+                .await;
+
+                let session = peer_a
+                    .complete_handshake(&session_nonce, response)
+                    .await
+                    .unwrap();
+                assert_eq!(session.peer_identity_key, identity_b);
+                assert!(session.is_authenticated);
+                assert!(!session.certificates_required);
+                assert!(session.certificates_validated);
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "initialResponse certificates must not be delivered when none were requested"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_initial_response_empty_certificates_are_ignored() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+                let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+                let identity_a = wallet_identity(&wallet_a).await;
+                let identity_b = wallet_identity(&wallet_b).await;
+
+                let (transport_a, _transport_b) = create_mock_transport_pair();
+                let peer_a = Peer::new(wallet_a, transport_a);
+                let mut cert_rx = peer_a.on_certificates().unwrap();
+
+                let requested_cert = issue_certificate_for_subject(
+                    &parse_public_key(&identity_b).unwrap(),
+                    CertificateType([53; 32]),
+                )
+                .await;
+                peer_a.set_certificates_to_request(requested_for_certificate(&requested_cert));
+                let session_nonce = create_nonce(&peer_a.wallet).await.unwrap();
+                let response = signed_initial_response(
+                    &wallet_b,
+                    identity_b.clone(),
+                    &identity_a,
+                    session_nonce.clone(),
+                    Some(Vec::new()),
+                )
+                .await;
+
+                let session = peer_a
+                    .complete_handshake(&session_nonce, response)
+                    .await
+                    .unwrap();
+                assert_eq!(session.peer_identity_key, identity_b);
+                assert!(session.is_authenticated);
+                assert!(session.certificates_required);
+                assert!(!session.certificates_validated);
+                assert!(
+                    cert_rx.try_recv().is_err(),
+                    "empty initialResponse certificate arrays must not reach consumers"
+                );
+            })
+            .await;
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_full_handshake_and_message_exchange() {

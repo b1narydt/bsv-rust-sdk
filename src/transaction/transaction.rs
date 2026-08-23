@@ -265,13 +265,25 @@ impl Transaction {
     }
 
     /// Add an input to the transaction.
-    pub fn add_input(&mut self, input: TransactionInput) {
+    ///
+    /// The input must identify its source by transaction or transaction ID.
+    pub fn add_input(&mut self, input: TransactionInput) -> Result<(), TransactionError> {
+        if input.source_transaction.is_none() && input.source_txid.is_none() {
+            return Err(TransactionError::MissingInputSourceReference);
+        }
         self.inputs.push(input);
+        Ok(())
     }
 
     /// Add an output to the transaction.
-    pub fn add_output(&mut self, output: TransactionOutput) {
+    ///
+    /// Outputs without a fixed value must be marked as change outputs.
+    pub fn add_output(&mut self, output: TransactionOutput) -> Result<(), TransactionError> {
+        if output.satoshis.is_none() && !output.change {
+            return Err(TransactionError::MissingOutputValue);
+        }
         self.outputs.push(output);
+        Ok(())
     }
 
     /// Deserialize a transaction from EF format (BRC-30).
@@ -964,16 +976,60 @@ mod tests {
     }
 
     #[test]
-    fn test_add_input_output() {
+    fn test_add_input_requires_source_reference() {
         let mut tx = Transaction::new();
-        assert_eq!(tx.inputs.len(), 0);
-        assert_eq!(tx.outputs.len(), 0);
+        let error = tx.add_input(TransactionInput::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            TransactionError::MissingInputSourceReference
+        ));
+        assert_eq!(
+            error.to_string(),
+            "A reference to an an input transaction is required. If the input transaction itself cannot be referenced, its TXID must still be provided."
+        );
+        assert!(tx.inputs.is_empty());
 
-        tx.add_input(TransactionInput::default());
-        assert_eq!(tx.inputs.len(), 1);
+        tx.add_input(TransactionInput {
+            source_txid: Some(String::new()),
+            ..Default::default()
+        })
+        .unwrap();
+        tx.add_input(TransactionInput {
+            source_transaction: Some(Box::new(Transaction::new())),
+            ..Default::default()
+        })
+        .unwrap();
+        tx.add_input(TransactionInput {
+            source_transaction: Some(Box::new(Transaction::new())),
+            source_txid: Some("00".repeat(32)),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(tx.inputs.len(), 3);
+    }
 
-        tx.add_output(TransactionOutput::default());
-        assert_eq!(tx.outputs.len(), 1);
+    #[test]
+    fn test_add_output_requires_satoshis_or_change() {
+        let mut tx = Transaction::new();
+        let error = tx.add_output(TransactionOutput::default()).unwrap_err();
+        assert!(matches!(error, TransactionError::MissingOutputValue));
+        assert_eq!(
+            error.to_string(),
+            "either satoshis must be defined or change must be set to true"
+        );
+        assert!(tx.outputs.is_empty());
+
+        tx.add_output(TransactionOutput {
+            satoshis: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+        tx.add_output(TransactionOutput {
+            change: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(tx.outputs.len(), 2);
     }
 
     fn make_test_tx_with_source_for_ef() -> Transaction {
@@ -1130,12 +1186,14 @@ mod tests {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(50000),
             locking_script: lock_script.clone(),
             change: false,
-        });
+        })
+        .unwrap();
 
         // Sign the input
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
@@ -1211,12 +1269,14 @@ mod tests {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(90_000),
             locking_script: lock_script.clone(),
             change: false,
-        });
+        })
+        .unwrap();
 
         let scope = SIGHASH_ALL | SIGHASH_FORKID;
         tx.sign(0, &p2pkh, scope, source_satoshis, &lock_script)
@@ -1323,14 +1383,16 @@ mod tests {
 
         // Create a proven parent transaction.
         let mut parent = Transaction::new();
-        parent.add_output(TransactionOutput {
-            satoshis: Some(50_000),
-            locking_script: LockingScript::from_binary(&[
-                0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac,
-            ]),
-            change: false,
-        });
+        parent
+            .add_output(TransactionOutput {
+                satoshis: Some(50_000),
+                locking_script: LockingScript::from_binary(&[
+                    0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+                    0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x88, 0xac,
+                ]),
+                change: false,
+            })
+            .unwrap();
         let parent_txid = parent.id().unwrap();
 
         // Give parent a merkle path (proven in block).
@@ -1354,18 +1416,22 @@ mod tests {
 
         // Create child transaction spending parent.
         let mut child = Transaction::new();
-        child.add_input(TransactionInput {
-            source_transaction: Some(Box::new(parent.clone())),
-            source_txid: Some(parent_txid.clone()),
-            source_output_index: 0,
-            unlocking_script: None,
-            sequence: 0xffffffff,
-        });
-        child.add_output(TransactionOutput {
-            satoshis: Some(40_000),
-            locking_script: LockingScript::from_binary(&[0x6a, 0x04, 0xde, 0xad]),
-            change: false,
-        });
+        child
+            .add_input(TransactionInput {
+                source_transaction: Some(Box::new(parent.clone())),
+                source_txid: Some(parent_txid.clone()),
+                source_output_index: 0,
+                unlocking_script: None,
+                sequence: 0xffffffff,
+            })
+            .unwrap();
+        child
+            .add_output(TransactionOutput {
+                satoshis: Some(40_000),
+                locking_script: LockingScript::from_binary(&[0x6a, 0x04, 0xde, 0xad]),
+                change: false,
+            })
+            .unwrap();
 
         // Serialize to BEEF.
         let beef_bytes = child.to_beef().expect("to_beef should succeed");
@@ -1406,7 +1472,8 @@ mod tests {
                 0x6a, 0x02, 0xab, 0xcd,
             ]),
             change: false,
-        });
+        })
+        .unwrap();
 
         let result = tx.to_beef();
         assert!(result.is_err(), "to_beef should fail with no proofs");
@@ -1431,14 +1498,16 @@ mod tests {
             source_output_index: 0,
             unlocking_script: None,
             sequence: 0xffffffff,
-        });
+        })
+        .unwrap();
         tx.add_output(TransactionOutput {
             satoshis: Some(1000),
             locking_script: crate::script::locking_script::LockingScript::from_binary(&[
                 0x6a, 0x02, 0xab, 0xcd,
             ]),
             change: false,
-        });
+        })
+        .unwrap();
 
         let result = tx.to_beef();
         assert!(

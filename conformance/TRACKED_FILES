@@ -1,0 +1,31 @@
+# Paths are relative to both this directory and upstream's conformance/ tree.
+# Keep this as the single source of truth for refresh-vectors.sh and the
+# generated coverage ledger.
+VECTOR-FORMAT.md
+schema/vector.schema.json
+vectors/regressions/beef-isvalid-hydration.json
+vectors/regressions/beef-v2-txid-panic.json
+vectors/regressions/bip276-hex-decode.json
+vectors/regressions/fee-model-mismatch.json
+vectors/regressions/merkle-path-odd-node.json
+vectors/regressions/privatekey-modular-reduction.json
+vectors/regressions/script-fromasm-numeric-token.json
+vectors/regressions/script-lshift-truncation.json
+vectors/regressions/script-shift-endianness.json
+vectors/regressions/script-writebin-empty.json
+vectors/regressions/tx-sequence-zero-sighash.json
+vectors/regressions/uhrp-url-parity.json
+vectors/sdk/compat/bsm.json
+vectors/sdk/crypto/aes.json
+vectors/sdk/crypto/ecdsa.json
+vectors/sdk/crypto/ecies.json
+vectors/sdk/crypto/hash160.json
+vectors/sdk/crypto/hmac.json
+vectors/sdk/crypto/ripemd160.json
+vectors/sdk/crypto/sha256.json
+vectors/sdk/crypto/signature.json
+vectors/sdk/keys/key-derivation.json
+vectors/sdk/keys/private-key.json
+vectors/sdk/keys/public-key.json
+vectors/sdk/transactions/merkle-path.json
+vectors/sdk/transactions/serialization.json

@@ -28,14 +28,14 @@ pub fn serialize_sign_action_args(args: &SignActionArgs) -> Result<Vec<u8>, Wall
             write_optional_bool(w, opts.return_txid_only.0)?;
             write_optional_bool(w, opts.no_send.0)?;
             // SendWith
-            if opts.send_with.is_empty() {
-                write_varint(w, NEGATIVE_ONE)?;
-            } else {
-                write_varint(w, opts.send_with.len() as u64)?;
-                for txid in &opts.send_with {
+            if let Some(send_with) = &opts.send_with {
+                write_varint(w, send_with.len() as u64)?;
+                for txid in send_with {
                     let txid_bytes = hex_decode(txid)?;
                     write_raw_bytes(w, &txid_bytes)?;
                 }
+            } else {
+                write_varint(w, NEGATIVE_ONE)?;
             }
         } else {
             write_byte(w, 0)?;
@@ -68,14 +68,14 @@ pub fn deserialize_sign_action_args(data: &[u8]) -> Result<SignActionArgs, Walle
         let no_send = BooleanDefaultFalse(read_optional_bool(&mut r)?);
         let send_count = read_varint(&mut r)?;
         let send_with = if send_count == NEGATIVE_ONE {
-            Vec::new()
+            None
         } else {
             let mut txids = Vec::with_capacity(send_count as usize);
             for _ in 0..send_count {
                 let txid_bytes = read_raw_bytes(&mut r, 32)?;
                 txids.push(hex_encode(&txid_bytes));
             }
-            txids
+            Some(txids)
         };
         Some(SignActionOptions {
             accept_delayed_broadcast,

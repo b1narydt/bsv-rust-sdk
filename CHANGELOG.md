@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** BRC-100 arrays whose binary wire format distinguishes omission (`-1`) from an explicit empty list (`0`) now use `Option<Vec<_>>`. This applies to `CreateActionArgs::{inputs, outputs, labels}`, `CreateActionOutput::tags`, `CreateActionOptions::{known_txids, no_send_change, send_with}`, `SignActionOptions::send_with`, `InternalizeActionArgs::labels`, `CreateActionResult::{no_send_change, send_with_results}`, `SignActionResult::send_with_results`, `Action::{labels, inputs, outputs}`, and `Output::{tags, labels}`. Callers must use `None` to omit a field and `Some(vec![])` to send or return an explicit empty array. `ListOutputsArgs::tags` and `BasketInsertion::tags` remain plain `Vec<_>` because their TypeScript wire paths collapse omitted and empty arrays.
+- **Breaking:** `CertificateResult::verifier` is now `Option<String>` instead of hex-serialized `Option<Vec<u8>>`, matching the TypeScript result shape and UTF-8 wire decoder. Callers now pass and receive verifier text directly.
+- **Breaking:** `ListOutputsArgs::offset` is now `Option<i64>` instead of `Option<u32>`, so callers can express the documented negative-offset query mode (for example, `Some(-1)` for the newest output). The wire processor continues to decode incoming negative offsets as absent, matching `@bsv/sdk` 2.4.1.
+- **Breaking:** `ECIES::electrum_encrypt` now takes a `no_key: bool` argument, and `ECIES::electrum_decrypt` now takes an optional sender public key. Existing embedded-key callers pass `false` and `None`; sender-key-free ECDH callers pass `true` when encrypting and `Some(&sender_public_key)` when decrypting.
+
+### Added
+
+- Vendored and pinned 259 vectors from the official `bsv-blockchain/ts-stack` cross-implementation conformance corpus, with grouped hermetic Rust runners, a refresh workflow, generated all-corpus coverage ledger, and an explicit per-vector divergence ledger. The runners assert 258 vectors and preserve the upstream governed skip for `sdk.crypto.ecies.17`; the 5,116-vector script-evaluation file remains visibly out of scope.
+
 ## [0.6.0] - 2026-08-22
 
 ### Fixed

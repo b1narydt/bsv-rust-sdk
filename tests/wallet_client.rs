@@ -27,11 +27,11 @@ fn valid_args() -> CreateActionArgs {
     CreateActionArgs {
         description: "12345".to_string(), // minimum 5 chars
         input_beef: None,
-        inputs: vec![],
-        outputs: vec![],
+        inputs: Some(vec![]),
+        outputs: Some(vec![]),
         lock_time: None,
         version: None,
-        labels: vec![],
+        labels: Some(vec![]),
         options: default_options(),
         reference: None,
     }
@@ -71,14 +71,14 @@ fn create_action_rejects_description_too_short() {
 #[test]
 fn create_action_rejects_empty_locking_script_with_empty_description() {
     let mut args = valid_args();
-    args.outputs = vec![CreateActionOutput {
+    args.outputs = Some(vec![CreateActionOutput {
         locking_script: None, // empty/missing
         satoshis: 0,
         output_description: String::new(), // empty
         basket: None,
         custom_instructions: None,
-        tags: vec![],
-    }];
+        tags: Some(vec![]),
+    }]);
     let result = validate_create_action_args(&args);
     assert_invalid_parameter(result, "output");
 }
@@ -101,14 +101,14 @@ fn create_action_accepts_valid_args() {
 #[test]
 fn create_action_accepts_valid_output_with_locking_script() {
     let mut args = valid_args();
-    args.outputs = vec![CreateActionOutput {
+    args.outputs = Some(vec![CreateActionOutput {
         locking_script: Some(vec![0x12, 0x34]),
         satoshis: 100,
         output_description: "test output".to_string(),
         basket: None,
         custom_instructions: None,
-        tags: vec![],
-    }];
+        tags: Some(vec![]),
+    }]);
     let result = validate_create_action_args(&args);
     assert!(
         result.is_ok(),
@@ -123,14 +123,14 @@ fn create_action_accepts_valid_output_with_locking_script() {
 #[test]
 fn create_action_accepts_output_with_locking_script_and_empty_description() {
     let mut args = valid_args();
-    args.outputs = vec![CreateActionOutput {
+    args.outputs = Some(vec![CreateActionOutput {
         locking_script: Some(vec![0x12, 0x34]),
         satoshis: 0,
         output_description: String::new(), // empty but locking_script is present
         basket: None,
         custom_instructions: None,
-        tags: vec![],
-    }];
+        tags: Some(vec![]),
+    }]);
     // The validation checks: locking_script.is_none() AND output_description.is_empty()
     // Since locking_script is Some, this should pass
     let result = validate_create_action_args(&args);
@@ -147,13 +147,13 @@ fn create_action_accepts_output_with_locking_script_and_empty_description() {
 #[test]
 fn create_action_rejects_input_without_unlocking_script_or_length() {
     let mut args = valid_args();
-    args.inputs = vec![CreateActionInput {
+    args.inputs = Some(vec![CreateActionInput {
         outpoint: "abc123.0".to_string(),
         input_description: "test input".to_string(),
         unlocking_script: None,
         unlocking_script_length: None,
         sequence_number: None,
-    }];
+    }]);
     let result = validate_create_action_args(&args);
     assert_invalid_parameter(result, "input");
 }
@@ -165,7 +165,7 @@ fn create_action_rejects_input_without_unlocking_script_or_length() {
 #[test]
 fn create_action_rejects_label_too_long() {
     let mut args = valid_args();
-    args.labels = vec!["x".repeat(301)];
+    args.labels = Some(vec!["x".repeat(301)]);
     let result = validate_create_action_args(&args);
     assert_invalid_parameter(result, "label");
 }

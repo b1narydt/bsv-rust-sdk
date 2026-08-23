@@ -41,14 +41,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence: 0xFFFFFFFF,
         ..Default::default()
     };
-    tx.add_input(input);
+    tx.add_input(input)?;
 
     let lock_script = sender_p2pkh.lock()?;
     tx.add_output(TransactionOutput {
         satoshis: Some(99_500),
         locking_script: lock_script,
         change: false,
-    });
+    })?;
 
     // Sign the transaction
     let sighash_type = 0x41;

@@ -13,14 +13,9 @@ const OUTPUT_INCLUDE_ENTIRE_TRANSACTIONS: u8 = 2;
 pub fn serialize_list_outputs_args(args: &ListOutputsArgs) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
         write_string(w, &args.basket)?;
-        write_string_slice(
-            w,
-            &if args.tags.is_empty() {
-                None
-            } else {
-                Some(args.tags.clone())
-            },
-        )?;
+        // The TypeScript transceiver collapses omitted and empty tags to a
+        // zero count on this call, unlike the nil-able arrays on createAction.
+        write_string_slice(w, &Some(args.tags.clone()))?;
         match args.tag_query_mode {
             Some(QueryMode::All) => write_byte(w, TAG_QUERY_MODE_ALL)?,
             Some(QueryMode::Any) => write_byte(w, TAG_QUERY_MODE_ANY)?,
@@ -37,7 +32,10 @@ pub fn serialize_list_outputs_args(args: &ListOutputsArgs) -> Result<Vec<u8>, Wa
         write_optional_bool(w, args.include_tags.0)?;
         write_optional_bool(w, args.include_labels.0)?;
         write_optional_uint32(w, args.limit)?;
-        write_optional_uint32(w, args.offset)?;
+        match args.offset {
+            Some(offset) => write_varint(w, offset as u64)?,
+            None => write_varint(w, NEGATIVE_ONE)?,
+        }
         write_optional_bool(w, args.seek_permission.0)
     })
 }
@@ -62,7 +60,10 @@ pub fn deserialize_list_outputs_args(data: &[u8]) -> Result<ListOutputsArgs, Wal
     let include_tags = BooleanDefaultFalse(read_optional_bool(&mut r)?);
     let include_labels = BooleanDefaultFalse(read_optional_bool(&mut r)?);
     let limit = read_optional_uint32(&mut r)?;
-    let offset = read_optional_uint32(&mut r)?;
+    // Match WalletWireProcessor: negative offsets are carried by the caller's
+    // signed varint but decoded as undefined at the receiving boundary.
+    let signed_offset = read_varint(&mut r)? as i64;
+    let offset = (signed_offset >= 0).then_some(signed_offset);
     let seek_permission = BooleanDefaultTrue(read_optional_bool(&mut r)?);
     Ok(ListOutputsArgs {
         basket,
@@ -97,22 +98,8 @@ pub fn serialize_list_outputs_result(result: &ListOutputsResult) -> Result<Vec<u
                 write_varint(w, NEGATIVE_ONE)?;
             }
             write_string_optional(w, &output.custom_instructions.clone().unwrap_or_default())?;
-            write_string_slice(
-                w,
-                &if output.tags.is_empty() {
-                    None
-                } else {
-                    Some(output.tags.clone())
-                },
-            )?;
-            write_string_slice(
-                w,
-                &if output.labels.is_empty() {
-                    None
-                } else {
-                    Some(output.labels.clone())
-                },
-            )?;
+            write_string_slice(w, &output.tags)?;
+            write_string_slice(w, &output.labels)?;
         }
         Ok(())
     })
@@ -144,8 +131,8 @@ pub fn deserialize_list_outputs_result(data: &[u8]) -> Result<ListOutputsResult,
         } else {
             Some(custom_str)
         };
-        let tags = read_string_slice(&mut r)?.unwrap_or_default();
-        let labels = read_string_slice(&mut r)?.unwrap_or_default();
+        let tags = read_string_slice(&mut r)?;
+        let labels = read_string_slice(&mut r)?;
         outputs.push(Output {
             satoshis,
             locking_script,
