@@ -6,6 +6,7 @@ use super::acquire_certificate::{base64_decode, base64_encode};
 use super::*;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Serialize a Certificate (including signature at the end).
@@ -65,7 +66,7 @@ pub fn deserialize_certificate(data: &[u8]) -> Result<Certificate, WalletError> 
     let revocation_outpoint = Some(read_outpoint(&mut r)?);
     // Fields
     let fields_len = read_varint(&mut r)?;
-    let mut fields = HashMap::with_capacity(fields_len as usize);
+    let mut fields = IndexMap::with_capacity(fields_len as usize);
     for _ in 0..fields_len {
         let key = String::from_utf8(read_bytes(&mut r)?)
             .map_err(|e| WalletError::Internal(e.to_string()))?;

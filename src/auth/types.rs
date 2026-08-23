@@ -3,7 +3,7 @@
 //! Defines AuthMessage, MessageType, PeerSession, protocol constants,
 //! and the RequestedCertificateSet type alias.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
 // Protocol Constants
@@ -68,7 +68,7 @@ pub struct RequestedCertificateSet {
     pub certifiers: Vec<String>,
     /// Maps certificate type (base64) to the list of field names to request.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub types: HashMap<String, Vec<String>>,
+    pub types: IndexMap<String, Vec<String>>,
 }
 
 impl RequestedCertificateSet {

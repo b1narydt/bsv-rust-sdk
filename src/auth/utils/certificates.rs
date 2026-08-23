@@ -465,17 +465,11 @@ mod tests {
             HashMap::new(), // empty keyring for validation test
         );
 
-        // Verify using an "anyone" wallet (PrivateKey(1))
-        let anyone_wallet = TestWallet::new(
-            PrivateKey::from_bytes(&{
-                let mut buf = [0u8; 32];
-                buf[31] = 1;
-                buf
-            })
-            .unwrap(),
-        );
+        // Verification must work from an ordinary receiving wallet, not only
+        // from a wallet whose identity happens to be the special anyone key.
+        let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
 
-        let valid = validate_certificates(&anyone_wallet, &[verifiable], &subject_pubkey, None)
+        let valid = validate_certificates(&receiver_wallet, &[verifiable], &subject_pubkey, None)
             .await
             .expect("validate_certificates failed");
         assert!(valid, "properly signed certificate should validate");

@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         revocation_outpoint: Some(
             "0000000000000000000000000000000000000000000000000000000000000000.0".to_string(),
         ),
-        fields: Some(fields.clone()),
+        fields: Some(fields.clone().into_iter().collect()),
         signature: None, // unsigned -- signing requires async WalletInterface
     };
 
