@@ -77,16 +77,7 @@ impl ScriptChunk {
                 let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
                 hex
             }
-            None => {
-                // OP_0 renders as "0" in ASM, OP_1NEGATE as "-1"
-                if self.op == Op::Op0 {
-                    "0".to_string()
-                } else if self.op == Op::Op1Negate {
-                    "-1".to_string()
-                } else {
-                    self.op.to_name().to_string()
-                }
-            }
+            None => self.op.to_name().to_string(),
         }
     }
 

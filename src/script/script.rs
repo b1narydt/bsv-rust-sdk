@@ -64,7 +64,8 @@ impl Script {
     /// Parse a script from a space-separated ASM string.
     ///
     /// Handles opcodes like "OP_DUP", data pushes as hex strings,
-    /// "0" as OP_0, and "-1" as OP_1NEGATE.
+    /// "0" as OP_0, and "-1" as OP_1NEGATE. Numeric aliases are normalized
+    /// to canonical opcode names by [`Script::to_asm`].
     /// `OP_PUSHDATA1/2/4` in ASM format: `"OP_PUSHDATA1 <len> <hex>"`
     pub fn from_asm(asm: &str) -> Self {
         if asm.is_empty() {
@@ -555,8 +556,26 @@ mod tests {
     fn test_asm_zero_and_negative_one() {
         let asm = "0 -1 OP_ADD";
         let script = Script::from_asm(asm);
-        // OP_0 renders as "0", OP_1NEGATE as "-1"
-        assert_eq!(script.to_asm(), "0 -1 OP_ADD");
+        assert_eq!(script.to_asm(), "OP_0 OP_1NEGATE OP_ADD");
+        assert_eq!(script.to_hex(), "004f93");
+    }
+
+    #[test]
+    fn test_asm_reference_canonical_opcode_names_and_aliases() {
+        let aliases = Script::from_asm("OP_NOP2 OP_NOP3");
+        assert_eq!(aliases.to_hex(), "b1b2");
+        assert_eq!(
+            aliases.to_asm(),
+            "OP_CHECKLOCKTIMEVERIFY OP_CHECKSEQUENCEVERIFY"
+        );
+
+        let canonical =
+            Script::from_asm("OP_0 OP_1NEGATE OP_CHECKLOCKTIMEVERIFY OP_CHECKSEQUENCEVERIFY");
+        assert_eq!(canonical.to_hex(), "004fb1b2");
+        assert_eq!(
+            canonical.to_asm(),
+            "OP_0 OP_1NEGATE OP_CHECKLOCKTIMEVERIFY OP_CHECKSEQUENCEVERIFY"
+        );
     }
 
     #[test]

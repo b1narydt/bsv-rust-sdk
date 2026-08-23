@@ -23,7 +23,6 @@ API cannot represent. All other verdicts are `RUST_DEFECT`.
 | `tx-007` | `Transaction::add_input(TransactionInput::default())` accepts a missing source reference. | `Transaction.addInput({})` throws “A reference to an an input transaction is required…”. | `RUST_DEFECT` — missing input-source validation. |
 | `tx-009` | `Transaction::add_output(TransactionOutput::default())` accepts neither satoshis nor `change=true`. | `Transaction.addOutput({ lockingScript })` throws “either satoshis must be defined or change must be set to true”. | `RUST_DEFECT` — missing output-value validation. |
 | `tx-014` | `SatoshisPerKilobyte::compute_fee` succeeds for an input with no source value. | `Transaction.getFee()` throws “Source transactions or sourceSatoshis are required…”. | `RUST_DEFECT` — fee calculation does not require source value. |
-| `regression.script.writebin-empty.0001` | The OP_0 script serializes correctly as `00` but `Script::to_asm()` renders `0`. | `new Script().writeBin([]).toASM()` returns `OP_0`. | `RUST_DEFECT` — ASM rendering differs. |
 
 ## Governed skip (not a divergence)
 

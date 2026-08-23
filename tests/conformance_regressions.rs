@@ -103,11 +103,7 @@ const CORPORA: &[Corpus<'_>] = &[
         expected_count: 4,
     },
 ];
-const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[KnownDivergence {
-    id: "regression.script.writebin-empty.0001",
-    reason: "Rust renders OP_0 as 0 in ASM",
-    evidence: "expected ASM OP_0, got 0",
-}];
+const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[];
 
 fn parse_beef(vector: &Vector) -> Result<Beef, String> {
     Beef::from_binary(&mut Cursor::new(bytes(string(&vector.input, "beef_hex"))?))
