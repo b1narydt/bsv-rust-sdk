@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-23
+
+Fixes two regressions introduced by the certificate-verification work in 0.7.0. **0.7.0 is yanked**:
+on it, BRC-103 certificate exchange fails for any certificate carrying more than one field.
+
+### Fixed
+
+- **Signed certificate payloads were re-serialised from a `HashMap`, so verification failed on the wire.** `serde_json` emits a `HashMap` in iteration order, which Rust randomises per process. 0.7.0 began verifying inbound certificate messages by re-serialising the received certificates to rebuild the signed preimage — the sender's order and the receiver's order differed, so the signature never matched. `Certificate.fields` and `RequestedCertificateSet.types` are now `IndexMap`, so a deserialise/serialise round trip reproduces the sender's bytes. This mirrors the reference, where a parsed JS object's insertion order is the order its keys appeared in the JSON text: verified against @bsv/sdk 2.4.1, whose re-`stringify` is byte-identical to the wire while a sorted re-serialisation is not. The maps that are wallet RPC data rather than signed auth JSON — `PartialCertificate.fields`, `AcquireCertificateArgs.fields`, `AcquireCertificateArgs.keyring_for_subject`, `CertificateResult.keyring` — are deliberately still `HashMap`.
+- **Certificate signature verification depended on the receiving wallet's identity.** It verified through whichever wallet received the certificate. The reference constructs `new ProtoWallet('anyone')` for exactly this (`Certificate.ts:213-229`) — a certificate signature is made for the special `anyone` counterparty, so any party can check it and the outcome must not depend on who holds it. Now verifies through `ProtoWallet::anyone()`.
+
+The regression escaped 0.7.0's tests because they sign and verify the same in-memory map inside one process, where the ordering trivially agrees. A sign / JSON round-trip / verify test now covers it, and `bsv-auth-axum-middleware`'s end-to-end HTTP suite — which is what caught this — passes 4/4 again.
+
+### Changed — breaking
+
+- `Certificate.fields` and `RequestedCertificateSet.types` are `IndexMap<String, _>` rather than `HashMap<String, _>`. A consumer storing these in its own `HashMap` needs `.into_iter().collect()` at the boundary.
+
+
 ## [0.7.0] - 2026-08-22
 
 Wires this crate to the **official cross-implementation conformance corpus** from
