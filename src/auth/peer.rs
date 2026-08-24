@@ -63,12 +63,6 @@ const CERTIFICATE_WAIT_TIMEOUT: Duration = Duration::from_millis(30_000);
 const CERTIFICATE_LISTENER_TIMEOUT: Duration = Duration::from_millis(30_000);
 const MAX_IN_FLIGHT_GENERAL_DISPATCHES: usize = 64;
 const MAX_IN_FLIGHT_GENERAL_DISPATCHES_PER_SESSION: usize = 8;
-// Leave one complete per-session quota available even when every admitted
-// certificate-gated session retains its permits for the full 30-second wait.
-// This is peer-wide rather than per identity because remote identities are
-// free to mint.
-const MAX_PENDING_CERTIFICATE_GATED_SESSIONS: usize =
-    MAX_IN_FLIGHT_GENERAL_DISPATCHES / MAX_IN_FLIGHT_GENERAL_DISPATCHES_PER_SESSION - 1;
 const MAX_IN_FLIGHT_CONTROL_DISPATCHES: usize = 16;
 const BACKGROUND_ERROR_CHANNEL_CAPACITY: usize = 128;
 
@@ -1236,6 +1230,11 @@ impl<W: WalletInterface + 'static> Peer<W> {
         &self,
         identity_key: &str,
     ) -> Result<PeerSession, AuthError> {
+        let identity_key = if identity_key.is_empty() {
+            String::new()
+        } else {
+            parse_public_key(identity_key)?.to_der_hex()
+        };
         // Check if we already have an authenticated, non-expired session.
         // Brief read lock: clone out before returning / before handshake await.
         // TTL-honoring (same check as the verify path): an idle-expired
@@ -1246,7 +1245,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
         {
             let now = now_ms();
             let mgr = self.session_manager.read().await;
-            if let Some(session) = mgr.get_active_session(identity_key, now) {
+            if let Some(session) = mgr.get_active_session(&identity_key, now) {
                 if session.is_authenticated {
                     return Ok(session.clone());
                 }
@@ -1254,7 +1253,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
         }
 
         // Initiate handshake
-        self.initiate_handshake(identity_key).await
+        self.initiate_handshake(&identity_key).await
     }
 
     /// Initiate a BRC-103 handshake with the given peer.
@@ -1278,36 +1277,25 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // Create initial session (not yet authenticated). Write lock. Touch it
         // so idle reaping has a baseline, and opportunistically reap on this
         // low-frequency handshake path (keeps the hot verify path reap-free).
-        let (reaped, admitted) = {
+        let reaped = {
             let certificates_required = requested_certificates
                 .as_ref()
                 .is_some_and(|requested| !requested.certifiers.is_empty());
             let mut mgr = self.session_manager.write().await;
+            mgr.add_session(PeerSession {
+                session_nonce: session_nonce.clone(),
+                peer_identity_key: identity_key.to_string(),
+                peer_nonce: String::new(),
+                is_authenticated: false,
+                requested_certificates: requested_certificates.clone(),
+                certificates_required,
+                certificates_validated: !certificates_required,
+            });
             let now = now_ms();
-            let reaped = mgr.reap_idle(now);
-            let admitted = !certificates_required
-                || mgr.pending_certificate_validation_count()
-                    < MAX_PENDING_CERTIFICATE_GATED_SESSIONS;
-            if admitted {
-                mgr.add_session(PeerSession {
-                    session_nonce: session_nonce.clone(),
-                    peer_identity_key: identity_key.to_string(),
-                    peer_nonce: String::new(),
-                    is_authenticated: false,
-                    requested_certificates: requested_certificates.clone(),
-                    certificates_required,
-                    certificates_validated: !certificates_required,
-                });
-                mgr.touch(&session_nonce, now);
-            }
-            (reaped, admitted)
+            mgr.touch(&session_nonce, now);
+            mgr.reap_idle(now)
         };
         self.cleanup_reaped_sessions(&reaped).await;
-        if !admitted {
-            return Err(AuthError::TransportError(
-                "certificate-gated session capacity exhausted".to_string(),
-            ));
-        }
 
         let identity_key_str = self.get_identity_public_key().await?;
 
@@ -1938,6 +1926,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 "empty initialNonce in initialRequest".to_string(),
             ));
         }
+        let peer_pubkey = parse_public_key(&msg.identity_key)?;
 
         // Create our session nonce
         let session_nonce = create_nonce(&self.wallet).await?;
@@ -1952,36 +1941,25 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // Add session (authenticated -- responder trusts after signature
         // verification). Write lock. Touch for the idle-reaping baseline and
         // opportunistically reap idle sessions on this handshake path.
-        let (reaped, admitted) = {
+        let reaped = {
             let certificates_required = requested_certificates
                 .as_ref()
                 .is_some_and(|requested| !requested.certifiers.is_empty());
             let mut mgr = self.session_manager.write().await;
+            mgr.add_session(PeerSession {
+                session_nonce: session_nonce.clone(),
+                peer_identity_key: msg.identity_key.clone(),
+                peer_nonce: peer_initial_nonce.to_string(),
+                is_authenticated: true,
+                requested_certificates: requested_certificates.clone(),
+                certificates_required,
+                certificates_validated: !certificates_required,
+            });
             let now = now_ms();
-            let reaped = mgr.reap_idle(now);
-            let admitted = !certificates_required
-                || mgr.pending_certificate_validation_count()
-                    < MAX_PENDING_CERTIFICATE_GATED_SESSIONS;
-            if admitted {
-                mgr.add_session(PeerSession {
-                    session_nonce: session_nonce.clone(),
-                    peer_identity_key: msg.identity_key.clone(),
-                    peer_nonce: peer_initial_nonce.to_string(),
-                    is_authenticated: true,
-                    requested_certificates: requested_certificates.clone(),
-                    certificates_required,
-                    certificates_validated: !certificates_required,
-                });
-                mgr.touch(&session_nonce, now);
-            }
-            (reaped, admitted)
+            mgr.touch(&session_nonce, now);
+            mgr.reap_idle(now)
         };
         self.cleanup_reaped_sessions(&reaped).await;
-        if !admitted {
-            return Err(AuthError::TransportError(
-                "certificate-gated session capacity exhausted".to_string(),
-            ));
-        }
 
         // If the peer requested certificates in their initialRequest, resolve
         // them here so we can embed the response in the single-round-trip
@@ -1999,10 +1977,8 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 if self.has_certificate_request_listeners() {
                     self.fire_certificate_request_listeners(&msg.identity_key, requested);
                 } else {
-                    let verifier_pubkey = parse_public_key(&msg.identity_key)?;
                     let verifiable =
-                        get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
-                            .await?;
+                        get_verifiable_certificates(&self.wallet, requested, &peer_pubkey).await?;
                     certificates_to_include = Some(verifiable);
                 }
             }
@@ -2033,8 +2009,6 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 None,
             )
             .await?;
-
-        let peer_pubkey = parse_public_key(&msg.identity_key)?;
 
         let sig_result = self
             .wallet
@@ -2755,10 +2729,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_background_receive_dispatches_without_caller_pump() {
+    async fn test_background_receive_accepts_uppercase_identity_without_caller_pump() {
         let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
         let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
-        let identity_b = wallet_identity(&wallet_b).await;
+        let identity_b = wallet_identity(&wallet_b).await.to_ascii_uppercase();
         let (transport_a, transport_b) = create_mock_transport_pair();
         let peer_a = Peer::new(wallet_a, transport_a);
         let peer_b = Peer::new(wallet_b, transport_b);
@@ -2777,6 +2751,18 @@ mod tests {
             .expect("background receive task must dispatch the general message")
             .expect("general message channel remains open");
         assert_eq!(payload, b"background delivery");
+        let first_nonce = peer_a
+            .session_by_identifier(&identity_b.to_ascii_lowercase())
+            .await
+            .unwrap()
+            .session_nonce;
+        assert_eq!(
+            first_nonce,
+            bounded(peer_a.get_authenticated_session(&identity_b))
+                .await
+                .unwrap()
+                .session_nonce
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2878,7 +2864,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_gated_session_cannot_exhaust_another_sessions_dispatch_capacity() {
+    async fn test_gated_session_is_bounded_to_eight_and_cannot_exhaust_another_session() {
         let sender_a = TestWallet::new(PrivateKey::from_random().unwrap());
         let sender_b = TestWallet::new(PrivateKey::from_random().unwrap());
         let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
@@ -2888,6 +2874,7 @@ mod tests {
         let (sender_transport, receiver_transport) = create_mock_transport_pair();
         let receiver = Peer::new(receiver_wallet, receiver_transport);
         let mut messages = receiver.on_general_message().expect("general receiver");
+        let mut errors = receiver.on_error().expect("background error receiver");
         let session_a = create_nonce(&receiver.wallet).await.unwrap();
         let session_b = create_nonce(&receiver.wallet).await.unwrap();
         {
@@ -2912,7 +2899,7 @@ mod tests {
             });
         }
 
-        for index in 0..MAX_IN_FLIGHT_GENERAL_DISPATCHES {
+        for index in 0..=8 {
             let gated = signed_general_message(
                 &sender_a,
                 identity_a.clone(),
@@ -2923,6 +2910,14 @@ mod tests {
             .await;
             bounded(sender_transport.send(gated)).await.unwrap();
         }
+        let capacity_error = bounded(errors.recv())
+            .await
+            .expect("the ninth dispatch reports a background error");
+        assert!(
+            matches!(&capacity_error.error, AuthError::TransportError(message)
+                if message.contains("general dispatch capacity exhausted")),
+            "unexpected capacity error: {capacity_error:?}"
+        );
         let fair = signed_general_message(
             &sender_b,
             identity_b,
@@ -2941,20 +2936,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_inbound_handshakes_cannot_exceed_gated_session_capacity() {
+    async fn test_eight_concurrent_gated_handshakes_complete() {
         let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let receiver_identity = wallet_identity(&receiver_wallet).await;
         let (_sender_transport, receiver_transport) = create_mock_transport_pair();
-        let receiver = Peer::new(receiver_wallet, receiver_transport);
+        let receiver = Peer::new(receiver_wallet, receiver_transport.clone());
         let mut requested = RequestedCertificateSet::default();
         requested.certifiers.push(receiver_identity);
         receiver.set_certificates_to_request(requested);
 
-        let gated_session_cap =
-            MAX_IN_FLIGHT_GENERAL_DISPATCHES / MAX_IN_FLIGHT_GENERAL_DISPATCHES_PER_SESSION - 1;
-        for index in 0..=gated_session_cap {
+        let mut requests = Vec::new();
+        for _ in 0..8 {
             let sender_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
-            let request = AuthMessage {
+            requests.push(AuthMessage {
                 version: AUTH_VERSION.to_string(),
                 message_type: MessageType::InitialRequest,
                 identity_key: wallet_identity(&sender_wallet).await,
@@ -2965,19 +2959,19 @@ mod tests {
                 requested_certificates: None,
                 payload: None,
                 signature: None,
-            };
-
-            let result = bounded(receiver.handle_initial_request(request)).await;
-            if index < gated_session_cap {
-                result.expect("sessions below the gated-session cap are admitted");
-            } else {
-                assert!(
-                    matches!(&result, Err(AuthError::TransportError(message))
-                        if message.contains("certificate-gated session capacity exhausted")),
-                    "fresh identities must not bypass the gated-session cap: {result:?}"
-                );
-            }
+            });
         }
+
+        let results = bounded(futures_util::future::join_all(
+            requests
+                .into_iter()
+                .map(|request| receiver.handle_initial_request(request)),
+        ))
+        .await;
+        for result in results {
+            result.expect("all eight gated handshakes must complete");
+        }
+        assert_eq!(receiver_transport.sent_messages.lock().unwrap().len(), 8);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -6472,7 +6466,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_initial_response_emits_empty_certificates_array_for_empty_match() {
+    async fn test_initial_request_identity_is_parsed_before_session_insert() {
         let requester_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let responder_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let requester_identity = wallet_identity(&requester_wallet).await;
@@ -6488,7 +6482,7 @@ mod tests {
                 .to_der_hex(),
         );
         requested.insert(base64_encode(&[63; 32]), vec!["name".to_string()]);
-        let request = AuthMessage {
+        let mut request = AuthMessage {
             version: AUTH_VERSION.to_string(),
             message_type: MessageType::InitialRequest,
             identity_key: requester_identity,
@@ -6501,10 +6495,13 @@ mod tests {
             signature: None,
         };
 
-        tokio::time::timeout(Duration::from_secs(1), peer.handle_initial_request(request))
-            .await
-            .expect("initialRequest dispatch timeout")
-            .expect("initialRequest succeeds");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            peer.handle_initial_request(request.clone()),
+        )
+        .await
+        .expect("initialRequest dispatch timeout")
+        .expect("initialRequest succeeds");
         let response = tokio::time::timeout(Duration::from_secs(1), observer_rx.recv())
             .await
             .expect("initialResponse timeout")
@@ -6514,6 +6511,13 @@ mod tests {
             response.certificates.as_ref().is_some_and(Vec::is_empty),
             "TS 2.4.1 emits certificates: [] when the embedded request has no matches"
         );
+
+        let invalid_identity = "not-a-key";
+        request.identity_key = invalid_identity.to_string();
+        bounded(peer.handle_initial_request(request))
+            .await
+            .expect_err("unparseable identity must be rejected");
+        assert_eq!(peer.sessions_for_identity(invalid_identity).await.len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
