@@ -98,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first `general` frame. @bsv/sdk 2.4.1 permits the opposite race; Rust keeps
   proof-first ordering so receivers never need to defer that first frame (#23).
 
+### Fixed
+
+- Bound `TopicBroadcaster` host submissions to 16 concurrent requests so a remote SLAP tracker cannot create an unbounded number of in-flight HTTP sends; every interested host is still contacted and every result is still collected. (#50)
+
 ## [0.7.1] - 2026-08-23
 
 Fixes two regressions introduced by the certificate-verification work in 0.7.0. **0.7.0 is yanked**:

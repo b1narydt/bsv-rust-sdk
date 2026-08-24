@@ -5,10 +5,13 @@
 //! acknowledgments per the configured policy.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, Mutex};
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use super::admin_token_template::OverlayAdminTokenTemplate;
 use super::lookup_resolver::LookupResolver;
@@ -30,6 +33,48 @@ const MAX_SHIP_QUERY_TIMEOUT_MS: u64 = 5000;
 /// Capacity of the in-flight broadcast channel. The channel only needs to
 /// fan one message out to N concurrent followers; a small bound is fine.
 const IN_FLIGHT_CHANNEL_CAPACITY: usize = 16;
+
+/// Maximum number of simultaneous HTTP submissions to interested hosts.
+///
+/// This is a fixed network concurrency limit rather than
+/// `available_parallelism()`: CPU count is unrelated to socket and remote
+/// service capacity, so tying the limit to cores would make the same client
+/// either too conservative or too aggressive depending on its host machine.
+const MAX_CONCURRENT_HOST_BROADCASTS: usize = 16;
+
+async fn indexed<Fut>(index: usize, future: Fut) -> (usize, Fut::Output)
+where
+    Fut: Future,
+{
+    (index, future.await)
+}
+
+async fn collect_bounded_host_fanout<I, F, Fut, T>(items: I, mut send: F) -> Vec<T>
+where
+    I: IntoIterator,
+    F: FnMut(I::Item) -> Fut,
+    Fut: Future<Output = T>,
+{
+    let mut items = items.into_iter().enumerate();
+    let mut in_flight = FuturesUnordered::new();
+
+    for (index, item) in items.by_ref().take(MAX_CONCURRENT_HOST_BROADCASTS) {
+        in_flight.push(indexed(index, send(item)));
+    }
+
+    let mut completed = Vec::new();
+    while let Some(result) = in_flight.next().await {
+        completed.push(result);
+        if let Some((index, item)) = items.next() {
+            in_flight.push(indexed(index, send(item)));
+        }
+    }
+
+    // `join_all` returned results in input order. Preserve that observable
+    // behavior even though `FuturesUnordered` yields them in completion order.
+    completed.sort_unstable_by_key(|(index, _)| *index);
+    completed.into_iter().map(|(_, result)| result).collect()
+}
 
 /// Cached result of a SHIP host-discovery query, with absolute expiry time.
 #[derive(Clone)]
@@ -546,11 +591,11 @@ impl TopicBroadcaster {
             });
         }
 
-        // Concurrent host fan-out (matches canonical TS SHIPBroadcaster.ts:213
-        // `Promise.all(hosts.map(...))`). Each send is independent: serial
-        // execution made the wall-clock cost N× the slowest host.
+        // Keep host submissions concurrent, but cap the remote-controlled
+        // fan-out. Every result is awaited and collected; completion never
+        // short-circuits the remaining hosts.
         let host_results =
-            futures_util::future::join_all(interested_hosts.iter().map(|(host, topics)| {
+            collect_bounded_host_fanout(interested_hosts.iter(), |(host, topics)| {
                 let tagged_beef = TaggedBEEF {
                     beef: beef.clone(),
                     topics: topics.iter().cloned().collect(),
@@ -560,7 +605,7 @@ impl TopicBroadcaster {
                     let result = self.send_to_host(host, &tagged_beef).await;
                     (host.clone(), result)
                 }
-            }))
+            })
             .await;
 
         let mut host_acks: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1010,6 +1055,71 @@ mod tests {
 
         // Confirm wiremock saw exactly one /submit POST with the matchers above.
         mock_server.verify().await;
+    }
+
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn test_host_fanout_never_exceeds_concurrency_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::{mpsc, Semaphore};
+        use tokio::time::timeout;
+
+        let host_count = MAX_CONCURRENT_HOST_BROADCASTS + 4;
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+
+        let fanout = tokio::spawn({
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            let release = Arc::clone(&release);
+            async move {
+                collect_bounded_host_fanout(0..host_count, move |host_index| {
+                    let active = Arc::clone(&active);
+                    let peak = Arc::clone(&peak);
+                    let release = Arc::clone(&release);
+                    let started_tx = started_tx.clone();
+                    async move {
+                        let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now_active, Ordering::SeqCst);
+                        started_tx
+                            .send(host_index)
+                            .expect("start observer must remain available");
+
+                        let _permit = release
+                            .acquire_owned()
+                            .await
+                            .expect("release semaphore must remain open");
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        host_index
+                    }
+                })
+                .await
+            }
+        });
+
+        for _ in 0..MAX_CONCURRENT_HOST_BROADCASTS {
+            timeout(Duration::from_secs(5), started_rx.recv())
+                .await
+                .expect("initial fan-out window should start promptly")
+                .expect("fan-out task should remain alive");
+        }
+
+        release.add_permits(host_count);
+        let completed = timeout(Duration::from_secs(5), fanout)
+            .await
+            .expect("fan-out should finish after releases are supplied")
+            .expect("fan-out task should not panic");
+
+        assert!(
+            peak.load(Ordering::SeqCst) <= MAX_CONCURRENT_HOST_BROADCASTS,
+            "peak in-flight host sends exceeded the cap: peak={}, cap={}",
+            peak.load(Ordering::SeqCst),
+            MAX_CONCURRENT_HOST_BROADCASTS
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(completed, (0..host_count).collect::<Vec<_>>());
     }
 
     /// `broadcast_beef` must surface a typed `ERR_BEEF_PARSE` failure when
