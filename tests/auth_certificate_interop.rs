@@ -1,12 +1,17 @@
 #![cfg(feature = "network")]
 
+use async_trait::async_trait;
 use bsv::auth::certificates::VerifiableCertificate;
-use bsv::auth::{AuthMessage, MessageType};
+use bsv::auth::transports::Transport;
+use bsv::auth::{AuthError, AuthMessage, MessageType, Peer};
 use bsv::primitives::private_key::PrivateKey;
 use bsv::primitives::public_key::PublicKey;
 use bsv::wallet::proto_wallet::ProtoWallet;
 use bsv::wallet::types::{Counterparty, CounterpartyType, Protocol};
 use serde::Deserialize;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 const VECTORS: &str = include_str!("vectors/auth_certificate_interop.json");
 
@@ -21,10 +26,43 @@ struct Fixture {
     rust_to_type_script: CertificateResponseVector,
     #[serde(rename = "emptyRustToTypeScript")]
     empty_rust_to_type_script: CertificateResponseVector,
+    #[serde(rename = "typeScriptAuthMessages")]
+    type_script_auth_messages: AuthMessageVectors,
+    #[serde(rename = "rustAuthMessages")]
+    rust_auth_messages: AuthMessageVectors,
     #[serde(rename = "emptyInitialResponseShape")]
     empty_initial_response_shape: EmptyInitialResponseShape,
     #[serde(rename = "optionalFieldSerializations")]
     optional_field_serializations: Vec<OptionalFieldSerialization>,
+    #[serde(rename = "decryptedFieldSerializations")]
+    decrypted_field_serializations: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthMessageVectors {
+    initial_request: ExactWireMessage,
+    initial_response: ExactWireMessage,
+    initial_response_with_empty_certificates: ExactWireMessage,
+    certificate_request: ExactWireMessage,
+    certificate_response: ExactWireMessage,
+    general: ExactWireMessage,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExactWireMessage {
+    json: String,
+    hex: String,
+    keys: Vec<String>,
+    #[serde(default)]
+    verified_by_type_script: bool,
+}
+
+impl ExactWireMessage {
+    fn bytes(&self) -> Vec<u8> {
+        hex::decode(&self.hex).expect("exact wire hex")
+    }
 }
 
 #[derive(Deserialize)]
@@ -56,6 +94,43 @@ struct CertificateResponseVector {
 struct OptionalFieldSerialization {
     mask: u8,
     json: String,
+}
+
+struct CaptureTransport {
+    sent: mpsc::Sender<AuthMessage>,
+    incoming: Mutex<Option<mpsc::Receiver<AuthMessage>>>,
+}
+
+impl CaptureTransport {
+    fn new() -> (Arc<Self>, mpsc::Receiver<AuthMessage>) {
+        let (sent_tx, sent_rx) = mpsc::channel(8);
+        let (_incoming_tx, incoming_rx) = mpsc::channel(8);
+        (
+            Arc::new(Self {
+                sent: sent_tx,
+                incoming: Mutex::new(Some(incoming_rx)),
+            }),
+            sent_rx,
+        )
+    }
+}
+
+#[async_trait]
+impl Transport for CaptureTransport {
+    async fn send(&self, message: AuthMessage) -> Result<(), AuthError> {
+        self.sent
+            .send(message)
+            .await
+            .map_err(|error| AuthError::TransportError(error.to_string()))
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<AuthMessage> {
+        self.incoming
+            .lock()
+            .expect("capture transport lock")
+            .take()
+            .expect("capture transport subscribed once")
+    }
 }
 
 fn vector_file() -> Fixture {
@@ -135,6 +210,25 @@ fn typescript_certificate_response_round_trips_the_exact_signed_preimage() {
         );
         assert!(parsed.decrypted_fields.is_none());
     }
+
+    assert_eq!(fixture.decrypted_field_serializations.len(), 2);
+    let without_decrypted: VerifiableCertificate =
+        serde_json::from_str(&fixture.decrypted_field_serializations[0]).unwrap();
+    assert!(without_decrypted.decrypted_fields.is_none());
+    assert_eq!(
+        serde_json::to_string(&without_decrypted).unwrap(),
+        fixture.decrypted_field_serializations[0]
+    );
+    let with_decrypted: VerifiableCertificate =
+        serde_json::from_str(&fixture.decrypted_field_serializations[1]).unwrap();
+    assert_eq!(
+        with_decrypted.decrypted_fields.as_ref().unwrap()["middle"],
+        "ts-middle"
+    );
+    assert_eq!(
+        serde_json::to_string(&with_decrypted).unwrap(),
+        fixture.decrypted_field_serializations[1]
+    );
 }
 
 #[test]
@@ -197,4 +291,155 @@ fn typescript_initial_response_retains_empty_certificates_member() {
         fixture.empty_initial_response_shape.serialized_member,
         r#"{"certificates":[]}"#
     );
+}
+
+#[test]
+fn typescript_handshake_envelopes_round_trip_byte_exactly_in_rust() {
+    let fixture = vector_file();
+    for vector in [
+        &fixture.type_script_auth_messages.initial_request,
+        &fixture.type_script_auth_messages.initial_response,
+    ] {
+        let bytes = vector.bytes();
+        assert_eq!(bytes, vector.json.as_bytes());
+        let message: AuthMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&message).unwrap(), bytes);
+    }
+
+    assert_eq!(
+        fixture.type_script_auth_messages.initial_request.keys,
+        [
+            "version",
+            "messageType",
+            "identityKey",
+            "initialNonce",
+            "requestedCertificates",
+        ]
+    );
+    assert_eq!(
+        fixture.type_script_auth_messages.initial_response.keys,
+        [
+            "version",
+            "messageType",
+            "identityKey",
+            "initialNonce",
+            "yourNonce",
+            "requestedCertificates",
+            "signature",
+        ]
+    );
+}
+
+#[test]
+fn all_rust_auth_envelopes_are_byte_exact_and_accepted_by_typescript() {
+    let fixture = vector_file();
+    for vector in [
+        &fixture.rust_auth_messages.certificate_request,
+        &fixture.rust_auth_messages.certificate_response,
+        &fixture.rust_auth_messages.general,
+        &fixture.rust_auth_messages.initial_request,
+        &fixture.rust_auth_messages.initial_response,
+        &fixture
+            .rust_auth_messages
+            .initial_response_with_empty_certificates,
+    ] {
+        assert!(vector.verified_by_type_script);
+        let bytes = vector.bytes();
+        assert_eq!(bytes, vector.json.as_bytes());
+        let message: AuthMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&message).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn all_typescript_auth_envelopes_round_trip_byte_exactly_in_rust() {
+    let fixture = vector_file();
+    for vector in [
+        &fixture.type_script_auth_messages.certificate_request,
+        &fixture.type_script_auth_messages.certificate_response,
+        &fixture.type_script_auth_messages.general,
+        &fixture.type_script_auth_messages.initial_request,
+        &fixture.type_script_auth_messages.initial_response,
+        &fixture
+            .type_script_auth_messages
+            .initial_response_with_empty_certificates,
+    ] {
+        let bytes = vector.bytes();
+        assert_eq!(bytes, vector.json.as_bytes());
+        let message: AuthMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&message).unwrap(), bytes);
+    }
+}
+
+#[tokio::test]
+async fn rust_default_initial_request_emits_typescript_default_request_set() {
+    let fixture = vector_file();
+    let sender_private_key =
+        PrivateKey::from_hex(&fixture.type_script_to_rust.receiver_private_key)
+            .expect("valid fixture private key");
+    let target_identity = fixture.type_script_to_rust.sender_public_key.clone();
+    let (transport, mut sent) = CaptureTransport::new();
+    let peer = Arc::new(Peer::new(ProtoWallet::new(sender_private_key), transport));
+
+    let sending_peer = Arc::clone(&peer);
+    let sending_target = target_identity.clone();
+    let send_task =
+        tokio::spawn(async move { sending_peer.send_message(&sending_target, vec![1]).await });
+    let request = tokio::time::timeout(Duration::from_secs(2), sent.recv())
+        .await
+        .expect("initialRequest send is time-bounded")
+        .expect("initialRequest was sent");
+    send_task.abort();
+    let _ = send_task.await;
+
+    assert_eq!(request.message_type, MessageType::InitialRequest);
+    let requested = request
+        .requested_certificates
+        .as_ref()
+        .expect("TS always emits requestedCertificates on initialRequest");
+    assert!(requested.certifiers.is_empty());
+    assert!(requested.types.is_empty());
+
+    let serialized = serde_json::to_string(&request).unwrap();
+    assert!(serialized.ends_with(r#","requestedCertificates":{"certifiers":[],"types":{}}}"#));
+}
+
+#[tokio::test]
+async fn rust_default_initial_response_emits_typescript_default_request_set_and_order() {
+    let fixture = vector_file();
+    let sender_private_key =
+        PrivateKey::from_hex(&fixture.type_script_to_rust.receiver_private_key)
+            .expect("valid fixture private key");
+    let request: AuthMessage =
+        serde_json::from_slice(&fixture.type_script_auth_messages.initial_request.bytes())
+            .expect("TS initialRequest fixture");
+    let (transport, mut sent) = CaptureTransport::new();
+    let peer = Peer::new(ProtoWallet::new(sender_private_key), transport);
+
+    tokio::time::timeout(Duration::from_secs(2), peer.dispatch_message(request))
+        .await
+        .expect("initialRequest dispatch is time-bounded")
+        .expect("initialRequest dispatch succeeds");
+    let response = tokio::time::timeout(Duration::from_secs(2), sent.recv())
+        .await
+        .expect("initialResponse send is time-bounded")
+        .expect("initialResponse was sent");
+
+    assert_eq!(response.message_type, MessageType::InitialResponse);
+    assert!(response.certificates.is_none());
+    let requested = response
+        .requested_certificates
+        .as_ref()
+        .expect("TS always emits requestedCertificates on initialResponse");
+    assert!(requested.certifiers.is_empty());
+    assert!(requested.types.is_empty());
+
+    let serialized = serde_json::to_string(&response).unwrap();
+    let initial_nonce = serialized.find(r#""initialNonce""#).unwrap();
+    let your_nonce = serialized.find(r#""yourNonce""#).unwrap();
+    let requested_certificates = serialized.find(r#""requestedCertificates""#).unwrap();
+    let signature = serialized.find(r#""signature""#).unwrap();
+    assert!(initial_nonce < your_nonce);
+    assert!(your_nonce < requested_certificates);
+    assert!(requested_certificates < signature);
 }

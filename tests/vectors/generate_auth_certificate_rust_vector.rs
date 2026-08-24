@@ -7,25 +7,13 @@
 use std::collections::HashMap;
 
 use bsv::auth::certificates::VerifiableCertificate;
+use bsv::auth::{AuthMessage, MessageType, RequestedCertificateSet};
 use bsv::primitives::private_key::PrivateKey;
 use bsv::wallet::interfaces::{Certificate, CertificateType, SerialNumber};
 use bsv::wallet::proto_wallet::ProtoWallet;
 use bsv::wallet::types::{Counterparty, CounterpartyType, Protocol};
 use indexmap::IndexMap;
 use serde::Serialize;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RustMessage {
-    version: String,
-    message_type: String,
-    identity_key: String,
-    nonce: String,
-    your_nonce: String,
-    initial_nonce: String,
-    certificates: Vec<VerifiableCertificate>,
-    signature: Vec<u8>,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +26,111 @@ struct RustVector {
     key_id: String,
     preimage_bytes: Vec<u8>,
     preimage_utf8: String,
-    message: RustMessage,
+    message: AuthMessage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExactWireMessage {
+    json: String,
+    hex: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RustAuthMessages {
+    initial_request: ExactWireMessage,
+    initial_response: ExactWireMessage,
+    initial_response_with_empty_certificates: ExactWireMessage,
+    certificate_request: ExactWireMessage,
+    certificate_response: ExactWireMessage,
+    general: ExactWireMessage,
+}
+
+fn exact_wire_message(message: AuthMessage) -> ExactWireMessage {
+    let bytes = serde_json::to_vec(&message).unwrap();
+    ExactWireMessage {
+        json: String::from_utf8(bytes.clone()).unwrap(),
+        hex: hex::encode(bytes),
+    }
+}
+
+fn rust_auth_messages(sender_public_key: &str) -> RustAuthMessages {
+    let requested = Some(RequestedCertificateSet::default());
+    RustAuthMessages {
+        initial_request: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::InitialRequest,
+            identity_key: sender_public_key.to_string(),
+            nonce: None,
+            initial_nonce: Some("cnVzdC1pbml0aWFsLXJlcXVlc3Q=".to_string()),
+            your_nonce: None,
+            certificates: None,
+            requested_certificates: requested.clone(),
+            payload: None,
+            signature: None,
+        }),
+        initial_response: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::InitialResponse,
+            identity_key: sender_public_key.to_string(),
+            nonce: None,
+            initial_nonce: Some("cnVzdC1pbml0aWFsLXJlc3BvbnNl".to_string()),
+            your_nonce: Some("cnVzdC1pbml0aWFsLXJlcXVlc3Q=".to_string()),
+            certificates: None,
+            requested_certificates: requested.clone(),
+            payload: None,
+            signature: Some(vec![48, 1, 1]),
+        }),
+        initial_response_with_empty_certificates: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::InitialResponse,
+            identity_key: sender_public_key.to_string(),
+            nonce: None,
+            initial_nonce: Some("cnVzdC1pbml0aWFsLXJlc3BvbnNl".to_string()),
+            your_nonce: Some("cnVzdC1pbml0aWFsLXJlcXVlc3Q=".to_string()),
+            certificates: Some(vec![]),
+            requested_certificates: requested,
+            payload: None,
+            signature: Some(vec![48, 1, 1]),
+        }),
+        certificate_request: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::CertificateRequest,
+            identity_key: sender_public_key.to_string(),
+            nonce: Some("cnVzdC1jZXJ0aWZpY2F0ZS1yZXF1ZXN0".to_string()),
+            initial_nonce: Some("cnVzdC1pbml0aWFsLXJlcXVlc3Q=".to_string()),
+            your_nonce: Some("cnVzdC1wZWVyLW5vbmNl".to_string()),
+            certificates: None,
+            requested_certificates: Some(RequestedCertificateSet::default()),
+            payload: None,
+            signature: Some(vec![48, 1, 2]),
+        }),
+        certificate_response: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::CertificateResponse,
+            identity_key: sender_public_key.to_string(),
+            nonce: Some("cnVzdC1jZXJ0aWZpY2F0ZS1yZXNwb25zZQ==".to_string()),
+            initial_nonce: Some("cnVzdC1pbml0aWFsLXJlcXVlc3Q=".to_string()),
+            your_nonce: Some("cnVzdC1wZWVyLW5vbmNl".to_string()),
+            certificates: Some(vec![]),
+            requested_certificates: None,
+            payload: None,
+            signature: Some(vec![48, 1, 3]),
+        }),
+        general: exact_wire_message(AuthMessage {
+            version: "0.1".to_string(),
+            message_type: MessageType::General,
+            identity_key: sender_public_key.to_string(),
+            nonce: Some("cnVzdC1nZW5lcmFsLW5vbmNl".to_string()),
+            initial_nonce: None,
+            your_nonce: Some("cnVzdC1wZWVyLW5vbmNl".to_string()),
+            certificates: None,
+            requested_certificates: None,
+            payload: Some(vec![9, 8, 7]),
+            signature: Some(vec![48, 1, 4]),
+        }),
+    }
 }
 
 fn main() {
@@ -48,6 +140,14 @@ fn main() {
     let certifier_private_key = PrivateKey::from_hex(&format!("{:064x}", 6)).unwrap();
     let sender_public_key = sender_private_key.to_public_key();
     let receiver_public_key = receiver_private_key.to_public_key();
+
+    if std::env::args().any(|arg| arg == "--handshake") {
+        println!(
+            "{}",
+            serde_json::to_string(&rust_auth_messages(&sender_public_key.to_der_hex())).unwrap()
+        );
+        return;
+    }
 
     let mut fields = IndexMap::new();
     fields.insert("zeta".to_string(), "cnVzdC16ZXRh".to_string());
@@ -103,15 +203,17 @@ fn main() {
         key_id,
         preimage_utf8: String::from_utf8(preimage.clone()).unwrap(),
         preimage_bytes: preimage,
-        message: RustMessage {
+        message: AuthMessage {
             version: "0.1".to_string(),
-            message_type: "certificateResponse".to_string(),
+            message_type: MessageType::CertificateResponse,
             identity_key: sender_public_key.to_der_hex(),
-            nonce: nonce.to_string(),
-            your_nonce: session_nonce.to_string(),
-            initial_nonce: "cnVzdC1pbml0aWFsLW5vbmNlLTAwMDAwMA==".to_string(),
-            certificates,
-            signature,
+            nonce: Some(nonce.to_string()),
+            initial_nonce: Some("cnVzdC1pbml0aWFsLW5vbmNlLTAwMDAwMA==".to_string()),
+            your_nonce: Some(session_nonce.to_string()),
+            certificates: Some(certificates),
+            requested_certificates: None,
+            payload: None,
+            signature: Some(signature),
         },
     };
     println!("{}", serde_json::to_string(&vector).unwrap());

@@ -96,9 +96,40 @@ upstream and this repo mislabel BRC-103 as BRC-31.
 | 35 | Upstream `messaging/brc31/authrite-signature.json` (28 vectors) is **genuinely deprecated** Authrite — uses `[2,'authrite message signature']`. Must stay excluded; do NOT wire up | **RESOLVED — verified, kept unvendored**. The generated coverage ledger now records the protocol-ID reason so the similarly named BRC-103 files cannot cause it to be wired accidentally |
 | 36 | Upstream `auth/brc31-handshake.json` (16) and `messaging/authsocket.json` (12) are tagged `brc: ["BRC-31"]` but their content is BRC-103 (`messageType: initialRequest`, v0.1, `x-bsv-auth-*` headers; authsocket's own text says "BRC-103 handshake"). Relevant to us and currently unvendored, unasserted | **FIXED** — both files vendored at `8b074a06`; eight real SDK properties asserted, twenty Express/AuthSocket-server vectors registered as governed component-owned skips |
 | 42 | `auth.brc31-handshake.1`'s request example is stale relative to the real `@bsv/sdk` 2.4.1 `Peer`: the vector includes `nonce`, `payload: []`, and `signature: []`, while the real constructor omits them. Rust also omits them, so the runner pins this as a corpus disagreement rather than changing Rust to match stale example data | **OPEN — raise upstream**; exact named divergence is executable in `tests/conformance_auth.rs` |
-| 43 | Rust's default `initialRequest` omits `requestedCertificates`, while the real TS 2.4.1 constructor always emits its default `{ certifiers: [], types: {} }`. The vendored schema vector also omits it, so this Layer-1 discrepancy is hidden rather than exposed by the corpus | **OPEN — needs a dedicated 2.4.1 byte fixture and reviewed wire fix; not changed during schema/HTTP vector wiring** |
+| 43 | Rust's default `initialRequest` omits `requestedCertificates`, while the real TS 2.4.1 constructor always emits its default `{ certifiers: [], types: {} }`. The vendored schema vector also omits it, so this Layer-1 discrepancy is hidden rather than exposed by the corpus | **FIXED** — handshake producers now normalize absent configuration to an explicit empty wire set while retaining Rust's internal no-request semantics. Real-`Peer` 2.4.1 and Rust constructor tests are mutation-proven red/green; exact envelope bytes are covered both directions |
 | 44 | `auth.brc31-handshake.10` requires the Express server to wait 30 seconds for certificates and map expiry to HTTP 408. This crate has no HTTP server/status mapper; its certificate waiter and deferred-message deadline are exactly 30 seconds, while side-effect-free `verify_general_message` rejects a pending gate immediately by the registered nonblocking mechanism | **RESOLVED — Express 408 remains a governed middleware skip; crate timing is mutation-proven in `tests/conformance_auth.rs`** |
 | 45 | `auth.brc31-handshake.12` and `messaging.authsocket.4` enumerate `initialRequest`, `initialResponse`, and `general`; the full BRC-103 SDK envelope also has `certificateRequest` and `certificateResponse` | **RESOLVED — assert the three listed values as real enum members, not as an exhaustive SDK enum; the vectors describe the middleware/AuthSocket subset** |
+| 46 | Cross-language vectors covered the signed `certificateResponse` preimage but not complete handshake envelopes, allowing #43 and key-order drift through | **FIXED** — real 2.4.1 `Peer` bytes for `initialRequest` and `initialResponse` round-trip byte-exactly through Rust; Rust envelopes are parsed and reserialized byte-exactly by 2.4.1. The same fixture now covers all five envelopes |
+| 47 | Rust emitted `initialNonce` on `general`, while TS `Peer.toPeer` never creates that member | **FIXED** — Rust now omits it; a focused Rust-producer mutation test was red before and green after, and both-direction all-envelope vectors pin the TS shape |
+| 48 | Derived Rust field order serialized `yourNonce` before `initialNonce`; TS constructs `initialNonce` first on `initialResponse`, `certificateRequest`, and `certificateResponse` | **FIXED** — `AuthMessage` declaration order now matches all five real TS constructors. Exact 2.4.1 and Rust-produced envelope vectors pin the bytes; signed payloads are unchanged |
+
+## `skip_serializing_if = "Option::is_none"` wire audit
+
+Scope is the complete `AuthMessage` serialization graph: `AuthMessage`, nested `Certificate` /
+`VerifiableCertificate`, and `RequestedCertificateSet`. `PartialCertificate` and the other wallet
+argument/result structs do not nest in an auth wire message and are outside this audit.
+
+| Field | TS 2.4.1 behavior | Rust behavior after this round | Result / evidence |
+|---|---|---|---|
+| `AuthMessage.nonce` | Omitted on `initialRequest` / `initialResponse`; emitted on `certificateRequest`, `certificateResponse`, and `general` | Same producer-specific `None` / `Some` behavior | **MATCH** — real-TS and Rust all-envelope byte vectors |
+| `AuthMessage.initialNonce` | Emitted on both handshake messages and both certificate messages; omitted on `general` | Same; `general` changed from `Some(session_nonce)` to `None` | **FIXED #47** — focused red/green plus all-envelope vectors |
+| `AuthMessage.yourNonce` | Omitted on `initialRequest`; emitted on the other four messages | Same | **MATCH** — all-envelope vectors |
+| `AuthMessage.certificates` | Emitted on `certificateResponse`; on `initialResponse`, emitted when the peer's embedded request is auto-answered (including `[]`) and otherwise omitted; omitted elsewhere | Same `Some` / `None` distinction | **MATCH** — real-`Peer` empty-array fixture plus all-envelope vectors |
+| `AuthMessage.requestedCertificates` | Always emitted on `initialRequest` and `initialResponse` because the constructor defaults the local set; always emitted from `requestCertificates`; omitted on `certificateResponse` / `general` | Handshake producers now emit `Some(default)` when configuration is absent; supplied standalone requests serialize; responses/general omit | **FIXED #43** — constructor red/green plus all-envelope vectors |
+| `AuthMessage.payload` | Emitted only on `general` | Same | **MATCH** — all-envelope vectors |
+| `AuthMessage.signature` | Omitted only on `initialRequest`; emitted on the other four messages | Same | **MATCH** — all-envelope vectors |
+| `Certificate.revocationOutpoint` | Constructor property is `undefined` when absent, so `JSON.stringify` omits it; otherwise emits | `None` omitted, `Some` emitted | **MATCH** — real 2.4.1 8-mask certificate fixture |
+| `Certificate.fields` | `undefined` omitted; supplied object emitted (including its insertion order) | `None` omitted; `Some(IndexMap)` emitted in preserved order | **MATCH** — same 8-mask fixture |
+| `Certificate.signature` | `undefined` omitted; supplied hex string emitted | `None` omitted; `Some` emitted as hex | **MATCH** — same 8-mask fixture, including unsigned certificates |
+| `VerifiableCertificate.decryptedFields` | `undefined` omitted; explicitly supplied value emitted. Normal `fromCertificate` production omits it | `None` omitted; `Some` emitted. Normal production begins at `None` | **MATCH** — real 2.4.1 absent/present fixture |
+| `VerifiableCertificate.keyring` (non-optional control) | Valid verifiable certificates emit it unconditionally | Non-optional `IndexMap`, always emitted | **MATCH** — signed certificate-response preimage vectors |
+| `RequestedCertificateSet.certifiers` / `types` (non-optional controls) | Both keys emitted whenever the set is present, including `{ certifiers: [], types: {} }` | Both non-optional with empty defaults; both emitted | **MATCH** — handshake and standalone-request envelope vectors |
+
+`certificateRequest` remains a separate signed-preimage decision: no serializer or producer change was
+made to its `requestedCertificates` value. TS signs `JSON.stringify(certificatesToRequest)` and Rust
+continues to verify `serde_json::to_vec(requested)` with the supplied `IndexMap` order. This round only
+corrected envelope member order, which is outside that signed preimage. The existing
+`certificateResponse` signed-preimage vectors remain byte-identical and cross-verified.
 
 ## Conformance coverage (from `conformance/COVERAGE.md`)
 

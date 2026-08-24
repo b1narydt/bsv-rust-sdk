@@ -122,13 +122,14 @@ pub struct AuthMessage {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub nonce: Option<String>,
 
+    /// Session nonce used by handshake and certificate messages.
+    /// TypeScript omits this member from general messages.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub initial_nonce: Option<String>,
+
     /// The other party's nonce (echoed back in responses).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub your_nonce: Option<String>,
-
-    /// For general messages, references the session's initial nonce.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub initial_nonce: Option<String>,
 
     /// Certificates to share with the peer.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]

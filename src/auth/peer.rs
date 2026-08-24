@@ -931,8 +931,8 @@ impl<W: WalletInterface> Peer<W> {
             message_type: MessageType::General,
             identity_key: identity_key_str,
             nonce: Some(request_nonce),
+            initial_nonce: None,
             your_nonce: Some(session.peer_nonce.clone()),
-            initial_nonce: Some(session.session_nonce.clone()),
             certificates: None,
             requested_certificates: None,
             payload: Some(payload),
@@ -1179,6 +1179,12 @@ impl<W: WalletInterface> Peer<W> {
             .read()
             .expect("certificates_to_request lock poisoned")
             .clone();
+        // TS normalizes an absent constructor argument to an explicit empty
+        // object on both handshake envelopes. Keep the Rust-native `None`
+        // internally so "no configured request" does not become a validation
+        // restriction on later unsolicited certificate responses.
+        let requested_certificates_on_wire =
+            Some(requested_certificates.clone().unwrap_or_default());
 
         // Create initial session (not yet authenticated). Write lock. Touch it
         // so idle reaping has a baseline, and opportunistically reap on this
@@ -1213,7 +1219,7 @@ impl<W: WalletInterface> Peer<W> {
             your_nonce: None,
             initial_nonce: Some(session_nonce.clone()),
             certificates: None,
-            requested_certificates: requested_certificates.clone(),
+            requested_certificates: requested_certificates_on_wire,
             payload: None,
             signature: None,
         };
@@ -1890,6 +1896,8 @@ impl<W: WalletInterface> Peer<W> {
             .read()
             .expect("certificates_to_request lock poisoned")
             .clone();
+        let requested_certificates_on_wire =
+            Some(requested_certificates.clone().unwrap_or_default());
 
         // Add session (authenticated -- responder trusts after signature
         // verification). Write lock. Touch for the idle-reaping baseline and
@@ -1998,7 +2006,7 @@ impl<W: WalletInterface> Peer<W> {
             your_nonce: Some(peer_initial_nonce.to_string()),
             initial_nonce: Some(session_nonce),
             certificates: certificates_to_include,
-            requested_certificates,
+            requested_certificates: requested_certificates_on_wire,
             payload: None,
             signature: Some(sig_result.signature),
         };
@@ -4000,6 +4008,47 @@ mod tests {
     /// `Arc<Peer>` and fans out `verify_general_message` across many in-flight
     /// requests bound to the same session. Proves SessionManager's `RwLock`
     /// allows concurrent reads and that verify has no `&mut self` requirement.
+    #[tokio::test]
+    async fn test_outbound_general_omits_initial_nonce_like_typescript() {
+        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+        let identity_b = wallet_identity(&wallet_b).await;
+        let (transport_a, _transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(wallet_a, transport_a);
+        let session_nonce = "rust-general-session".to_string();
+
+        peer_a
+            .session_manager
+            .write()
+            .await
+            .add_session(PeerSession {
+                session_nonce: session_nonce.clone(),
+                peer_identity_key: identity_b,
+                peer_nonce: "peer-general-session".to_string(),
+                is_authenticated: true,
+                requested_certificates: Some(RequestedCertificateSet::default()),
+                certificates_required: false,
+                certificates_validated: true,
+                certificate_validation_error: None,
+            });
+
+        let message = tokio::time::timeout(
+            Duration::from_secs(2),
+            peer_a.create_general_message(&session_nonce, b"wire-shape".to_vec()),
+        )
+        .await
+        .expect("general-message creation is time-bounded")
+        .expect("general-message creation succeeds");
+
+        assert!(
+            message.initial_nonce.is_none(),
+            "TS Peer.send omits initialNonce from general messages"
+        );
+        assert!(!serde_json::to_string(&message)
+            .unwrap()
+            .contains("initialNonce"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_general_message_verify_one_session() {
         let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());

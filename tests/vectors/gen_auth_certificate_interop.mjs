@@ -20,6 +20,16 @@ if (sdkPackage.name !== '@bsv/sdk' || sdkPackage.version !== '2.4.1') {
 }
 const { Certificate, Peer, PrivateKey, ProtoWallet, VerifiableCertificate, Utils } = require(resolve(sdkPath))
 
+// Keep the real Peer constructors while making their nonce bytes reproducible.
+// The SDK's auth helpers retain this CommonJS export object, so replacing its
+// default function here affects only the fixture process, not production code.
+const randomModule = require(resolve(sdkPath, 'dist/cjs/src/primitives/Random.js'))
+let deterministicRandomCall = 0
+randomModule.default = length => {
+  const start = deterministicRandomCall++ * 32
+  return Array.from({ length }, (_, index) => (start + index) & 0xff)
+}
+
 const privateKey = value => PrivateKey.fromHex(value.toString(16).padStart(64, '0'))
 const identityKey = async wallet => (await wallet.getPublicKey({ identityKey: true })).publicKey
 const utf8Bytes = text => Array.from(Buffer.from(text, 'utf8'))
@@ -133,6 +143,31 @@ const captureTransport = {
   onData: async () => {},
   send: async message => { sentDuringInitialRequest.push(message) }
 }
+
+// Exercise Peer.initiateHandshake itself with constructor defaults. The
+// transport deliberately rejects after capturing the request so the private
+// handshake waiter cannot keep the fixture generator alive.
+const sentDuringHandshakeInitiation = []
+const stopAfterInitialRequest = new Error('fixture captured initialRequest')
+const initialRequestTransport = {
+  onData: async () => {},
+  send: async message => {
+    sentDuringHandshakeInitiation.push(message)
+    throw stopAfterInitialRequest
+  }
+}
+const initialRequestPeer = new Peer(senderWallet, initialRequestTransport)
+try {
+  await initialRequestPeer.initiateHandshake(receiverPublicKey)
+  throw new Error('TS initiateHandshake unexpectedly completed')
+} catch (error) {
+  if (error !== stopAfterInitialRequest) throw error
+}
+const defaultInitialRequest = sentDuringHandshakeInitiation[0]
+if (defaultInitialRequest?.messageType !== 'initialRequest') {
+  throw new Error('TS did not emit the expected initialRequest')
+}
+
 const shapePeer = new Peer(emptyListWallet, captureTransport)
 await shapePeer.processInitialRequest({
   version: '0.1',
@@ -152,7 +187,65 @@ const emptyInitialResponseShape = {
   hasCertificatesMember: Object.hasOwn(emptyInitialResponse, 'certificates'),
   serializedMember: JSON.stringify({ certificates: emptyInitialResponse.certificates })
 }
+const sentDuringDefaultInitialRequest = []
+const defaultResponseTransport = {
+  onData: async () => {},
+  send: async message => { sentDuringDefaultInitialRequest.push(message) }
+}
+const defaultResponsePeer = new Peer(receiverWallet, defaultResponseTransport)
+await defaultResponsePeer.processInitialRequest(defaultInitialRequest)
+const defaultInitialResponse = sentDuringDefaultInitialRequest[0]
+if (defaultInitialResponse?.messageType !== 'initialResponse') {
+  throw new Error('TS did not emit the expected default initialResponse')
+}
+const exactWireMessage = message => {
+  const json = JSON.stringify(message)
+  return {
+    json,
+    hex: Buffer.from(json, 'utf8').toString('hex'),
+    keys: Object.keys(JSON.parse(json))
+  }
+}
 
+// Capture the remaining three envelopes from real Peer methods against a
+// pre-authenticated session. This records actual member presence and order,
+// including the fact that `general` has no `initialNonce`.
+const sentAfterAuthentication = []
+const authenticatedCaptureTransport = {
+  onData: async () => {},
+  send: async message => { sentAfterAuthentication.push(message) }
+}
+const authenticatedPeer = new Peer(senderWallet, authenticatedCaptureTransport)
+authenticatedPeer.sessionManager.addSession({
+  isAuthenticated: true,
+  sessionNonce,
+  peerNonce: nonce,
+  peerIdentityKey: receiverPublicKey,
+  lastUpdate: Date.now(),
+  certificatesRequired: false,
+  certificatesValidated: true
+})
+const standaloneRequest = {
+  certifiers: [certifierPublicKey],
+  types: { [type]: [] }
+}
+await authenticatedPeer.toPeer([9, 8, 7], receiverPublicKey)
+await authenticatedPeer.requestCertificates(standaloneRequest, receiverPublicKey)
+await authenticatedPeer.sendCertificateResponse(receiverPublicKey, certificates)
+const [generalMessage, certificateRequestMessage, certificateResponseMessage] = sentAfterAuthentication
+if (generalMessage?.messageType !== 'general' ||
+    certificateRequestMessage?.messageType !== 'certificateRequest' ||
+    certificateResponseMessage?.messageType !== 'certificateResponse') {
+  throw new Error('TS did not emit the expected authenticated message sequence')
+}
+const typeScriptAuthMessages = {
+  initialRequest: exactWireMessage(defaultInitialRequest),
+  initialResponse: exactWireMessage(defaultInitialResponse),
+  initialResponseWithEmptyCertificates: exactWireMessage(emptyInitialResponse),
+  certificateRequest: exactWireMessage(certificateRequestMessage),
+  certificateResponse: exactWireMessage(certificateResponseMessage),
+  general: exactWireMessage(generalMessage)
+}
 // Cover every omission combination for the three optional Certificate members.
 const optionalFieldSerializations = []
 for (let mask = 0; mask < 8; mask++) {
@@ -168,6 +261,21 @@ for (let mask = 0; mask < 8; mask++) {
   )
   optionalFieldSerializations.push({ mask, json: JSON.stringify(candidate) })
 }
+
+const decryptedFieldSerializations = [undefined, { middle: 'ts-middle' }].map(decryptedFields => {
+  const candidate = new VerifiableCertificate(
+    type,
+    serialNumber,
+    senderPublicKey,
+    certifierPublicKey,
+    revocationOutpoint,
+    fields,
+    { middle: Buffer.from('ts-keyring').toString('base64') },
+    certificate.signature,
+    decryptedFields
+  )
+  return JSON.stringify(candidate)
+})
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '..', '..')
@@ -193,6 +301,76 @@ const rustVector = async empty => {
 }
 const rustToTypeScript = await rustVector(false)
 const emptyRustToTypeScript = await rustVector(true)
+
+const rustHandshakeProcess = spawnSync(
+  'cargo',
+  ['run', '--quiet', '--example', 'generate_auth_certificate_rust_vector', '--features', 'serde', '--', '--handshake'],
+  { cwd: repositoryRoot, encoding: 'utf8' }
+)
+if (rustHandshakeProcess.status !== 0) {
+  throw new Error(`Rust handshake vector generator failed:\n${rustHandshakeProcess.stderr}`)
+}
+const rustAuthMessages = JSON.parse(rustHandshakeProcess.stdout.trim())
+const expectedAuthMessageKeys = {
+  initialRequest: ['version', 'messageType', 'identityKey', 'initialNonce', 'requestedCertificates'],
+  initialResponse: [
+    'version',
+    'messageType',
+    'identityKey',
+    'initialNonce',
+    'yourNonce',
+    'requestedCertificates',
+    'signature'
+  ],
+  initialResponseWithEmptyCertificates: [
+    'version',
+    'messageType',
+    'identityKey',
+    'initialNonce',
+    'yourNonce',
+    'certificates',
+    'requestedCertificates',
+    'signature'
+  ],
+  certificateRequest: [
+    'version',
+    'messageType',
+    'identityKey',
+    'nonce',
+    'initialNonce',
+    'yourNonce',
+    'requestedCertificates',
+    'signature'
+  ],
+  certificateResponse: [
+    'version',
+    'messageType',
+    'identityKey',
+    'nonce',
+    'initialNonce',
+    'yourNonce',
+    'certificates',
+    'signature'
+  ],
+  general: ['version', 'messageType', 'identityKey', 'nonce', 'yourNonce', 'payload', 'signature']
+}
+for (const [name, vector] of Object.entries(rustAuthMessages)) {
+  const parsed = JSON.parse(vector.json)
+  const bytesAsJson = Buffer.from(vector.hex, 'hex').toString('utf8')
+  if (bytesAsJson !== vector.json || JSON.stringify(parsed) !== vector.json) {
+    throw new Error(`TS did not preserve Rust ${name} bytes`)
+  }
+  const expectedKeys = expectedAuthMessageKeys[name]
+  if (JSON.stringify(Object.keys(parsed)) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`Rust ${name} key order does not match TS ${parsed.messageType}`)
+  }
+  if ((parsed.messageType === 'initialRequest' || parsed.messageType === 'initialResponse') &&
+      JSON.stringify(parsed.requestedCertificates) !== '{"certifiers":[],"types":{}}') {
+    throw new Error(`Rust ${name} omitted the TS default requestedCertificates set`)
+  }
+  vector.keys = Object.keys(parsed)
+  vector.verifiedByTypeScript = true
+}
 
 const fixture = {
   sdk: { name: sdkPackage.name, version: sdkPackage.version },
@@ -222,8 +400,11 @@ const fixture = {
   },
   rustToTypeScript,
   emptyRustToTypeScript,
+  typeScriptAuthMessages,
+  rustAuthMessages,
   emptyInitialResponseShape,
-  optionalFieldSerializations
+  optionalFieldSerializations,
+  decryptedFieldSerializations
 }
 
 const fixturePath = resolve(scriptDir, 'auth_certificate_interop.json')
