@@ -1,6 +1,6 @@
 //! Authentication framework for BSV SDK.
 //!
-//! Implements BRC-31 Authrite mutual authentication protocol with
+//! Implements the BRC-103 mutual authentication protocol with
 //! session management, certificate handling, and authenticated transports.
 
 pub mod certificates;

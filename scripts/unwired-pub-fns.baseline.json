@@ -32,9 +32,9 @@
     "has_session_by_identifier": "pre-existing; reviewed 2026-08-22",
     "is_connected": "pre-existing; reviewed 2026-08-22",
     "is_mainnet": "pre-existing; reviewed 2026-08-22",
+    "listen_for_certificates_received": "public listener-registration API for external Peer consumers; reviewed 2026-08-23",
     "merge_beef_from_binary": "pre-existing; reviewed 2026-08-22",
     "merge_raw_tx": "pre-existing; reviewed 2026-08-22",
-    "on_certificates": "pre-existing; reviewed 2026-08-22",
     "op_return_data": "pre-existing; reviewed 2026-08-22",
     "schnorr_verify_proof": "pre-existing; reviewed 2026-08-22",
     "seen_nonce_count": "pre-existing; reviewed 2026-08-22",
@@ -54,6 +54,7 @@
     "to_script": "pre-existing; reviewed 2026-08-22",
     "to_seed": "pre-existing; reviewed 2026-08-22",
     "to_wif": "pre-existing; reviewed 2026-08-22",
+    "wait_for_certificate_validation": "public session-gate API for external Peer consumers; reviewed 2026-08-23",
     "with_cache": "pre-existing; reviewed 2026-08-22",
     "with_url": "pre-existing; reviewed 2026-08-22"
   }

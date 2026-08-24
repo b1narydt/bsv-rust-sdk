@@ -1,4 +1,4 @@
-//! HTTP transport for BRC-31 authentication.
+//! HTTP transport for BRC-103 authentication.
 //!
 //! Implements SimplifiedHTTPTransport which sends auth messages via HTTP POST
 //! and receives responses. Translates from TS SimplifiedFetchTransport.ts
@@ -49,7 +49,7 @@ pub const HEADER_REQUEST_ID: &str = "x-bsv-auth-request-id";
 // SimplifiedHTTPTransport
 // ---------------------------------------------------------------------------
 
-/// HTTP transport for BRC-31 authentication.
+/// HTTP transport for BRC-103 authentication.
 ///
 /// For non-general messages (InitialRequest, InitialResponse, etc.), sends
 /// JSON POSTs to `{base_url}/.well-known/auth` and parses the JSON response
@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_base64_roundtrip() {
-        let data = b"hello, BRC-31 auth!";
+        let data = b"hello, BRC-103 auth!";
         let encoded = base64_encode(data);
         let decoded = base64_decode(&encoded).unwrap();
         assert_eq!(decoded, data);

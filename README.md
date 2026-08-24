@@ -45,7 +45,7 @@ fn main() {
 | `script` | Bitcoin script parsing, execution, and template matching | `Script`, `LockingScript`, `UnlockingScript`, `Address`, `Inscription` |
 | `transaction` | Transaction building, serialization, BEEF/Merkle proofs | `Transaction`, `TransactionInput`, `TransactionOutput`, `Beef`, `MerklePath` |
 | `wallet` | BRC-100 wallet interface, Type-42 key derivation, serialization | `ProtoWallet`, `WalletClient`, `HttpWalletJson`, `CachedKeyDeriver` |
-| `auth` | BRC-31 authenticated transport, certificates, peer communication | `Peer`, `AuthFetch`, `Certificate`, `Transport` |
+| `auth` | BRC-103 authenticated transport, certificates, peer communication | `Peer`, `AuthFetch`, `Certificate`, `Transport` |
 | `compat` | Compatibility modules: BIP32, BIP39, BSM, ECIES | `ExtendedKey`, `Mnemonic`, `Bsm`, `ElectrumEcies`, `BitcoreEcies` |
 | `services` | Overlay network services: lookup, broadcast, identity | `LookupResolver`, `TopicBroadcaster`, `IdentityClient`, `GlobalKVStore` |
 | `remittance` | Peer-to-peer remittance protocol with BRC-29 settlement | `RemittanceManager`, `BasicBRC29Module`, `Thread`, `CommsLayer` |

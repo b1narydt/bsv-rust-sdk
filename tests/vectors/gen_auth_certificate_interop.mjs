@@ -18,7 +18,7 @@ const sdkPackage = require(resolve(sdkPath, 'package.json'))
 if (sdkPackage.name !== '@bsv/sdk' || sdkPackage.version !== '2.4.1') {
   throw new Error(`expected @bsv/sdk 2.4.1, got ${sdkPackage.name} ${sdkPackage.version}`)
 }
-const { Certificate, PrivateKey, ProtoWallet, VerifiableCertificate, Utils } = require(resolve(sdkPath))
+const { Certificate, Peer, PrivateKey, ProtoWallet, VerifiableCertificate, Utils } = require(resolve(sdkPath))
 
 const privateKey = value => PrivateKey.fromHex(value.toString(16).padStart(64, '0'))
 const identityKey = async wallet => (await wallet.getPublicKey({ identityKey: true })).publicKey
@@ -116,6 +116,43 @@ const emptyTsSignatureCheck = await receiverWallet.verifySignature({
 })
 if (!emptyTsSignatureCheck.valid) throw new Error('TS failed to verify its empty response signature')
 
+// Exercise Peer.processInitialRequest itself, not a hand-built object. When a
+// real embedded certificate request has no wallet matches, TS assigns the []
+// result to `certificatesToInclude`, so JSON serialization retains the member.
+const sentDuringInitialRequest = []
+const emptyListWallet = new Proxy(receiverWallet, {
+  get (target, property, receiver) {
+    if (property === 'listCertificates') {
+      return async () => ({ totalCertificates: 0, certificates: [] })
+    }
+    const value = Reflect.get(target, property, receiver)
+    return typeof value === 'function' ? value.bind(target) : value
+  }
+})
+const captureTransport = {
+  onData: async () => {},
+  send: async message => { sentDuringInitialRequest.push(message) }
+}
+const shapePeer = new Peer(emptyListWallet, captureTransport)
+await shapePeer.processInitialRequest({
+  version: '0.1',
+  messageType: 'initialRequest',
+  identityKey: senderPublicKey,
+  initialNonce: sessionNonce,
+  requestedCertificates: {
+    certifiers: [certifierPublicKey],
+    types: { [type]: ['name'] }
+  }
+})
+const emptyInitialResponse = sentDuringInitialRequest[0]
+if (emptyInitialResponse?.messageType !== 'initialResponse') {
+  throw new Error('TS did not emit the expected initialResponse')
+}
+const emptyInitialResponseShape = {
+  hasCertificatesMember: Object.hasOwn(emptyInitialResponse, 'certificates'),
+  serializedMember: JSON.stringify({ certificates: emptyInitialResponse.certificates })
+}
+
 // Cover every omission combination for the three optional Certificate members.
 const optionalFieldSerializations = []
 for (let mask = 0; mask < 8; mask++) {
@@ -185,6 +222,7 @@ const fixture = {
   },
   rustToTypeScript,
   emptyRustToTypeScript,
+  emptyInitialResponseShape,
   optionalFieldSerializations
 }
 

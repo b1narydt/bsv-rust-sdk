@@ -216,7 +216,7 @@ This release pairs with a **`bsv-wallet-toolbox`** release: published 0.7.1's `s
 
 ### Added
 
-- **`AuthFetchResponse::server_identity_key`** — the hex identity key of the server authenticated by the BRC-31 handshake, so a caller can pin the peer it expected to contact rather than trusting the URL it dialled. Populated on every successful authenticated `fetch`; `None` only for a response deserialized outside that flow.
+- **`AuthFetchResponse::server_identity_key`** — the hex identity key of the server authenticated by the BRC-103 handshake, so a caller can pin the peer it expected to contact rather than trusting the URL it dialled. Populated on every successful authenticated `fetch`; `None` only for a response deserialized outside that flow.
 
 ## [0.3.4] - 2026-07-28
 
@@ -679,7 +679,7 @@ This release pairs with a **`bsv-wallet-toolbox`** release: published 0.7.1's `s
 - BRC-42/43 key derivation, BRC-77 signed messages, BRC-78 encrypted messages
 - WalletInterface trait (BRC-100) with 28 wallet operations
 - Wallet substrates: ProtoWallet, WalletWireProcessor, WalletWireTransceiver, WalletClient, HttpWalletJson
-- Auth module: Peer (BRC-31 handshake), SessionManager, transport layer (HTTP, WebSocket)
+- Auth module: Peer (BRC-103 handshake), SessionManager, transport layer (HTTP, WebSocket)
 - Certificate system: CertificateManager, MasterCertificate, CompoundMerkleTree
 - Services: IdentityClient, ContactsManager, Storage (UHRP), KVStore, OverlayTools
 - Benchmark infrastructure with Criterion (primitives, crypto, script, transactions, BEEF)

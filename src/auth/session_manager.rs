@@ -1,4 +1,4 @@
-//! Session management for the BRC-31 authentication protocol.
+//! Session management for the BRC-103 authentication protocol.
 //!
 //! SessionManager tracks authenticated sessions by both session nonce
 //! (primary key) and peer identity key (secondary index), supporting
@@ -194,8 +194,15 @@ impl SessionManager {
         }
     }
 
-    /// Replace a session at the given nonce.
-    pub fn update_session(&mut self, nonce: &str, session: PeerSession) {
+    /// Replace an existing session at the given nonce.
+    ///
+    /// Returns `false` if the session was removed while its caller was awaiting.
+    /// A stale clone must never recreate a reaped session.
+    pub fn update_session(&mut self, nonce: &str, session: PeerSession) -> bool {
+        if !self.nonce_to_session.contains_key(nonce) {
+            return false;
+        }
+
         // Remove old identity mapping if the identity key changed
         if let Some(old_session) = self.nonce_to_session.get(nonce) {
             let old_identity = old_session.peer_identity_key.clone();
@@ -215,6 +222,7 @@ impl SessionManager {
             .entry(new_identity)
             .or_default()
             .insert(nonce.to_string());
+        true
     }
 
     /// Remove a session by nonce. Returns the removed session if found.
@@ -384,6 +392,7 @@ mod tests {
             peer_identity_key: identity.to_string(),
             peer_nonce: format!("peer_{nonce}"),
             is_authenticated: authenticated,
+            requested_certificates: None,
             certificates_required: false,
             certificates_validated: true,
             certificate_validation_error: None,
@@ -479,6 +488,22 @@ mod tests {
 
         let s = mgr.get_session("nonce1").unwrap();
         assert!(s.is_authenticated);
+    }
+
+    #[test]
+    fn test_update_session_does_not_resurrect_removed_session() {
+        let mut mgr = SessionManager::new();
+        mgr.add_session(make_session("nonce1", "id_key_A", false));
+        let stale = mgr.get_session("nonce1").unwrap().clone();
+        mgr.remove_session("nonce1");
+
+        mgr.update_session("nonce1", stale);
+
+        assert!(
+            !mgr.has_session("nonce1"),
+            "a stale clone must not resurrect a session removed during an await"
+        );
+        assert!(!mgr.has_session_by_identifier("id_key_A"));
     }
 
     #[test]

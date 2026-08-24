@@ -16,6 +16,8 @@ use crate::wallet::interfaces::{
     CertificateType, ListCertificatesArgs, ProveCertificateArgs, WalletInterface,
 };
 use crate::wallet::types::BooleanDefaultFalse;
+#[cfg(feature = "network")]
+use futures_util::{stream::FuturesUnordered, StreamExt};
 
 // ---------------------------------------------------------------------------
 // validate_certificates
@@ -47,45 +49,94 @@ pub async fn validate_certificates<W: WalletInterface + ?Sized>(
         ));
     }
 
-    for cert in certificates {
-        // 1. Verify subject matches sender identity key
-        if cert.certificate.subject != *sender_identity_key {
-            return Ok(false);
+    #[cfg(feature = "network")]
+    {
+        // The certificate count is peer-controlled, so match Go's worker-pool
+        // policy rather than TS's unbounded Promise.all: at most one validation
+        // per available CPU, and never more workers than certificates. Returning
+        // on the first completed rejection/error drops buffered sibling futures.
+        let concurrency = certificates.len().min(
+            std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1),
+        );
+        let mut next = 0;
+        let mut validations = FuturesUnordered::new();
+        while next < concurrency {
+            validations.push(validate_certificate(
+                verifier_wallet,
+                &certificates[next],
+                sender_identity_key,
+                requested,
+            ));
+            next += 1;
         }
-
-        // 2. Verify certificate signature
-        let valid = AuthCertificate::verify(&cert.certificate, verifier_wallet).await?;
-        if !valid {
-            return Ok(false);
+        while let Some(result) = validations.next().await {
+            if !result? {
+                return Ok(false);
+            }
+            if next < certificates.len() {
+                validations.push(validate_certificate(
+                    verifier_wallet,
+                    &certificates[next],
+                    sender_identity_key,
+                    requested,
+                ));
+                next += 1;
+            }
         }
+        Ok(true)
+    }
 
-        // 3. Check against requested certificates if provided
-        if let Some(req) = requested {
-            // TS checks the certifier before the type. Preserve that order so
-            // the first rejection reason agrees across implementations.
-            let certifier = cert.certificate.certifier.to_der_hex();
-            if !req
-                .certifiers
-                .iter()
-                .any(|requested| requested.eq_ignore_ascii_case(&certifier))
+    #[cfg(not(feature = "network"))]
+    {
+        for certificate in certificates {
+            if !validate_certificate(verifier_wallet, certificate, sender_identity_key, requested)
+                .await?
             {
                 return Ok(false);
             }
-
-            // Check certificate type is in the requested types
-            let cert_type_b64 = base64_encode(&cert.certificate.cert_type.0);
-            if !req.contains_key(&cert_type_b64) {
-                return Ok(false);
-            }
         }
+        Ok(true)
+    }
+}
 
-        // 4. Prove that the selectively revealed fields are actually readable
-        // by this verifier. TS constructs a fresh VerifiableCertificate for
-        // validation, so decrypt a clone rather than mutating the inbound value.
-        let mut cert_to_verify = cert.clone();
-        cert_to_verify.decrypt_fields(verifier_wallet).await?;
+async fn validate_certificate<W: WalletInterface + ?Sized>(
+    verifier_wallet: &W,
+    cert: &VerifiableCertificate,
+    sender_identity_key: &PublicKey,
+    requested: Option<&RequestedCertificateSet>,
+) -> Result<bool, AuthError> {
+    if cert.certificate.subject != *sender_identity_key {
+        return Ok(false);
     }
 
+    let valid = AuthCertificate::verify(&cert.certificate, verifier_wallet).await?;
+    if !valid {
+        return Ok(false);
+    }
+
+    if let Some(req) = requested {
+        // TS checks certifier before type for each certificate. Across multiple
+        // failures, bounded concurrent completion makes the surfaced failure
+        // nondeterministic, as Promise.all is in TS.
+        let certifier = cert.certificate.certifier.to_der_hex();
+        if !req
+            .certifiers
+            .iter()
+            .any(|requested| requested.eq_ignore_ascii_case(&certifier))
+        {
+            return Ok(false);
+        }
+
+        let cert_type_b64 = base64_encode(&cert.certificate.cert_type.0);
+        if !req.contains_key(&cert_type_b64) {
+            return Ok(false);
+        }
+    }
+
+    let mut cert_to_verify = cert.clone();
+    cert_to_verify.decrypt_fields(verifier_wallet).await?;
     Ok(true)
 }
 
@@ -105,10 +156,6 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
     requested: &RequestedCertificateSet,
     verifier_identity_key: &PublicKey,
 ) -> Result<Vec<VerifiableCertificate>, AuthError> {
-    if requested.is_empty() {
-        return Ok(Vec::new());
-    }
-
     // Convert base64 type keys to CertificateType for the wallet query
     let mut cert_types: Vec<CertificateType> = Vec::new();
     for type_key_b64 in requested.keys() {
@@ -149,6 +196,9 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
 
     let mut result = Vec::new();
 
+    // Intentional Layer-2 choice: keep prove_certificate sequential. The Go
+    // implementation deliberately does so; TS Promise.all only interleaves
+    // wallet I/O and is not authority for Rust parallelism here.
     for cert_result in &list_result.certificates {
         let cert = &cert_result.certificate;
         let cert_type_b64 = base64_encode(&cert.cert_type.0);
@@ -218,7 +268,10 @@ mod tests {
     use crate::wallet::types::{Counterparty, CounterpartyType, Protocol as WalletProtocol};
     use crate::wallet::ProtoWallet;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
 
     // -----------------------------------------------------------------------
     // TestWallet reuse (same pattern as master.rs tests)
@@ -229,6 +282,23 @@ mod tests {
         listed_with: StdMutex<Option<ListCertificatesArgs>>,
         certificates_to_list: StdMutex<Vec<CertificateResult>>,
         proved_with: StdMutex<Vec<ProveCertificateArgs>>,
+        decrypt_probe: Option<Arc<DecryptProbe>>,
+    }
+
+    #[derive(Default)]
+    struct DecryptProbe {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        calls: AtomicUsize,
+        delay: Duration,
+    }
+
+    struct ActiveDecrypt<'a>(&'a DecryptProbe);
+
+    impl Drop for ActiveDecrypt<'_> {
+        fn drop(&mut self) {
+            self.0.active.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     impl TestWallet {
@@ -238,6 +308,17 @@ mod tests {
                 listed_with: StdMutex::new(None),
                 certificates_to_list: StdMutex::new(Vec::new()),
                 proved_with: StdMutex::new(Vec::new()),
+                decrypt_probe: None,
+            }
+        }
+
+        fn with_decrypt_probe(pk: PrivateKey, probe: Arc<DecryptProbe>) -> Self {
+            Self {
+                inner: ProtoWallet::new(pk),
+                listed_with: StdMutex::new(None),
+                certificates_to_list: StdMutex::new(Vec::new()),
+                proved_with: StdMutex::new(Vec::new()),
+                decrypt_probe: Some(probe),
             }
         }
     }
@@ -367,6 +448,15 @@ mod tests {
             args: DecryptArgs,
             _originator: Option<&str>,
         ) -> Result<DecryptResult, WalletError> {
+            let _active = self.decrypt_probe.as_ref().map(|probe| {
+                probe.calls.fetch_add(1, Ordering::SeqCst);
+                let active = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+                probe.peak.fetch_max(active, Ordering::SeqCst);
+                ActiveDecrypt(probe.as_ref())
+            });
+            if let Some(probe) = &self.decrypt_probe {
+                tokio::time::sleep(probe.delay).await;
+            }
             let plaintext = self.inner.decrypt_sync(
                 &args.ciphertext,
                 &args.protocol_id,
@@ -903,6 +993,135 @@ mod tests {
             .await
             .unwrap(),
             "hex casing must not change certifier membership"
+        );
+    }
+
+    async fn concurrent_validation_fixture(
+        count: usize,
+        delay: Duration,
+    ) -> (
+        TestWallet,
+        Arc<DecryptProbe>,
+        Vec<VerifiableCertificate>,
+        PublicKey,
+    ) {
+        let certifier_pk = PrivateKey::from_random().unwrap();
+        let certifier_wallet = TestWallet::new(certifier_pk.clone());
+        let subject_pk = PrivateKey::from_random().unwrap();
+        let subject_wallet = TestWallet::new(subject_pk.clone());
+        let verifier_pk = PrivateKey::from_random().unwrap();
+        let probe = Arc::new(DecryptProbe {
+            delay,
+            ..DecryptProbe::default()
+        });
+        let verifier_wallet = TestWallet::with_decrypt_probe(verifier_pk.clone(), probe.clone());
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Concurrency Test".to_string());
+        let master = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([15; 32]),
+            &subject_pk.to_public_key(),
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap();
+        let keyring = master
+            .create_keyring_for_verifier(
+                &verifier_pk.to_public_key(),
+                &["name".to_string()],
+                &certifier_pk.to_public_key(),
+                &subject_wallet,
+            )
+            .await
+            .unwrap();
+        let certificate = VerifiableCertificate::new(master.certificate, keyring);
+        (
+            verifier_wallet,
+            probe,
+            vec![certificate; count],
+            subject_pk.to_public_key(),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_validate_certificates_is_bounded_and_concurrent() {
+        let parallelism = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        if parallelism == 1 {
+            return;
+        }
+        let certificate_count = parallelism + 2;
+        let delay = Duration::from_millis(100);
+        let (wallet, probe, certificates, subject) =
+            concurrent_validation_fixture(certificate_count, delay).await;
+        let started = tokio::time::Instant::now();
+
+        assert!(
+            validate_certificates(&wallet, &certificates, &subject, None)
+                .await
+                .unwrap()
+        );
+
+        let elapsed = started.elapsed();
+        let expected_waves = certificate_count.div_ceil(parallelism) as u32;
+        assert_eq!(
+            elapsed,
+            delay * expected_waves,
+            "validation should take one delay per bounded concurrency wave"
+        );
+        assert_eq!(probe.peak.load(Ordering::SeqCst), parallelism);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), certificate_count);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_validate_certificates_cancels_siblings_on_first_error() {
+        let parallelism = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        if parallelism == 1 {
+            return;
+        }
+        let (wallet, probe, mut certificates, subject) =
+            concurrent_validation_fixture(parallelism, Duration::from_secs(1)).await;
+        certificates
+            .last_mut()
+            .unwrap()
+            .keyring
+            .insert("name".to_string(), "!".to_string());
+        let started = tokio::time::Instant::now();
+
+        let result = validate_certificates(&wallet, &certificates, &subject, None).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "the first completed error must drop in-flight sibling futures"
+        );
+        assert_eq!(probe.calls.load(Ordering::SeqCst), parallelism - 1);
+        assert_eq!(probe.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_queries_wallet_for_empty_types() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let requested = RequestedCertificateSet::default();
+
+        let result = get_verifiable_certificates(
+            &wallet,
+            &requested,
+            &PrivateKey::from_random().unwrap().to_public_key(),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_empty());
+        assert!(
+            wallet.listed_with.lock().unwrap().is_some(),
+            "TS calls listCertificates even when requested types is empty"
         );
     }
 }

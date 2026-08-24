@@ -1632,6 +1632,10 @@
     },
     "verifiedByTypeScript": true
   },
+  "emptyInitialResponseShape": {
+    "hasCertificatesMember": true,
+    "serializedMember": "{\"certificates\":[]}"
+  },
   "optionalFieldSerializations": [
     {
       "mask": 0,

@@ -1,4 +1,4 @@
-//! WebSocket transport for BRC-31 authentication.
+//! WebSocket transport for BRC-103 authentication.
 //!
 //! Implements WebSocketTransport using tokio-tungstenite for persistent
 //! bidirectional communication with auto-reconnect and exponential backoff.
@@ -44,7 +44,7 @@ impl Default for WsOptions {
 // WebSocketTransport
 // ---------------------------------------------------------------------------
 
-/// WebSocket transport for BRC-31 authentication.
+/// WebSocket transport for BRC-103 authentication.
 ///
 /// Uses tokio-tungstenite for WebSocket connectivity. Messages are sent and
 /// received as JSON text frames. Supports auto-reconnect with configurable

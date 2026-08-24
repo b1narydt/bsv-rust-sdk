@@ -102,7 +102,7 @@ impl RequestedCertificateSet {
 // AuthMessage
 // ---------------------------------------------------------------------------
 
-/// A message in the BRC-31 Authrite authentication protocol.
+/// A message in the BRC-103 mutual authentication protocol.
 ///
 /// All fields match the TS SDK AuthMessage format for wire compatibility.
 #[derive(Clone, Debug)]
@@ -162,6 +162,9 @@ pub struct PeerSession {
     pub peer_nonce: String,
     /// Whether the handshake has completed successfully.
     pub is_authenticated: bool,
+    /// The exact certificate request advertised when this session began.
+    /// Validation uses this immutable snapshot, never mutable peer defaults.
+    pub requested_certificates: Option<RequestedCertificateSet>,
     /// Whether this session was established with a non-empty certificate request.
     pub certificates_required: bool,
     /// Whether the peer's certificates have been validated for this session.

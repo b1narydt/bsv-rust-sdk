@@ -1,8 +1,8 @@
-//! AuthFetch: high-level HTTP client for BRC-31 authenticated requests.
+//! AuthFetch: high-level HTTP client for BRC-103 authenticated requests.
 //!
 //! Manages per-base-URL Peer instances, automatically performs the auth
 //! handshake on first request to a new server, and serializes HTTP requests
-//! as general messages over the BRC-31 protocol.
+//! as general messages over the BRC-103 protocol.
 //!
 //! Translated from TS SDK AuthFetch.ts (924 lines) and Go SDK authhttp.go (782 lines).
 
@@ -121,7 +121,7 @@ pub struct AuthFetchResponse {
     pub headers: HashMap<String, String>,
     /// Response body bytes.
     pub body: Vec<u8>,
-    /// Hex identity key of the server authenticated by the BRC-31 handshake.
+    /// Hex identity key of the server authenticated by the BRC-103 handshake.
     ///
     /// `None` is used only for a response deserialized outside an authenticated
     /// fetch flow.  Normal successful `fetch` calls always populate this,
@@ -160,7 +160,7 @@ struct AuthPeer<W: WalletInterface> {
     /// Nonce-keyed router; the dispatcher task is the single consumer of
     /// `general_rx` and fans responses out through these oneshot senders.
     router: ResponseRouter,
-    /// Guarantees the BRC-31 handshake runs exactly once across concurrent
+    /// Guarantees the BRC-103 handshake runs exactly once across concurrent
     /// first requests to this peer. Never reset in place: stale-session
     /// recovery evicts the whole `AuthPeer` from the peers map (mirroring TS
     /// `delete this.peers[baseURL]`, AuthFetch.ts:277), so the replacement
@@ -182,11 +182,11 @@ struct AuthPeer<W: WalletInterface> {
 // AuthFetch
 // ---------------------------------------------------------------------------
 
-/// High-level HTTP client for BRC-31 mutually authenticated requests.
+/// High-level HTTP client for BRC-103 mutually authenticated requests.
 ///
 /// AuthFetch manages per-base-URL Peer instances. When `fetch()` is called,
 /// it creates a SimplifiedHTTPTransport + Peer for new servers, performs the
-/// BRC-31 handshake automatically, then sends the serialized HTTP request as
+/// BRC-103 handshake automatically, then sends the serialized HTTP request as
 /// a general message and awaits the response.
 ///
 /// # Generic Parameters
@@ -239,7 +239,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
 
     /// Send an authenticated HTTP request with explicit per-call options.
     ///
-    /// Performs the BRC-31 handshake on the first request to a base URL, then
+    /// Performs the BRC-103 handshake on the first request to a base URL, then
     /// sends the serialized HTTP request as a general message.  If the server
     /// responds with 402 Payment Required, enters the payment retry loop
     /// governed by `options.payment_retry_attempts`.
@@ -334,7 +334,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             })?
         };
 
-        // (b) Run the BRC-31 handshake exactly once across concurrent first
+        // (b) Run the BRC-103 handshake exactly once across concurrent first
         //     requests. `get_or_try_init` serializes contenders; only the
         //     first actually performs the handshake and learns identity_key.
         let auth_peer_for_init = auth_peer.clone();
@@ -1175,7 +1175,7 @@ fn extract_query(url: &str) -> String {
 // Request/Response serialization
 // ---------------------------------------------------------------------------
 
-/// Serialize an HTTP request into the BRC-31 general message payload format.
+/// Serialize an HTTP request into the BRC-103 general message payload format.
 ///
 /// Format (matching TS SDK AuthFetch.serializeRequest):
 /// - 32 bytes: request nonce
@@ -1300,7 +1300,7 @@ fn signable_request_headers(
     Ok(included)
 }
 
-/// Deserialize a response payload from the BRC-31 general message format.
+/// Deserialize a response payload from the BRC-103 general message format.
 ///
 /// Format (matching TS SDK AuthFetch response deserialization):
 /// - varint: status code

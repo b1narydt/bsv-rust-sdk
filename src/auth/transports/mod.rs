@@ -1,4 +1,4 @@
-//! Transport abstractions for the BRC-31 authentication protocol.
+//! Transport abstractions for the BRC-103 authentication protocol.
 //!
 //! Defines the Transport trait for sending and receiving AuthMessages
 //! over different communication channels (HTTP, WebSocket, etc.).
@@ -26,7 +26,7 @@ pub use self::http::SimplifiedHTTPTransport;
 pub use self::websocket::{WebSocketTransport, WsOptions};
 
 /// Transport defines the interface for communication transports used
-/// in BRC-31 authentication.
+/// in BRC-103 authentication.
 ///
 /// Implementations handle the details of sending messages to a peer and
 /// receiving messages from it. The `subscribe` method returns an mpsc

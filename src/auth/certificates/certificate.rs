@@ -1,7 +1,7 @@
 //! AuthCertificate: auth-layer wrapper around wallet::Certificate.
 //!
 //! Provides sign, verify, field encryption/decryption, and serialization
-//! methods for the BRC-31 certificate protocol. Translates from
+//! methods for the BRC-103 certificate exchange. Translates from
 //! TS SDK Certificate.ts and Go SDK certificate.go.
 
 use std::collections::HashMap;
@@ -175,7 +175,7 @@ pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, AuthError> {
 /// Auth-layer wrapper around wallet::Certificate.
 ///
 /// Adds sign, verify, and field encryption/decryption methods used by
-/// the BRC-31 authentication protocol. Derefs to the inner
+/// the BRC-103 authentication protocol. Derefs to the inner
 /// wallet::Certificate for transparent field access.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -21,8 +21,17 @@ struct Fixture {
     rust_to_type_script: CertificateResponseVector,
     #[serde(rename = "emptyRustToTypeScript")]
     empty_rust_to_type_script: CertificateResponseVector,
+    #[serde(rename = "emptyInitialResponseShape")]
+    empty_initial_response_shape: EmptyInitialResponseShape,
     #[serde(rename = "optionalFieldSerializations")]
     optional_field_serializations: Vec<OptionalFieldSerialization>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmptyInitialResponseShape {
+    has_certificates_member: bool,
+    serialized_member: String,
 }
 
 #[derive(Deserialize)]
@@ -176,4 +185,16 @@ fn initial_response_deserialization_preserves_the_verifier_keyring() {
         serde_json::Value::String("dHMta2V5cmluZy1taWRkbGU=".to_string())
     );
     assert!(serialized[0].get("decryptedFields").is_none());
+}
+
+#[test]
+fn typescript_initial_response_retains_empty_certificates_member() {
+    let fixture = vector_file();
+    assert_eq!(fixture.sdk.name, "@bsv/sdk");
+    assert_eq!(fixture.sdk.version, "2.4.1");
+    assert!(fixture.empty_initial_response_shape.has_certificates_member);
+    assert_eq!(
+        fixture.empty_initial_response_shape.serialized_member,
+        r#"{"certificates":[]}"#
+    );
 }

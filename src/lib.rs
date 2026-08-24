@@ -19,7 +19,7 @@
 //! - [`wallet`] -- The `WalletInterface` trait (29 BRC-compliant methods),
 //!   `ProtoWallet` (offline key/crypto operations), `KeyDeriver` (Type-42
 //!   key derivation), and wire-protocol serialization.
-//! - [`auth`] -- Mutual authentication via `Peer` handshake (BRC-31),
+//! - [`auth`] -- Mutual authentication via `Peer` handshake (BRC-103),
 //!   certificates, and `AuthFetch` for authenticated HTTP.
 //! - [`compat`] -- Compatibility helpers: BIP-32 HD keys, BIP-39 mnemonics,
 //!   BSM (Bitcoin Signed Message), and ECIES encryption.
