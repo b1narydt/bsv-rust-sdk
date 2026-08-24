@@ -36,6 +36,12 @@ pub struct KnownDivergence<'a> {
     pub evidence: &'a str,
 }
 
+#[derive(Clone, Copy)]
+pub struct GovernedSkip<'a> {
+    pub id: &'a str,
+    pub reason: &'a str,
+}
+
 pub fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
@@ -90,11 +96,11 @@ pub fn ensure(condition: bool, message: impl FnOnce() -> String) -> Result<(), S
 /// unpinned failure or a newly passing pin fails the test.
 pub fn run_corpora(
     corpora: &[Corpus<'_>],
-    governed_skips: &[&str],
+    governed_skips: &[GovernedSkip<'_>],
     known: &[KnownDivergence<'_>],
     dispatch: impl Fn(&str, &Vector) -> Result<(), String>,
 ) {
-    let skip_ids: BTreeSet<&str> = governed_skips.iter().copied().collect();
+    let skip_ids: BTreeSet<&str> = governed_skips.iter().map(|skip| skip.id).collect();
     let known_by_id: BTreeMap<&str, KnownDivergence<'_>> =
         known.iter().map(|entry| (entry.id, *entry)).collect();
     assert_eq!(
@@ -102,6 +108,13 @@ pub fn run_corpora(
         governed_skips.len(),
         "duplicate governed skip"
     );
+    for skip in governed_skips {
+        assert!(
+            !skip.reason.trim().is_empty(),
+            "{} skip has no reason",
+            skip.id
+        );
+    }
     assert_eq!(known_by_id.len(), known.len(), "duplicate divergence pin");
 
     let mut loaded = 0usize;
@@ -122,7 +135,7 @@ pub fn run_corpora(
         loaded += file.vectors.len();
 
         for vector in &file.vectors {
-            if vector.skip {
+            if vector.skip || skip_ids.contains(vector.id.as_str()) {
                 skipped.insert(vector.id.clone());
                 if !skip_ids.contains(vector.id.as_str()) {
                     failures.push(format!(
@@ -157,8 +170,10 @@ pub fn run_corpora(
         }
     }
 
-    let expected_skips: BTreeSet<String> =
-        governed_skips.iter().map(|id| (*id).to_string()).collect();
+    let expected_skips: BTreeSet<String> = governed_skips
+        .iter()
+        .map(|skip| skip.id.to_string())
+        .collect();
     assert_eq!(skipped, expected_skips, "governed skip ledger drifted");
     let expected_findings: BTreeSet<String> =
         known.iter().map(|entry| entry.id.to_string()).collect();

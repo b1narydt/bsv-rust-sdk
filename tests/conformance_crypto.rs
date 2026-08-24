@@ -16,7 +16,7 @@ use bsv::primitives::public_key::PublicKey;
 use bsv::primitives::signature::Signature;
 use conformance_harness::{
     bool_value, bytes, bytes32, ensure, hex_string, number, run_corpora, string, Corpus,
-    KnownDivergence, Vector,
+    GovernedSkip, KnownDivergence, Vector,
 };
 
 const AES: &str = include_str!("../conformance/vectors/sdk/crypto/aes.json");
@@ -71,7 +71,10 @@ const CORPORA: &[Corpus<'_>] = &[
     },
 ];
 
-const GOVERNED_SKIPS: &[&str] = &["sdk.crypto.ecies.17"];
+const GOVERNED_SKIPS: &[GovernedSkip<'_>] = &[GovernedSkip {
+    id: "sdk.crypto.ecies.17",
+    reason: "upstream marks this vector skipped because its ephemeral-key hook is not public",
+}];
 const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[];
 
 fn message_bytes(message: &str, encoding: &str) -> Result<Vec<u8>, String> {

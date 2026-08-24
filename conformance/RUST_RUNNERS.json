@@ -1,4 +1,6 @@
 {
+  "vectors/auth/brc31-handshake.json": { "runner": "tests/conformance_auth.rs", "skipped_ids": ["auth.brc31-handshake.2", "auth.brc31-handshake.3", "auth.brc31-handshake.4", "auth.brc31-handshake.5", "auth.brc31-handshake.6", "auth.brc31-handshake.7", "auth.brc31-handshake.8", "auth.brc31-handshake.9", "auth.brc31-handshake.10", "auth.brc31-handshake.11", "auth.brc31-handshake.14", "auth.brc31-handshake.16"] },
+  "vectors/messaging/authsocket.json": { "runner": "tests/conformance_auth.rs", "skipped_ids": ["messaging.authsocket.1", "messaging.authsocket.2", "messaging.authsocket.3", "messaging.authsocket.5", "messaging.authsocket.6", "messaging.authsocket.7", "messaging.authsocket.9", "messaging.authsocket.10"] },
   "vectors/regressions/beef-isvalid-hydration.json": { "runner": "tests/conformance_regressions.rs", "skipped_ids": [] },
   "vectors/regressions/beef-v2-txid-panic.json": { "runner": "tests/conformance_regressions.rs", "skipped_ids": [] },
   "vectors/regressions/bip276-hex-decode.json": { "runner": "tests/conformance_regressions.rs", "skipped_ids": [] },

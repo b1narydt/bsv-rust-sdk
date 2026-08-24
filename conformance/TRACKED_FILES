@@ -3,6 +3,8 @@
 # generated coverage ledger.
 VECTOR-FORMAT.md
 schema/vector.schema.json
+vectors/auth/brc31-handshake.json
+vectors/messaging/authsocket.json
 vectors/regressions/beef-isvalid-hydration.json
 vectors/regressions/beef-v2-txid-panic.json
 vectors/regressions/bip276-hex-decode.json

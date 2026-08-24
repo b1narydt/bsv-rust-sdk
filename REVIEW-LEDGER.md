@@ -93,18 +93,24 @@ upstream and this repo mislabel BRC-103 as BRC-31.
 | # | Finding | Status |
 |---|---|---|
 | 34 | ~21 code comments label the auth module "BRC-31"/"BRC-31 Authrite" (e.g. `types.rs:105`, `session_manager.rs:1`, `transports/*.rs`, `clients/*.rs`) for a BRC-103 implementation; only 3 sites say BRC-103. Actively misleads reviewers and vector-selection decisions | **FIXED** — source, API docs, README, and changelog relabelled BRC-103. Genuine upstream filenames/tags containing `brc31`/Authrite remain unchanged |
-| 35 | Upstream `messaging/brc31/authrite-signature.json` (28 vectors) is **genuinely deprecated** Authrite — uses `[2,'authrite message signature']`. Must stay excluded; do NOT wire up | **RESOLVED — verified, keep excluded** |
-| 36 | Upstream `auth/brc31-handshake.json` (16) and `messaging/authsocket.json` (12) are tagged `brc: ["BRC-31"]` but their content is BRC-103 (`messageType: initialRequest`, v0.1, `x-bsv-auth-*` headers; authsocket's own text says "BRC-103 handshake"). Relevant to us and currently unvendored, unasserted | **OPEN — vendor and wire up** |
+| 35 | Upstream `messaging/brc31/authrite-signature.json` (28 vectors) is **genuinely deprecated** Authrite — uses `[2,'authrite message signature']`. Must stay excluded; do NOT wire up | **RESOLVED — verified, kept unvendored**. The generated coverage ledger now records the protocol-ID reason so the similarly named BRC-103 files cannot cause it to be wired accidentally |
+| 36 | Upstream `auth/brc31-handshake.json` (16) and `messaging/authsocket.json` (12) are tagged `brc: ["BRC-31"]` but their content is BRC-103 (`messageType: initialRequest`, v0.1, `x-bsv-auth-*` headers; authsocket's own text says "BRC-103 handshake"). Relevant to us and currently unvendored, unasserted | **FIXED** — both files vendored at `8b074a06`; eight real SDK properties asserted, twenty Express/AuthSocket-server vectors registered as governed component-owned skips |
+| 42 | `auth.brc31-handshake.1`'s request example is stale relative to the real `@bsv/sdk` 2.4.1 `Peer`: the vector includes `nonce`, `payload: []`, and `signature: []`, while the real constructor omits them. Rust also omits them, so the runner pins this as a corpus disagreement rather than changing Rust to match stale example data | **OPEN — raise upstream**; exact named divergence is executable in `tests/conformance_auth.rs` |
+| 43 | Rust's default `initialRequest` omits `requestedCertificates`, while the real TS 2.4.1 constructor always emits its default `{ certifiers: [], types: {} }`. The vendored schema vector also omits it, so this Layer-1 discrepancy is hidden rather than exposed by the corpus | **OPEN — needs a dedicated 2.4.1 byte fixture and reviewed wire fix; not changed during schema/HTTP vector wiring** |
+| 44 | `auth.brc31-handshake.10` requires the Express server to wait 30 seconds for certificates and map expiry to HTTP 408. This crate has no HTTP server/status mapper; its certificate waiter and deferred-message deadline are exactly 30 seconds, while side-effect-free `verify_general_message` rejects a pending gate immediately by the registered nonblocking mechanism | **RESOLVED — Express 408 remains a governed middleware skip; crate timing is mutation-proven in `tests/conformance_auth.rs`** |
+| 45 | `auth.brc31-handshake.12` and `messaging.authsocket.4` enumerate `initialRequest`, `initialResponse`, and `general`; the full BRC-103 SDK envelope also has `certificateRequest` and `certificateResponse` | **RESOLVED — assert the three listed values as real enum members, not as an exhaustive SDK enum; the vectors describe the middleware/AuthSocket subset** |
 
 ## Conformance coverage (from `conformance/COVERAGE.md`)
 
-- **258 of 1,565** non-script upstream vectors asserted — **16.5%**. (6,681 total; 5,116 script-evaluation
-  vectors are a deliberate scope exclusion.)
+- **266 of 1,565** non-script upstream vectors asserted — **17.0%**, up from 258/16.5%.
+  (6,681 total; 5,116 script-evaluation vectors are a deliberate scope exclusion.)
 - The uncovered surface includes every certificate-wallet vector: `provecertificate` (8),
   `listcertificates` (8), `acquirecertificate` (8), `relinquishcertificate` (6) — all 0 asserted.
-- | 37 | Vendored corpus pins the TS reference at **`@bsv/sdk@2.3.1`** (`conformance/SOURCE`, ts-stack
-  `8b074a06`), but current is **2.4.1**, which changed the auth paths materially. The conformance suite
-  validates against a stale version precisely where we are working | **OPEN** |
+- **#37 — REFUTED.** The corpus was reported as pinning `@bsv/sdk@2.3.1`, but `8b074a06`
+  itself contains `packages/sdk/package.json` version 2.4.1, and upstream `main` still resolves to
+  that exact SHA. No newer corpus exists to adopt. The stale 2.3.1 label was in
+  `conformance/README.md` and is fixed. Retain the SHA and review a future corpus bump only when
+  upstream moves.
 
 ## Concurrency — where Rust should exploit real parallelism
 

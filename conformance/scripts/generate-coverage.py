@@ -194,6 +194,15 @@ def generate() -> str:
             "count remains in the denominator and in the table below."
         ),
         "",
+        (
+            "**Protocol scope exclusion:** "
+            "`vectors/messaging/brc31/authrite-signature.json` is deliberately not "
+            "vendored or asserted. It is deprecated BRC-31 Authrite and signs with "
+            "`[2, 'authrite message signature']`; this crate implements BRC-103 with "
+            "`[2, 'auth message signature']`. The similarly named handshake/authsocket "
+            "files below contain BRC-103 behavior and are therefore tracked."
+        ),
+        "",
         "Regenerate from the pinned upstream metadata:",
         "",
         "```sh",
