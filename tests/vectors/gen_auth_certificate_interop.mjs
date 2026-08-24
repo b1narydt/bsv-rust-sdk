@@ -262,7 +262,11 @@ for (let mask = 0; mask < 8; mask++) {
   optionalFieldSerializations.push({ mask, json: JSON.stringify(candidate) })
 }
 
-const decryptedFieldSerializations = [undefined, { middle: 'ts-middle' }].map(decryptedFields => {
+const decryptedFieldSerializations = [undefined, {
+  zeta: 'ts-zeta',
+  alpha: 'ts-alpha',
+  middle: 'ts-middle'
+}].map(decryptedFields => {
   const candidate = new VerifiableCertificate(
     type,
     serialNumber,

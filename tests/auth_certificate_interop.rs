@@ -222,6 +222,17 @@ fn typescript_certificate_response_round_trips_the_exact_signed_preimage() {
     let with_decrypted: VerifiableCertificate =
         serde_json::from_str(&fixture.decrypted_field_serializations[1]).unwrap();
     assert_eq!(
+        with_decrypted
+            .decrypted_fields
+            .as_ref()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "alpha", "middle"],
+        "decryptedFields must retain the TS insertion order inside the signed preimage"
+    );
+    assert_eq!(
         with_decrypted.decrypted_fields.as_ref().unwrap()["middle"],
         "ts-middle"
     );

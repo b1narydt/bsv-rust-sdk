@@ -492,14 +492,14 @@ impl AuthCertificate {
         serial_number: &str,
         counterparty: &PublicKey,
         wallet: &W,
-    ) -> Result<HashMap<String, String>, AuthError> {
+    ) -> Result<IndexMap<String, String>, AuthError> {
         if keyring.is_empty() {
             return Err(AuthError::CertificateValidation(
                 "a keyring is required to decrypt certificate fields".to_string(),
             ));
         }
 
-        let mut decrypted = HashMap::new();
+        let mut decrypted = IndexMap::new();
 
         for (field_name, encrypted_key_b64) in keyring {
             // Decrypt the field revelation key from the keyring

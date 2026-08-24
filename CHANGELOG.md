@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-08-23
 
 ### Fixed
 
@@ -27,14 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrequested types, then decrypts every revealed field with the verifier wallet,
   matching @bsv/sdk 2.4.1. Certificate discovery also forwards the requested
   certifier set to `list_certificates` instead of querying every certifier.
-- **General messages are gated on required certificate validation.** Outbound
-  creation/sending now fails with the reference error until validation completes;
-  inbound verification waits on a per-session signal for up to 30 seconds and
-  times out without holding the session lock across the wait.
+- **General messages are gated on required certificate validation without
+  blocking the pull-based transport drain.** Dispatch verifies a frame before
+  placing it in a bounded per-session deferred queue, then flushes it after
+  validation. Duplicate, overflowed, malformed, and expired deferrals are
+  dropped without contaminating an unrelated caller's `process_pending` result.
+  The public HTTP-middleware verification path waits on the per-session signal,
+  while outbound `send_message` rejects a pending gate immediately like TS.
+  Both wait paths have a terminal 30-second deadline.
 - **Empty certificate responses are preserved end-to-end.** Standalone
-  certificate requests now receive a signed `[]` response when no certificate
-  matches, and every authenticated `certificateResponse` notifies listeners,
-  including an empty array.
+  and handshake-embedded certificate requests now receive a signed `[]`
+  response when no certificate matches. An authenticated empty response is a
+  terminal rejection rather than an indefinitely pending gate, and every
+  authenticated `certificateResponse` notifies listeners, including `[]`.
+- **Handshake envelope bytes now match the real @bsv/sdk 2.4.1 constructors.**
+  `initialRequest` and `initialResponse` always include the default
+  `requestedCertificates: { certifiers: [], types: {} }`; `general` omits
+  `initialNonce`; and `initialNonce` precedes `yourNonce` on the three message
+  shapes where TS constructs them in that order. These are intentional wire
+  changes from 0.7.1.
+- **Every map in the signed certificate-response preimage preserves wire
+  insertion order.** `VerifiableCertificate::decrypted_fields` and the
+  decryption return value now use `IndexMap`, closing the same randomized JSON
+  ordering class previously fixed for `fields` and `keyring`.
 - **Certificate delivery is lossless and ordered.** The bounded 32-entry channel
   has been replaced by sequentially awaited callbacks. Listener failures
   propagate. Matching @bsv/sdk 2.4.1, non-empty certificate validation is
@@ -48,6 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Peer::stop_listening_for_certificates_received()`. Callbacks return
   `CertificateReceivedFuture` (`Result<(), AuthError>`) so delivery backpressure
   and failures are observable.
+- `AuthMessage::certificates` and `Peer::send_certificate_response` now use
+  `Vec<VerifiableCertificate>` instead of `Vec<Certificate>` so the verifier
+  keyring remains part of the signed wire value.
+- `VerifiableCertificate::decrypted_fields` and
+  `VerifiableCertificate::decrypt_fields` now expose `IndexMap<String, String>`
+  instead of `HashMap<String, String>`.
+- `SessionManager::update_session` now returns `bool` (`false` means the session
+  was evicted) instead of `()`.
+- `PeerSession` adds public `requested_certificates` and
+  `certificate_validation_error` fields, alongside the previously added
+  certificate-gate state.
+- `Peer::process_next` and `Peer::process_pending` now return dispatch failures
+  through `Result`; an empty or disconnected receiver still yields `Ok(false)`
+  from `process_next`.
 
 ## [0.7.1] - 2026-08-23
 

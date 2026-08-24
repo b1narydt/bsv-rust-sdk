@@ -430,9 +430,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         }
 
         // Drain the synchronous reqwest response (the HTTP transport enqueues
-        // the reply into general_rx as part of send()). `process_pending` is
-        // `&self` and serializes internally on the peer's handshake mutex; the
-        // dispatcher task routes the decoded reply.
+        // the reply into general_rx as part of send()). `process_pending` only
+        // holds the peer's handshake mutex while pulling each frame and releases
+        // it before dispatch; the dispatcher task routes the decoded reply.
         if let Err(e) = auth_peer.peer.process_pending().await {
             auth_peer
                 .router
@@ -864,11 +864,9 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                             let verifiable =
                                 get_verifiable_certificates(&wallet, &requested, &verifier_pubkey)
                                     .await?;
-                            if !verifiable.is_empty() {
-                                peer_arc
-                                    .send_certificate_response(&verifier_key, verifiable)
-                                    .await?;
-                            }
+                            peer_arc
+                                .send_certificate_response(&verifier_key, verifiable)
+                                .await?;
                             Ok(())
                         }
                         .await;
@@ -1497,13 +1495,185 @@ mod tests {
     use crate::auth::certificates::certificate::base64_encode as cert_base64_encode;
     use crate::auth::certificates::master::{default_get_revocation_outpoint, MasterCertificate};
     use crate::auth::certificates::VerifiableCertificate;
-    use crate::auth::types::{AuthMessage, MessageType};
+    use crate::auth::types::{AuthMessage, MessageType, AUTH_VERSION};
     use crate::primitives::private_key::PrivateKey;
-    use crate::wallet::interfaces::{CertificateType, GetPublicKeyArgs};
+    use crate::wallet::error::WalletError;
+    use crate::wallet::interfaces::*;
     use crate::wallet::ProtoWallet;
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::{mpsc, Notify};
+
+    #[derive(Clone)]
+    struct EmptyCertificateWallet {
+        inner: Arc<ProtoWallet>,
+    }
+
+    impl EmptyCertificateWallet {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap())),
+            }
+        }
+    }
+
+    macro_rules! unused_wallet_method {
+        ($name:ident, $args:ty, $result:ty) => {
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
+                _args: $args,
+                _originator: Option<&'life1 str>,
+            ) -> ::core::pin::Pin<
+                Box<
+                    dyn ::core::future::Future<Output = Result<$result, WalletError>>
+                        + ::core::marker::Send
+                        + 'async_trait,
+                >,
+            >
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    unreachable!(concat!(stringify!($name), " is not used by this test"))
+                })
+            }
+        };
+        ($name:ident, $result:ty) => {
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
+                _originator: Option<&'life1 str>,
+            ) -> ::core::pin::Pin<
+                Box<
+                    dyn ::core::future::Future<Output = Result<$result, WalletError>>
+                        + ::core::marker::Send
+                        + 'async_trait,
+                >,
+            >
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    unreachable!(concat!(stringify!($name), " is not used by this test"))
+                })
+            }
+        };
+    }
+
+    #[async_trait]
+    impl WalletInterface for EmptyCertificateWallet {
+        unused_wallet_method!(create_action, CreateActionArgs, CreateActionResult);
+        unused_wallet_method!(sign_action, SignActionArgs, SignActionResult);
+        unused_wallet_method!(abort_action, AbortActionArgs, AbortActionResult);
+        unused_wallet_method!(list_actions, ListActionsArgs, ListActionsResult);
+        unused_wallet_method!(
+            internalize_action,
+            InternalizeActionArgs,
+            InternalizeActionResult
+        );
+        unused_wallet_method!(list_outputs, ListOutputsArgs, ListOutputsResult);
+        unused_wallet_method!(
+            relinquish_output,
+            RelinquishOutputArgs,
+            RelinquishOutputResult
+        );
+
+        async fn get_public_key(
+            &self,
+            args: GetPublicKeyArgs,
+            originator: Option<&str>,
+        ) -> Result<GetPublicKeyResult, WalletError> {
+            self.inner.get_public_key(args, originator).await
+        }
+
+        unused_wallet_method!(
+            reveal_counterparty_key_linkage,
+            RevealCounterpartyKeyLinkageArgs,
+            RevealCounterpartyKeyLinkageResult
+        );
+        unused_wallet_method!(
+            reveal_specific_key_linkage,
+            RevealSpecificKeyLinkageArgs,
+            RevealSpecificKeyLinkageResult
+        );
+        unused_wallet_method!(encrypt, EncryptArgs, EncryptResult);
+        unused_wallet_method!(decrypt, DecryptArgs, DecryptResult);
+
+        async fn create_hmac(
+            &self,
+            args: CreateHmacArgs,
+            originator: Option<&str>,
+        ) -> Result<CreateHmacResult, WalletError> {
+            self.inner.create_hmac(args, originator).await
+        }
+
+        async fn verify_hmac(
+            &self,
+            args: VerifyHmacArgs,
+            originator: Option<&str>,
+        ) -> Result<VerifyHmacResult, WalletError> {
+            self.inner.verify_hmac(args, originator).await
+        }
+
+        async fn create_signature(
+            &self,
+            args: CreateSignatureArgs,
+            originator: Option<&str>,
+        ) -> Result<CreateSignatureResult, WalletError> {
+            self.inner.create_signature(args, originator).await
+        }
+
+        async fn verify_signature(
+            &self,
+            args: VerifySignatureArgs,
+            originator: Option<&str>,
+        ) -> Result<VerifySignatureResult, WalletError> {
+            self.inner.verify_signature(args, originator).await
+        }
+
+        unused_wallet_method!(acquire_certificate, AcquireCertificateArgs, Certificate);
+
+        async fn list_certificates(
+            &self,
+            _args: ListCertificatesArgs,
+            _originator: Option<&str>,
+        ) -> Result<ListCertificatesResult, WalletError> {
+            Ok(ListCertificatesResult {
+                total_certificates: 0,
+                certificates: Vec::new(),
+            })
+        }
+
+        unused_wallet_method!(
+            prove_certificate,
+            ProveCertificateArgs,
+            ProveCertificateResult
+        );
+        unused_wallet_method!(
+            relinquish_certificate,
+            RelinquishCertificateArgs,
+            RelinquishCertificateResult
+        );
+        unused_wallet_method!(
+            discover_by_identity_key,
+            DiscoverByIdentityKeyArgs,
+            DiscoverCertificatesResult
+        );
+        unused_wallet_method!(
+            discover_by_attributes,
+            DiscoverByAttributesArgs,
+            DiscoverCertificatesResult
+        );
+        unused_wallet_method!(is_authenticated, AuthenticatedResult);
+        unused_wallet_method!(wait_for_authentication, AuthenticatedResult);
+        unused_wallet_method!(get_height, GetHeightResult);
+        unused_wallet_method!(get_header_for_height, GetHeaderArgs, GetHeaderResult);
+        unused_wallet_method!(get_network, GetNetworkResult);
+        unused_wallet_method!(get_version, GetVersionResult);
+    }
 
     struct MockTransport {
         peer_tx: mpsc::Sender<AuthMessage>,
@@ -1680,21 +1850,28 @@ mod tests {
                 }));
         }
 
-        let handshake = {
+        let mut handshake = {
             let client_peer = client_peer.clone();
             tokio::spawn(async move { client_peer.get_authenticated_session("").await })
         };
-        loop {
-            server_peer.process_pending().await.unwrap();
-            if handshake.is_finished() {
-                break;
+        let session = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                tokio::select! {
+                    result = &mut handshake => break result.unwrap().unwrap(),
+                    result = server_peer.process_pending() => {
+                        result.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
-            tokio::task::yield_now().await;
-        }
-        let session = handshake.await.unwrap().unwrap();
+        })
+        .await
+        .expect("handler-mode handshake timed out");
         assert!(!session.certificates_validated);
         release_response.notify_one();
-        response_sent.notified().await;
+        tokio::time::timeout(Duration::from_secs(1), response_sent.notified())
+            .await
+            .expect("handler-mode certificate response was not sent");
 
         let general_rx = client_peer.on_general_message().unwrap();
         let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
@@ -1766,6 +1943,90 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok");
         assert_eq!(response.server_identity_key, Some(server_identity));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_peer_listener_sends_empty_certificate_response() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.well-known/auth"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let fetch = AuthFetch::new(EmptyCertificateWallet::new());
+        let base_url = server.uri();
+        fetch.ensure_peer(&base_url).await.unwrap();
+        let auth_peer = fetch.peers.read().await.get(&base_url).cloned().unwrap();
+
+        let requester_wallet = ProtoWallet::new(PrivateKey::from_random().unwrap());
+        let requester_identity = requester_wallet
+            .get_public_key(
+                GetPublicKeyArgs {
+                    identity_key: true,
+                    protocol_id: None,
+                    key_id: None,
+                    counterparty: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    for_self: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .public_key
+            .to_der_hex();
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(
+            PrivateKey::from_random()
+                .unwrap()
+                .to_public_key()
+                .to_der_hex(),
+        );
+        requested.insert(cert_base64_encode(&[88; 32]), vec!["name".to_string()]);
+        let request = AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::InitialRequest,
+            identity_key: requester_identity,
+            nonce: None,
+            initial_nonce: Some(
+                crate::auth::utils::create_nonce(&requester_wallet)
+                    .await
+                    .unwrap(),
+            ),
+            your_nonce: None,
+            certificates: None,
+            requested_certificates: Some(requested),
+            payload: None,
+            signature: None,
+        };
+        let _ = auth_peer.peer.dispatch_message(request).await;
+
+        let requests = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let requests = server.received_requests().await.unwrap_or_default();
+                if requests.len() >= 2 {
+                    break requests;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("production certificate-request listener sent no response");
+        let messages = requests
+            .iter()
+            .filter_map(|request| serde_json::from_slice::<AuthMessage>(&request.body).ok())
+            .collect::<Vec<_>>();
+        let response = messages
+            .iter()
+            .find(|message| message.message_type == MessageType::CertificateResponse)
+            .expect("listener emitted no certificateResponse");
+        assert!(response.certificates.as_ref().is_some_and(Vec::is_empty));
     }
 
     // -----------------------------------------------------------------------

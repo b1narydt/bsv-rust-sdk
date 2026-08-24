@@ -29,7 +29,7 @@ pub struct VerifiableCertificate {
     pub keyring: IndexMap<String, String>,
     /// Cached decrypted fields (populated after decrypt_fields is called).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub decrypted_fields: Option<HashMap<String, String>>,
+    pub decrypted_fields: Option<IndexMap<String, String>>,
 }
 
 impl Deref for VerifiableCertificate {
@@ -68,7 +68,7 @@ impl VerifiableCertificate {
     pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
         &mut self,
         verifier_wallet: &W,
-    ) -> Result<HashMap<String, String>, AuthError> {
+    ) -> Result<IndexMap<String, String>, AuthError> {
         if self.keyring.is_empty() {
             return Err(AuthError::CertificateValidation(
                 "a keyring is required to decrypt certificate fields for the verifier".to_string(),

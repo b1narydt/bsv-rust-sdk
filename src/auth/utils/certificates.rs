@@ -121,6 +121,10 @@ async fn validate_certificate<W: WalletInterface + ?Sized>(
         // failures, bounded concurrent completion makes the surfaced failure
         // nondeterministic, as Promise.all is in TS.
         let certifier = cert.certificate.certifier.to_der_hex();
+        // Registered Layer-1 divergence: `Certificate.certifier` is a typed
+        // PublicKey in Rust, so deserialization has already normalized the wire
+        // hex and exact TS string comparison is no longer recoverable. Accept
+        // equivalent hex case rather than adding raw-string shadow state.
         if !req
             .certifiers
             .iter()
@@ -156,10 +160,14 @@ pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
     requested: &RequestedCertificateSet,
     verifier_identity_key: &PublicKey,
 ) -> Result<Vec<VerifiableCertificate>, AuthError> {
-    // Convert base64 type keys to CertificateType for the wallet query
+    // TS forwards type keys as opaque strings. As with certifiers below, the
+    // strongly typed Rust wallet cannot represent malformed values, so skip
+    // them rather than aborting the entire handshake response.
     let mut cert_types: Vec<CertificateType> = Vec::new();
     for type_key_b64 in requested.keys() {
-        let decoded = base64_decode(type_key_b64)?;
+        let Ok(decoded) = base64_decode(type_key_b64) else {
+            continue;
+        };
         if decoded.len() == 32 {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&decoded);
@@ -872,6 +880,28 @@ mod tests {
             listed_with.as_ref().unwrap().certifiers,
             vec![valid],
             "only parseable certifiers can be forwarded to the strongly typed Rust wallet"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_verifiable_certificates_skips_unparseable_types() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let mut requested = RequestedCertificateSet::default();
+        requested.insert("not-base64".to_string(), vec!["ignored".to_string()]);
+        requested.insert(base64_encode(&[11; 32]), vec!["name".to_string()]);
+
+        get_verifiable_certificates(
+            &wallet,
+            &requested,
+            &PrivateKey::from_random().unwrap().to_public_key(),
+        )
+        .await
+        .expect("an opaque malformed type must not abort the response");
+
+        let listed_with = wallet.listed_with.lock().unwrap();
+        assert_eq!(
+            listed_with.as_ref().unwrap().types,
+            vec![CertificateType([11; 32])]
         );
     }
 

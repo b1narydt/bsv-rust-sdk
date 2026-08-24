@@ -11,16 +11,41 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 ---
 
+## Final adversarial review of `30ad72a`
+
+| ID | Finding | Status |
+|---|---|---|
+| B1 | `decrypted_fields` randomized inside signed JSON | **FIXED** — `IndexMap`; real TS three-key non-alphabetical fixture red/green |
+| B2 | Deferred expiry contaminates unrelated pump caller | **FIXED** — background expiry returns `Ok`, terminalizes only the owning session; unrelated `initialRequest` regression red/green |
+| B3 | Outbound 30-second gate only checks deadline when no work was processed | **FIXED** — unconditional top-of-loop deadline; zero-deadline remote-work regression red/green |
+| B4 | Unverified general frames consume deferred capacity and deferral errors abort drains | **FIXED** — signature verified before queue lock; failed verification, duplicate, and overflow frames are dropped without caller error; count remains capped at 128 |
+| B5 | Validation/deferral check-then-act race strands a message | **FIXED** — after acquiring the queue lock, `try_read` rechecks session state atomically with insertion; resolved-state regression red/green |
+| B6 | Empty certificate result only terminal on receive side; TS peer can still stall Rust | **FIXED by registered divergence** — all auto-response sites send signed `[]`; authenticated empty and local 30-second deadline are terminal |
+| B7 | `handshake.1` pin accepted any key-set mismatch and hid dead checks | **FIXED** — exact expected/actual key-set evidence; checks execute before the known divergence; reverting #43 now fails the harness |
+| B8 | Release hygiene | **FIXED** — version 0.8.0; changelog covers wire/API breaks and current nonblocking mechanism |
+| H1 | Deferred-frame flush error fails a committed handshake | **FIXED** — flush errors are isolated after terminal state commit; malformed deferred-frame regression red/green |
+| H2 | Public `verify_general_message` rejects where TS waits | **FIXED** — public middleware path uses the retained per-session waiter; dispatch remains nonblocking |
+| H3 | `send_message` waits where TS rejects synchronously | **FIXED** — removed outbound pumping from `send_message`; immediate-result regression red/green |
+| H4 | Charter claims deferred behavior is identical | **FIXED** — queue cap, error isolation, and drain-triggered expiry differences are explicit |
+| H5 | Missing `Send` future assertions | **FIXED** — assertions now include validation wait, send, and general-message creation |
+| M1 | Eviction returns before waiter/queue cleanup | **FIXED** — cleanup always runs before `SessionNotFound`; eviction regression red/green |
+| M2 | Malformed requested type is fatal unlike malformed certifier | **FIXED by registered divergence** — both unrepresentable typed values are skipped; red/green regression |
+| M3 | Case-insensitive certifier match differs from TS exact string match | **REGISTERED DIVERGENCE** — typed `PublicKey` parsing loses original case; no raw-string shadow state added |
+| #9 | Terminal validation error can later be cleared | **FIXED** — later authenticated responses preserve and return the existing terminal rejection |
+| Tests | Unbounded loops, `is_finished`, hand-built AuthPeer, silent asserted-count erosion | **FIXED** — rendezvous timeouts, no `is_finished`, `ensure_peer` production-listener test, and exact eight-vector assertion |
+
+---
+
 ## Critical / High
 
 | # | Finding | Source | Status |
 |---|---|---|---|
 | 1 | Keyring absent from wire `Certificate` → TS↔Rust preimages differ, certificate exchange impossible in both directions | R1a | **FIXED** `039fbb2`, proven by cross-language vectors + an independent vector |
 | 2 | `keyring` as `HashMap` → randomized iteration order breaks the preimage whenever >1 field is revealed | codex, during fix | **FIXED** `039fbb2` (now `IndexMap`) |
-| 3 | Inbound 30s wait deadlocks the pull-based drain loop; releasing message sits behind the blocked one | R2b | **IN ROUND** (item 1 — defer, don't block) |
-| 4 | Peer with no matching cert never resolves the waiter → every inbound general message stalls 30s, forever | R2b | **IN ROUND** (item 2) |
-| 5 | Outbound gate self-blocks handshake in cert-request-handler mode over `SimplifiedFetchTransport` | R2b | **IN ROUND** (item 3) |
-| 6 | Unparseable certifier aborts the whole message; TS treats certifiers as opaque strings → failed handshake vs. normal response | R2a | **IN ROUND** (item 6) |
+| 3 | Inbound 30s wait deadlocks the pull-based drain loop; releasing message sits behind the blocked one | R2b | **FIXED** — dispatch verifies then defers in a bounded per-session queue; it never waits on the sole pull receiver. Deterministic queued-general/certificate-response regression is green |
+| 4 | Peer with no matching cert never resolves the waiter → every inbound general message stalls 30s, forever | R2b | **FIXED** — empty results are sent explicitly; authenticated `[]` and the receiver's own 30-second deadline are terminal. Rust↔Rust empty send and TS↔Rust local-deadline regressions are green |
+| 5 | Outbound gate self-blocks handshake in cert-request-handler mode over `SimplifiedFetchTransport` | R2b | **FIXED** — AuthFetch's signing path pumps the certificate response before general-message creation; public `send_message` now rejects a pending gate immediately like TS. Handler-mode regression is time-bounded |
+| 6 | Unparseable certifier aborts the whole message; TS treats certifiers as opaque strings → failed handshake vs. normal response | R2a | **FIXED by registered divergence** — malformed certifiers and types are skipped because the strongly typed Rust wallet cannot forward them; both paths have focused regressions |
 | 7 | `try_send` fail-open: `certificates_validated=true` committed before delivery, drop leaves session claiming validated | R1b | **FIXED** — bounded channel removed entirely, replaced with awaited listeners |
 | 8 | General messages never gated on certificate validation (`certificates_validated` was write-only) | R1b/R2a | **FIXED** in `176d079`, but see #3/#4 — the gate's *mechanism* is being redesigned |
 | 9 | `get_verifiable_certificates` discarded requested certifiers | R1a | **FIXED** `176d079` (introduced #6, in round) |
@@ -32,11 +57,11 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 | # | Finding | Source | Status |
 |---|---|---|---|
-| 13 | One waiter's timeout drops the *shared* `watch::Sender`, killing co-waiters with a misleading error and no-op'ing later resolves | R2a/R2b | **IN ROUND** (item 4) |
-| 14 | Waiter map leaks on future cancellation (client disconnect / `select!` loser) and on session reap; no cap | R2b | **IN ROUND** (item 5) |
-| 15 | `listCertificates` `limit: 100` vs TS's default of 10 → the two SDKs reveal *different sets* for 11+ certs | R2a | **IN ROUND** (item 7) |
-| 16 | Requested types with an empty field list silently dropped; TS proves them | R2a | **IN ROUND** (item 8) |
-| 17 | Certifier comparison case-sensitive against a re-normalized lowercase key; TS compares the wire string verbatim | R2a | **IN ROUND** (item 9) |
+| 13 | One waiter's timeout drops the *shared* `watch::Sender`, killing co-waiters with a misleading error and no-op'ing later resolves | R2a/R2b | **FIXED** — retained per-session signal plus active registration count gives waiters independent deadlines; deterministic two-waiter regression is green |
+| 14 | Waiter map leaks on future cancellation (client disconnect / `select!` loser) and on session reap; no cap | R2b | **FIXED** — RAII registration removes cancelled/last waiters; the terminal 30-second deadline bounds entries after session loss. Cancellation and eviction-cleanup regressions are time-bounded |
+| 15 | `listCertificates` `limit: 100` vs TS's default of 10 → the two SDKs reveal *different sets* for 11+ certs | R2a | **FIXED** — passes `limit: None`, selecting the wallet interface's TS-compatible default 10; focused argument-capture regression is green |
+| 16 | Requested types with an empty field list silently dropped; TS proves them | R2a | **FIXED** — all requested type keys are forwarded regardless of field-list length; proof-call regression is green |
+| 17 | Certifier comparison case-sensitive against a re-normalized lowercase key; TS compares the wire string verbatim | R2a | **RESOLVED BY REGISTERED DIVERGENCE** — typed `PublicKey` parsing loses original hex case, so Rust compares equivalent hex case-insensitively rather than adding raw-string shadow state |
 | 18 | **TOCTOU**: the requested set is read from process-global `certificates_to_request` at validation time, not snapshotted per session. `set_certificates_to_request` takes `&self`. A reconfigure mid-handshake rejects a cert we ourselves requested — or accepts one we never advertised. Also means one global set serves every counterparty. | R1b | **FIXED** — `PeerSession` snapshots the exact advertised request; initial and standalone responses validate only against it. Wire bytes unchanged; reconfigure + sender-relabel regressions mutation-proven |
 | 19 | Listeners run inline on the dispatch path with **no timeout**; a hung listener stalls the only transport consumer indefinitely | R2b | **FIXED** — each awaited listener is capped at 30s and its future is dropped on timeout; paused-time regression was red (`Elapsed`) before and green with `AuthError::Timeout` after |
 | 20 | Listener **reentrancy / message stealing**: a listener calling `send_message` acquires `handshake` and drains the transport rx; any `InitialResponse` it dequeues is silently discarded by the `MessageType::InitialResponse => Ok(())` arm, timing out the outer handshake | R2b | **FIXED** — nested drainers retain responses for known unauthenticated session nonces; deterministic gated-transport regression timed out before and completes after |
@@ -45,7 +70,7 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 | # | Finding | Source | Status |
 |---|---|---|---|
-| 21 | False code comment: "TS signs absent certificates as an empty byte string" — `JSON.stringify(undefined)` throws; TS *rejects* such a message | R2a | **IN ROUND** (item 10) |
+| 21 | False code comment: "TS signs absent certificates as an empty byte string" — `JSON.stringify(undefined)` throws; TS *rejects* such a message | R2a | **FIXED** — absent `certificates` rejects explicitly before preimage construction; comment and regression now state the real TS behavior |
 | 22 | `initialResponse` omits `certificates` where TS emits `[]` — wire-shape difference in a message TS peers parse | R2a | **FIXED** — empty auto-match now emits `Some(vec![])`; pinned 2.4.1 generator invokes real `Peer.processInitialRequest` and records `{"certificates":[]}` |
 | 23 | Frame ordering: TS releases handshake waiters *before* answering the embedded cert request, so a TS client can put a general message on the wire before its `certificateResponse`; Rust sends cert response first | R2a | **DECISION** — confirmed Layer 1 observable; current proof-first order retained as a registered divergence pending the background receive-task architecture decision (#40) |
 | 24 | `requested.is_empty()` early return (keyed on `types`) has no TS counterpart; undocumented short-circuit | R2a | **FIXED** — removed; Rust now calls `list_certificates` for empty `types`, matching TS and Go. Regression red/green |
@@ -59,10 +84,10 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 | # | Finding | Source | Status |
 |---|---|---|---|
-| 30 | `test_certificate_delivery_has_no_bounded_channel_limit` is a **tautology** — awaits each of 64 deliveries before the next, so a 1-entry channel passes identically. Cannot detect the bug it names | R2b | **IN ROUND** (item 11) |
-| 31 | `test_inbound_general_message_waits_for_certificate_validation` rests on `sleep(50ms)` + `!is_finished()`; under load it passes on a reverted build. Same defect as the discarded 25ms probe — 2× duration, same mechanism | R2b | **IN ROUND** (item 11) |
-| 32 | Nothing tests that `verify_general_message` itself times out, nor the value of `CERTIFICATE_WAIT_TIMEOUT`. The constant could be set to 30 minutes unnoticed | R2b | **IN ROUND** (item 11) |
-| 33 | Many tests call `dispatch_message`/`process_pending` untimed → a regression **hangs 30s per test** rather than failing; `cargo test` has no per-test timeout | R2b | **IN ROUND** (item 11) |
+| 30 | `test_certificate_delivery_has_no_bounded_channel_limit` is a **tautology** — awaits each of 64 deliveries before the next, so a 1-entry channel passes identically. Cannot detect the bug it names | R2b | **FIXED** — blocks the first listener, concurrently accumulates 64 queued deliveries, then proves lossless ordered release; queue-fill rendezvous is time-bounded |
+| 31 | `test_inbound_general_message_waits_for_certificate_validation` rests on `sleep(50ms)` + `!is_finished()`; under load it passes on a reverted build. Same defect as the discarded 25ms probe — 2× duration, same mechanism | R2b | **FIXED** — replaced with deterministic immediate-future polling/rendezvous and explicit terminal release; no sleep-plus-`is_finished` probe remains |
+| 32 | Nothing tests that `verify_general_message` itself times out, nor the value of `CERTIFICATE_WAIT_TIMEOUT`. The constant could be set to 30 minutes unnoticed | R2b | **FIXED** — paused-time conformance test pins 29,999ms pending / 30,000ms timeout; public verifier waiting is separately exercised |
+| 33 | Many tests call `dispatch_message`/`process_pending` untimed → a regression **hangs 30s per test** rather than failing; `cargo test` has no per-test timeout | R2b | **FIXED** — affected handshake pumps, waiter registration loops, deferred dispatch, and delivery backlog rendezvous now have explicit timeouts |
 
 ## Refuted (investigated, not defects — recorded so they are not re-raised)
 
@@ -97,7 +122,7 @@ upstream and this repo mislabel BRC-103 as BRC-31.
 | 36 | Upstream `auth/brc31-handshake.json` (16) and `messaging/authsocket.json` (12) are tagged `brc: ["BRC-31"]` but their content is BRC-103 (`messageType: initialRequest`, v0.1, `x-bsv-auth-*` headers; authsocket's own text says "BRC-103 handshake"). Relevant to us and currently unvendored, unasserted | **FIXED** — both files vendored at `8b074a06`; eight real SDK properties asserted, twenty Express/AuthSocket-server vectors registered as governed component-owned skips |
 | 42 | `auth.brc31-handshake.1`'s request example is stale relative to the real `@bsv/sdk` 2.4.1 `Peer`: the vector includes `nonce`, `payload: []`, and `signature: []`, while the real constructor omits them. Rust also omits them, so the runner pins this as a corpus disagreement rather than changing Rust to match stale example data | **OPEN — raise upstream**; exact named divergence is executable in `tests/conformance_auth.rs` |
 | 43 | Rust's default `initialRequest` omits `requestedCertificates`, while the real TS 2.4.1 constructor always emits its default `{ certifiers: [], types: {} }`. The vendored schema vector also omits it, so this Layer-1 discrepancy is hidden rather than exposed by the corpus | **FIXED** — handshake producers now normalize absent configuration to an explicit empty wire set while retaining Rust's internal no-request semantics. Real-`Peer` 2.4.1 and Rust constructor tests are mutation-proven red/green; exact envelope bytes are covered both directions |
-| 44 | `auth.brc31-handshake.10` requires the Express server to wait 30 seconds for certificates and map expiry to HTTP 408. This crate has no HTTP server/status mapper; its certificate waiter and deferred-message deadline are exactly 30 seconds, while side-effect-free `verify_general_message` rejects a pending gate immediately by the registered nonblocking mechanism | **RESOLVED — Express 408 remains a governed middleware skip; crate timing is mutation-proven in `tests/conformance_auth.rs`** |
+| 44 | `auth.brc31-handshake.10` requires the Express server to wait 30 seconds for certificates and map expiry to HTTP 408. This crate has no HTTP server/status mapper; its certificate waiter and deferred-message deadline are exactly 30 seconds, and public `verify_general_message` waits on that per-session signal | **RESOLVED** — Express 408 remains a governed middleware skip; crate timing is mutation-proven in `tests/conformance_auth.rs` |
 | 45 | `auth.brc31-handshake.12` and `messaging.authsocket.4` enumerate `initialRequest`, `initialResponse`, and `general`; the full BRC-103 SDK envelope also has `certificateRequest` and `certificateResponse` | **RESOLVED — assert the three listed values as real enum members, not as an exhaustive SDK enum; the vectors describe the middleware/AuthSocket subset** |
 | 46 | Cross-language vectors covered the signed `certificateResponse` preimage but not complete handshake envelopes, allowing #43 and key-order drift through | **FIXED** — real 2.4.1 `Peer` bytes for `initialRequest` and `initialResponse` round-trip byte-exactly through Rust; Rust envelopes are parsed and reserialized byte-exactly by 2.4.1. The same fixture now covers all five envelopes |
 | 47 | Rust emitted `initialNonce` on `general`, while TS `Peer.toPeer` never creates that member | **FIXED** — Rust now omits it; a focused Rust-producer mutation test was red before and green after, and both-direction all-envelope vectors pin the TS shape |
@@ -121,7 +146,7 @@ argument/result structs do not nest in an auth wire message and are outside this
 | `Certificate.revocationOutpoint` | Constructor property is `undefined` when absent, so `JSON.stringify` omits it; otherwise emits | `None` omitted, `Some` emitted | **MATCH** — real 2.4.1 8-mask certificate fixture |
 | `Certificate.fields` | `undefined` omitted; supplied object emitted (including its insertion order) | `None` omitted; `Some(IndexMap)` emitted in preserved order | **MATCH** — same 8-mask fixture |
 | `Certificate.signature` | `undefined` omitted; supplied hex string emitted | `None` omitted; `Some` emitted as hex | **MATCH** — same 8-mask fixture, including unsigned certificates |
-| `VerifiableCertificate.decryptedFields` | `undefined` omitted; explicitly supplied value emitted. Normal `fromCertificate` production omits it | `None` omitted; `Some` emitted. Normal production begins at `None` | **MATCH** — real 2.4.1 absent/present fixture |
+| `VerifiableCertificate.decryptedFields` | `undefined` omitted; explicitly supplied value emitted in insertion order. Normal `fromCertificate` production omits it | `None` omitted; `Some(IndexMap)` emitted in preserved order. Normal production begins at `None` | **MATCH** — real 2.4.1 absent plus three-key `zeta, alpha, middle` fixture |
 | `VerifiableCertificate.keyring` (non-optional control) | Valid verifiable certificates emit it unconditionally | Non-optional `IndexMap`, always emitted | **MATCH** — signed certificate-response preimage vectors |
 | `RequestedCertificateSet.certifiers` / `types` (non-optional controls) | Both keys emitted whenever the set is present, including `{ certifiers: [], types: {} }` | Both non-optional with empty defaults; both emitted | **MATCH** — handshake and standalone-request envelope vectors |
 
@@ -130,6 +155,26 @@ made to its `requestedCertificates` value. TS signs `JSON.stringify(certificates
 continues to verify `serde_json::to_vec(requested)` with the supplied `IndexMap` order. This round only
 corrected envelope member order, which is outside that signed preimage. The existing
 `certificateResponse` signed-preimage vectors remain byte-identical and cross-verified.
+
+## Map-in-signed-preimage audit
+
+The audit followed every `serde_json::to_vec`/`to_string` site to every
+`create_signature`/`verify_signature` call and then inspected the complete serialized type graph.
+
+| Map site | Runtime type | Can reach a reserialized signature preimage? | Verdict |
+|---|---|---|---|
+| `Certificate.fields` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` and in the certificate's own binary signing format | **SAFE** — wire order is preserved for auth JSON; certificate binary signing explicitly applies TS field collation |
+| `VerifiableCertificate.keyring` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` | **SAFE** — inbound order is preserved; legacy `HashMap` constructor input is sorted once before conversion |
+| `VerifiableCertificate.decrypted_fields` | `Option<IndexMap<String, String>>` | Yes when explicitly present in `certificateResponse` | **FIXED** — three-key non-alphabetical TS fixture proves `zeta, alpha, middle` survives deserialize/reserialize |
+| `RequestedCertificateSet.types` | `IndexMap<String, Vec<String>>` | Yes: `certificateRequest` JSON is signed directly | **SAFE** — supplied wire order is preserved |
+| `MasterCertificate.master_keyring` and `VerifiableCertificate::new` input | `HashMap<String, String>` | Not directly; only the converted `VerifiableCertificate.keyring` is serializable on auth wire | **SAFE AT BOUNDARY** — conversion sorts into `IndexMap` before the value can enter `AuthMessage` |
+| `Peer` waiter/deferred/pending/session indexes | `HashMap<...>` | No; internal state only, none derives `Serialize` or nests in `AuthMessage` | **SAFE / NOT WIRE DATA** |
+| AuthFetch request headers | `HashMap<String, String>` | The resulting payload is signed, but the map itself is not serialized | **SAFE** — `signable_request_headers` normalizes and sorts into a vector before encoding |
+| Wallet RPC maps (`PartialCertificate`, acquire/prove/list/discovery args/results) | `HashMap<...>` | No path into `AuthMessage`; `Certificate` is the separate ordered wire type | **OUTSIDE AUTH PREIMAGE** — keep `HashMap` |
+| Other crate JSON maps (registry/service/remittance metadata) | `HashMap<...>` | No JSON value is reserialized to reconstruct a `create_signature`/`verify_signature` preimage | **NOT THIS DEFECT CLASS** — transaction/message signatures consume the already-produced raw bytes rather than rebuilding them from a parsed map |
+
+Result: **no remaining `HashMap` can reach an auth JSON value that a peer reserializes to construct a
+signature preimage.**
 
 ## Conformance coverage (from `conformance/COVERAGE.md`)
 
@@ -157,11 +202,10 @@ Reference points: TS is single-threaded (`Promise.all` = interleaved I/O, not pa
 
 ## Decisions outstanding
 
-- **Version**: recommend `0.8.0`. `0.7.2` would auto-propagate a wire + API break to any repo pinned
-  `^0.7`. Not yet bumped.
+- **Version resolved**: bumped to `0.8.0`; `0.7.2` would have auto-propagated the wire + API break to
+  consumers pinned `^0.7`.
 - **One TS bug conformed to deliberately**, documented in code, to be raised upstream:
   1. TS commits `certificatesValidated` *before* awaiting listeners, so a rejecting listener leaves
      validation committed
-- **Mechanism divergence** (#3): Rust defers rather than blocks. Behaviour identical; mechanism differs
-  because TS assumes a callback transport. Must stay documented or a future parity pass reintroduces
-  the deadlock.
+- **Mechanism divergence** (#3): Rust defers rather than blocks because TS assumes a callback transport.
+  The non-identical overflow/duplicate/expiry/error behavior is now stated explicitly in the charter.

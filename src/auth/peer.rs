@@ -584,8 +584,36 @@ impl<W: WalletInterface> Peer<W> {
         &self,
         session: &PeerSession,
     ) -> Result<(), AuthError> {
-        self.wait_for_certificate_validation_with_timeout(session, CERTIFICATE_WAIT_TIMEOUT)
-            .await
+        let result = self
+            .wait_for_certificate_validation_with_timeout(session, CERTIFICATE_WAIT_TIMEOUT)
+            .await;
+        if let Err(AuthError::Timeout(message)) = &result {
+            // Registered Layer-1 divergence: TS 2.4.1 leaves the session
+            // pending after this timeout. Rust makes its own 30-second deadline
+            // terminal so a TS peer that never sends `[]` cannot stall every
+            // later message on the session indefinitely.
+            let terminalized = {
+                let mut manager = self.session_manager.write().await;
+                match manager.get_session_mut(&session.session_nonce) {
+                    Some(current)
+                        if Self::certificate_validation_is_pending(current).unwrap_or(false) =>
+                    {
+                        current.certificates_validated = false;
+                        current.certificate_validation_error = Some(message.clone());
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if terminalized {
+                self.resolve_certificate_validation(&session.session_nonce);
+                self.deferred_general_messages
+                    .lock()
+                    .await
+                    .remove(&session.session_nonce);
+            }
+        }
+        result
     }
 
     async fn wait_for_certificate_validation_with_timeout(
@@ -715,19 +743,26 @@ impl<W: WalletInterface> Peer<W> {
     ) -> Result<(), AuthError> {
         session.certificates_validated = validation_error.is_none();
         session.certificate_validation_error = validation_error;
-        {
+        let updated = {
             let mut manager = self.session_manager.write().await;
-            if !manager.update_session(&session.session_nonce, session.clone()) {
-                return Err(AuthError::SessionNotFound(format!(
-                    "session evicted during certificate validation for nonce: {}",
-                    session.session_nonce
-                )));
+            let updated = manager.update_session(&session.session_nonce, session.clone());
+            if updated {
+                manager.touch(&session.session_nonce, now_ms());
             }
-            manager.touch(&session.session_nonce, now_ms());
-        }
+            updated
+        };
         self.resolve_certificate_validation(&session.session_nonce);
-        self.flush_deferred_general_messages(&session.session_nonce)
-            .await
+        let _ = self
+            .flush_deferred_general_messages(&session.session_nonce)
+            .await;
+        if updated {
+            Ok(())
+        } else {
+            Err(AuthError::SessionNotFound(format!(
+                "session evicted during certificate validation for nonce: {}",
+                session.session_nonce
+            )))
+        }
     }
 
     async fn defer_general_message(
@@ -736,47 +771,121 @@ impl<W: WalletInterface> Peer<W> {
         message: AuthMessage,
     ) -> Result<(), AuthError> {
         let message_nonce = message.nonce.as_deref().unwrap_or_default();
-        let mut deferred = self.deferred_general_messages.lock().await;
-        let queue = deferred.entry(session.session_nonce.clone()).or_default();
-        if queue
-            .iter()
-            .any(|entry| entry.message.nonce.as_deref() == Some(message_nonce))
+        let payload = message.payload.clone().unwrap_or_default();
+        let verify_result = match self
+            .wallet
+            .verify_signature(
+                VerifySignatureArgs {
+                    data: Some(payload),
+                    hash_to_directly_verify: None,
+                    signature: message.signature.clone().unwrap_or_default(),
+                    protocol_id: Protocol {
+                        security_level: 2,
+                        protocol: AUTH_PROTOCOL_ID.to_string(),
+                    },
+                    key_id: format!("{} {}", message_nonce, session.session_nonce),
+                    counterparty: Counterparty {
+                        counterparty_type: CounterpartyType::Other,
+                        public_key: Some(parse_public_key(&message.identity_key)?),
+                    },
+                    for_self: None,
+                    privileged: false,
+                    privileged_reason: None,
+                    seek_permission: None,
+                },
+                None,
+            )
+            .await
         {
-            return Err(AuthError::ReplayDetected(format!(
-                "duplicate deferred general message nonce on session from {}",
-                message.identity_key
-            )));
+            Ok(result) => result,
+            Err(_) => return Ok(()),
+        };
+        if !verify_result.valid {
+            return Ok(());
         }
-        if queue.len() >= MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION {
-            return Err(AuthError::CertificateValidation(format!(
-                "deferred general message limit ({MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION}) exceeded for peer {}",
-                session.peer_identity_key
-            )));
+
+        loop {
+            let mut deferred = self.deferred_general_messages.lock().await;
+            let manager = match self.session_manager.try_read() {
+                Ok(manager) => manager,
+                Err(_) => {
+                    drop(deferred);
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+            };
+            let pending = manager
+                .get_session(&session.session_nonce)
+                .map(Self::certificate_validation_is_pending)
+                .transpose()?
+                .unwrap_or(false);
+            if !pending {
+                drop(manager);
+                drop(deferred);
+                return self.handle_general_message(message).await;
+            }
+
+            let queue = deferred.entry(session.session_nonce.clone()).or_default();
+            if queue
+                .iter()
+                .any(|entry| entry.message.nonce.as_deref() == Some(message_nonce))
+            {
+                return Ok(());
+            }
+            if queue.len() >= MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION {
+                return Ok(());
+            }
+            queue.push_back(DeferredGeneralMessage {
+                message,
+                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
+            });
+            return Ok(());
         }
-        queue.push_back(DeferredGeneralMessage {
-            message,
-            deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
-        });
-        Ok(())
     }
 
     async fn expire_deferred_general_messages(&self) -> Result<(), AuthError> {
         let now = tokio::time::Instant::now();
         let mut deferred = self.deferred_general_messages.lock().await;
-        let mut first_timeout = None;
-        deferred.retain(|_, queue| {
+        let mut expired_sessions = Vec::new();
+        deferred.retain(|session_nonce, queue| {
+            let mut expired = false;
             while queue.front().is_some_and(|entry| entry.deadline <= now) {
-                let expired = queue.pop_front().expect("front checked");
-                if first_timeout.is_none() {
-                    first_timeout = Some(AuthError::Timeout(format!(
-                        "Timeout waiting for certificate validation from peer {}",
-                        expired.message.identity_key
-                    )));
-                }
+                queue.pop_front();
+                expired = true;
+            }
+            if expired {
+                expired_sessions.push(session_nonce.clone());
             }
             !queue.is_empty()
         });
-        first_timeout.map_or(Ok(()), Err)
+        drop(deferred);
+
+        for session_nonce in expired_sessions {
+            let terminalized = {
+                let mut manager = self.session_manager.write().await;
+                match manager.get_session_mut(&session_nonce) {
+                    Some(session)
+                        if Self::certificate_validation_is_pending(session).unwrap_or(false) =>
+                    {
+                        session.certificates_validated = false;
+                        session.certificate_validation_error = Some(format!(
+                            "Timeout waiting for certificate validation from peer {}",
+                            session.peer_identity_key
+                        ));
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if terminalized {
+                self.resolve_certificate_validation(&session_nonce);
+                self.deferred_general_messages
+                    .lock()
+                    .await
+                    .remove(&session_nonce);
+            }
+        }
+        Ok(())
     }
 
     /// Re-dispatch a session's deferred messages exactly once, in arrival
@@ -993,9 +1102,6 @@ impl<W: WalletInterface> Peer<W> {
     ) -> Result<(), AuthError> {
         // Find or create an authenticated session
         let session = self.get_authenticated_session(identity_key).await?;
-        let session = self
-            .wait_for_certificate_validation_while_pumping(&session, CERTIFICATE_WAIT_TIMEOUT)
-            .await?;
         let general_msg = self
             .create_general_message_from_session(&session, payload)
             .await?;
@@ -1015,6 +1121,36 @@ impl<W: WalletInterface> Peer<W> {
     ) -> Result<PeerSession, AuthError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                let reason = format!(
+                    "Timeout waiting for certificate validation from peer {}",
+                    session.peer_identity_key
+                );
+                let terminalized = {
+                    let mut manager = self.session_manager.write().await;
+                    match manager.get_session_mut(&session.session_nonce) {
+                        Some(current)
+                            if Self::certificate_validation_is_pending(current)
+                                .unwrap_or(false) =>
+                        {
+                            current.certificates_validated = false;
+                            current.certificate_validation_error = Some(reason.clone());
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                if terminalized {
+                    self.resolve_certificate_validation(&session.session_nonce);
+                    self.deferred_general_messages
+                        .lock()
+                        .await
+                        .remove(&session.session_nonce);
+                }
+                return Err(AuthError::Timeout(reason));
+            }
+
             let current = self
                 .session_manager
                 .read()
@@ -1034,12 +1170,6 @@ impl<W: WalletInterface> Peer<W> {
             let processed = self.process_pending().await?;
             if processed == 0 {
                 let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    return Err(AuthError::Timeout(format!(
-                        "Timeout waiting for certificate validation from peer {}",
-                        session.peer_identity_key
-                    )));
-                }
                 tokio::time::sleep(
                     Duration::from_millis(10).min(deadline.saturating_duration_since(now)),
                 )
@@ -1460,13 +1590,14 @@ impl<W: WalletInterface> Peer<W> {
                     let verifiable =
                         get_verifiable_certificates(&self.wallet, requested, &verifier_pubkey)
                             .await?;
-                    if !verifiable.is_empty() {
-                        // Use the session we just authenticated (breaks the
-                        // async recursion that would otherwise occur through
-                        // `get_authenticated_session` → `initiate_handshake`).
-                        self.send_certificate_response_for_session(&session, verifiable)
-                            .await?;
-                    }
+                    // Use the session we just authenticated (breaks the async
+                    // recursion that would otherwise occur through
+                    // `get_authenticated_session` → `initiate_handshake`). An
+                    // explicit empty response is intentional: it terminates a
+                    // Rust peer's certificate wait, while TS 2.4.1 receivers
+                    // harmlessly return early for `[]`.
+                    self.send_certificate_response_for_session(&session, verifiable)
+                        .await?;
                 }
             }
         }
@@ -1526,9 +1657,9 @@ impl<W: WalletInterface> Peer<W> {
     /// dispatch inline. Blocking here would leave the `certificateResponse` (or
     /// even the handshake's `initialResponse`) queued behind this message and
     /// deadlock for the full timeout. Do not restore the TS waiting mechanism.
-    /// Rust preserves the observable contract by queueing the message without
-    /// signature verification or payload delivery, then re-dispatching it after
-    /// certificate validation reaches a terminal state.
+    /// Rust preserves the observable contract by verifying the signature,
+    /// queueing without payload delivery, then re-dispatching after certificate
+    /// validation reaches a terminal state.
     async fn dispatch_general_message(&self, msg: AuthMessage) -> Result<(), AuthError> {
         let session = self.resolve_general_message_session(&msg).await?;
         if Self::certificate_validation_is_pending(&session)? {
@@ -1798,6 +1929,10 @@ impl<W: WalletInterface> Peer<W> {
                     your_nonce
                 )));
             }
+        }
+
+        if let Some(error) = session.certificate_validation_error.clone() {
+            return Err(AuthError::CertificateValidation(error));
         }
 
         let certs = msg
@@ -2098,7 +2233,6 @@ impl<W: WalletInterface> Peer<W> {
             AuthError::InvalidMessage("missing yourNonce in general message".to_string())
         })?;
         let msg_nonce = msg.nonce.as_deref().unwrap_or("");
-        let now = now_ms();
         let session = self.resolve_general_message_session(&msg).await?;
         if !session.is_authenticated {
             return Err(AuthError::NotAuthenticated(format!(
@@ -2107,15 +2241,10 @@ impl<W: WalletInterface> Peer<W> {
             )));
         }
 
-        // Side-effect-free verification cannot enqueue. It must still never
-        // verify a signature before required certificates validate, but unlike
-        // the dispatch path it returns promptly instead of owning a waiter.
-        if Self::certificate_validation_is_pending(&session)? {
-            return Err(AuthError::CertificateValidation(
-                "Cannot verify general message before certificate validation is complete"
-                    .to_string(),
-            ));
-        }
+        // The HTTP middleware path does not own the pull-based receiver, so it
+        // can match TS 2.4.1 and wait on the per-session validation signal.
+        self.wait_for_certificate_validation(&session).await?;
+        let now = now_ms();
 
         // Verify signature
         let payload = msg.payload.clone().unwrap_or_default();
@@ -2252,6 +2381,7 @@ mod tests {
     use crate::wallet::types::Protocol as WalletProtocol;
     use crate::wallet::ProtoWallet;
     use async_trait::async_trait;
+    use futures_util::FutureExt;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
 
@@ -2269,11 +2399,15 @@ mod tests {
     fn _assert_futures_send<W: WalletInterface + Send + Sync>(
         peer: &Peer<W>,
         message: AuthMessage,
+        session: &PeerSession,
     ) {
         fn is_send<T: Send>(_: T) {}
         is_send(peer.verify_general_message(message.clone()));
         is_send(peer.dispatch_message(message));
         is_send(peer.process_pending());
+        is_send(peer.wait_for_certificate_validation(session));
+        is_send(peer.send_message("peer", Vec::new()));
+        is_send(peer.create_general_message("peer", Vec::new()));
     }
 
     // -----------------------------------------------------------------------
@@ -4090,13 +4224,20 @@ mod tests {
         });
 
         // Pump peer B until it has an authenticated session for A.
-        let peer_a = loop {
-            peer_b.process_pending().await.unwrap();
-            if send_handle.is_finished() {
-                break send_handle.await.unwrap();
+        let mut send_handle = send_handle;
+        let peer_a = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    result = &mut send_handle => break result.unwrap(),
+                    result = peer_b.process_pending() => {
+                        result.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        };
+        })
+        .await
+        .expect("handshake pump timed out");
         // Absorb the trailing general message from the handshake send.
         peer_b.process_pending().await.unwrap();
 
@@ -4178,18 +4319,26 @@ mod tests {
         //    on the initialResponse, so pump B concurrently.
         let pa = peer_a.clone();
         let id_b = identity_b.clone();
-        let send_handle =
+        let mut send_handle =
             tokio::spawn(async move { pa.send_message(&id_b, b"handshake".to_vec()).await });
 
         let peer_b_pump = peer_b.clone();
-        loop {
-            peer_b_pump.process_pending().await.unwrap();
-            if send_handle.is_finished() {
-                send_handle.await.unwrap().unwrap();
-                break;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    result = &mut send_handle => {
+                        result.unwrap().unwrap();
+                        break;
+                    }
+                    result = peer_b_pump.process_pending() => {
+                        result.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("handshake pump timed out");
         peer_b.process_pending().await.unwrap(); // absorb trailing general msg
 
         // 2. Build N signed general messages from A bound to B's session.
@@ -4297,13 +4446,20 @@ mod tests {
             peer_a
         });
 
-        let peer_a = loop {
-            peer_b.process_pending().await.unwrap();
-            if send_handle.is_finished() {
-                break send_handle.await.unwrap();
+        let mut send_handle = send_handle;
+        let peer_a = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    result = &mut send_handle => break result.unwrap(),
+                    result = peer_b.process_pending() => {
+                        result.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        };
+        })
+        .await
+        .expect("authenticated-pair handshake timed out");
         // Absorb the trailing general message from the handshake send.
         peer_b.process_pending().await.unwrap();
 
@@ -4337,6 +4493,62 @@ mod tests {
                 if message == "Cannot send general message before certificate validation is complete"),
             "general message was created before certificate validation: {result:?}"
         );
+
+        let result = peer_a
+            .send_message(&identity_b, b"must fail immediately".to_vec())
+            .now_or_never()
+            .expect("TS rejects an outbound send synchronously at the certificate gate");
+        assert!(
+            matches!(result, Err(AuthError::CertificateValidation(_))),
+            "send_message must expose the same immediate gate error: {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_outbound_gate_checks_deadline_before_pumping_remote_work() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut session = peer_a.session_by_identifier(&identity_b).await.unwrap();
+        session.certificates_required = true;
+        session.certificates_validated = false;
+        session.certificate_validation_error = None;
+        peer_a
+            .session_manager
+            .write()
+            .await
+            .update_session(&session.session_nonce, session.clone());
+
+        let mut peer_b_rx = peer_b.take_transport_rx().await.unwrap();
+        let initial_request = AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::InitialRequest,
+            identity_key: wallet_identity(&peer_b.wallet).await,
+            nonce: None,
+            initial_nonce: Some(create_nonce(&peer_b.wallet).await.unwrap()),
+            your_nonce: None,
+            certificates: None,
+            requested_certificates: None,
+            payload: None,
+            signature: None,
+        };
+        peer_b.transport.send(initial_request).await.unwrap();
+
+        let result = peer_a
+            .wait_for_certificate_validation_while_pumping(&session, Duration::ZERO)
+            .await;
+        assert!(matches!(result, Err(AuthError::Timeout(_))));
+        assert!(
+            peer_a
+                .session_by_identifier(&session.session_nonce)
+                .await
+                .unwrap()
+                .certificate_validation_error
+                .is_some(),
+            "the pumping wait must persist its terminal deadline"
+        );
+        assert!(
+            matches!(peer_b_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "an already-expired gate must not process attacker-supplied work first"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -4358,17 +4570,10 @@ mod tests {
             session.certificates_validated = false;
         }
 
-        let dispatch = {
-            let peer_b = peer_b.clone();
-            tokio::spawn(async move { peer_b.dispatch_message(message).await })
-        };
-        tokio::task::yield_now().await;
-
-        assert!(
-            dispatch.is_finished(),
-            "dispatch must defer instead of blocking the pull-based drain"
-        );
-        dispatch.await.unwrap().expect("deferral succeeds");
+        tokio::time::timeout(Duration::from_secs(1), peer_b.dispatch_message(message))
+            .await
+            .expect("dispatch must defer instead of blocking the pull-based drain")
+            .expect("deferral succeeds");
         assert!(
             messages.try_recv().is_err(),
             "a deferred payload must not be delivered before validation"
@@ -4376,7 +4581,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_direct_general_verification_never_waits_on_certificate_gate() {
+    async fn test_unverified_general_message_never_consumes_a_deferred_slot() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut message = peer_a
+            .create_general_message(&identity_b, b"forged".to_vec())
+            .await
+            .unwrap();
+        let session_nonce = message.your_nonce.clone().unwrap();
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            let session = sessions.get_session_mut(&session_nonce).unwrap();
+            session.certificates_required = true;
+            session.certificates_validated = false;
+        }
+        let last = message.signature.as_ref().unwrap().len() - 1;
+        message.signature.as_mut().unwrap()[last] ^= 0x01;
+
+        peer_b
+            .dispatch_message(message)
+            .await
+            .expect("an invalid pending frame is dropped without aborting the drain");
+        assert!(
+            !peer_b
+                .deferred_general_messages
+                .lock()
+                .await
+                .contains_key(&session_nonce),
+            "an unauthenticated frame must not consume deferred capacity"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_defer_rechecks_session_after_acquiring_queue_lock() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut messages = peer_b.on_general_message().unwrap();
+        while messages.try_recv().is_ok() {}
+        let message = peer_a
+            .create_general_message(&identity_b, b"race closed".to_vec())
+            .await
+            .unwrap();
+        let session_nonce = message.your_nonce.clone().unwrap();
+        let stale_pending = {
+            let mut sessions = peer_b.session_manager.write().await;
+            let session = sessions.get_session_mut(&session_nonce).unwrap();
+            session.certificates_required = true;
+            session.certificates_validated = false;
+            session.clone()
+        };
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            sessions
+                .get_session_mut(&session_nonce)
+                .unwrap()
+                .certificates_validated = true;
+        }
+
+        peer_b
+            .defer_general_message(&stale_pending, message)
+            .await
+            .expect("resolved validation dispatches instead of re-creating the queue");
+        let (_, payload) = tokio::time::timeout(Duration::from_secs(1), messages.recv())
+            .await
+            .expect("resolved message delivery timeout")
+            .expect("general message channel closed");
+        assert_eq!(payload, b"race closed");
+        assert!(!peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .contains_key(&session_nonce));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_general_verification_waits_for_certificate_gate() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let message = peer_a
             .create_general_message(&identity_b, b"verify gate".to_vec())
@@ -4391,16 +4668,22 @@ mod tests {
             session.certificate_validation_error = None;
         }
 
-        let result = tokio::time::timeout(
-            Duration::from_millis(50),
-            peer_b.verify_general_message(message),
-        )
-        .await
-        .expect("verification must return promptly instead of owning a waiter");
+        let mut verification = Box::pin(peer_b.verify_general_message(message));
         assert!(
-            matches!(&result, Err(AuthError::CertificateValidation(message)) if message.contains("before certificate validation")),
-            "side-effect-free verify must reject the pending state: {result:?}"
+            verification.as_mut().now_or_never().is_none(),
+            "TS-compatible verification must wait while the certificate gate is pending"
         );
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            sessions
+                .get_session_mut(&session_nonce)
+                .unwrap()
+                .certificates_validated = true;
+        }
+        peer_b.resolve_certificate_validation(&session_nonce);
+        verification
+            .await
+            .expect("verification continues after certificate validation");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4553,10 +4836,35 @@ mod tests {
             .await
             .expect("dispatch only defers");
         tokio::time::advance(CERTIFICATE_WAIT_TIMEOUT).await;
+        peer_a
+            .transport
+            .send(AuthMessage {
+                version: AUTH_VERSION.to_string(),
+                message_type: MessageType::InitialRequest,
+                identity_key: wallet_identity(&peer_a.wallet).await,
+                nonce: None,
+                initial_nonce: Some(create_nonce(&peer_a.wallet).await.unwrap()),
+                your_nonce: None,
+                certificates: None,
+                requested_certificates: None,
+                payload: None,
+                signature: None,
+            })
+            .await
+            .unwrap();
         let result = peer_b.process_pending().await;
+        assert_eq!(
+            result.expect("background expiry must not contaminate the caller"),
+            1,
+            "the unrelated initialRequest must complete normally"
+        );
+        let session = peer_b
+            .session_by_identifier(&session_nonce)
+            .await
+            .expect("expired session remains inspectable");
         assert!(
-            matches!(&result, Err(AuthError::Timeout(message)) if message.contains("Timeout waiting for certificate validation")),
-            "expired deferred message must surface the certificate timeout: {result:?}"
+            session.certificate_validation_error.is_some(),
+            "the waiting session must reach its own terminal timeout state"
         );
     }
 
@@ -4588,11 +4896,7 @@ mod tests {
             .await
             .unwrap();
         let result = peer_b.dispatch_message(overflow).await;
-
-        assert!(
-            matches!(&result, Err(AuthError::CertificateValidation(message)) if message.contains("deferred general message limit")),
-            "the per-session queue must reject growth past its cap: {result:?}"
-        );
+        result.expect("overflow is dropped without aborting an unrelated drain");
         assert_eq!(
             peer_b
                 .deferred_general_messages
@@ -4626,7 +4930,7 @@ mod tests {
 
         peer_b.dispatch_message(captured.clone()).await.unwrap();
         let duplicate = peer_b.dispatch_message(captured.clone()).await;
-        assert!(matches!(duplicate, Err(AuthError::ReplayDetected(_))));
+        duplicate.expect("a duplicate deferral is dropped without aborting the drain");
 
         let certificate = issue_verifiable_certificate(
             &peer_a.wallet,
@@ -4656,6 +4960,101 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_deferred_frame_error_does_not_fail_committed_certificate_exchange() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut malformed = peer_a
+            .create_general_message(&identity_b, b"malformed deferred".to_vec())
+            .await
+            .unwrap();
+        malformed.signature.as_mut().unwrap()[0] ^= 0xff;
+        let session_nonce = malformed.your_nonce.clone().unwrap();
+        let mut session = peer_b.session_by_identifier(&session_nonce).await.unwrap();
+        session.certificates_required = true;
+        session.certificates_validated = false;
+        peer_b
+            .session_manager
+            .write()
+            .await
+            .update_session(&session_nonce, session.clone());
+        peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .entry(session_nonce.clone())
+            .or_default()
+            .push_back(DeferredGeneralMessage {
+                message: malformed,
+                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
+            });
+
+        peer_b
+            .finish_certificate_exchange(&mut session, None)
+            .await
+            .expect("a deferred frame error must not undo a committed handshake");
+        assert!(session.certificates_validated);
+        assert!(!peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .contains_key(&session_nonce));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_evicted_certificate_exchange_still_cleans_waiters_and_deferred_queue() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let message = peer_a
+            .create_general_message(&identity_b, b"orphan candidate".to_vec())
+            .await
+            .unwrap();
+        let session_nonce = message.your_nonce.clone().unwrap();
+        let mut session = peer_b.session_by_identifier(&session_nonce).await.unwrap();
+        session.certificates_required = true;
+        session.certificates_validated = false;
+        peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .entry(session_nonce.clone())
+            .or_default()
+            .push_back(DeferredGeneralMessage {
+                message,
+                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
+            });
+        let (sender, receiver) = watch::channel(false);
+        peer_b
+            .certificate_validation_waiters
+            .lock()
+            .unwrap()
+            .insert(
+                session_nonce.clone(),
+                Arc::new(CertificateWaiterSignal {
+                    sender,
+                    active_waiters: AtomicUsize::new(0),
+                }),
+            );
+        peer_b
+            .session_manager
+            .write()
+            .await
+            .remove_session(&session_nonce);
+
+        let result = peer_b.finish_certificate_exchange(&mut session, None).await;
+        assert!(matches!(result, Err(AuthError::SessionNotFound(_))));
+        assert!(
+            *receiver.borrow(),
+            "session eviction must still wake certificate waiters"
+        );
+        assert!(
+            !peer_b
+                .deferred_general_messages
+                .lock()
+                .await
+                .contains_key(&session_nonce),
+            "session eviction must still remove its deferred queue"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_certificate_validation_wait_times_out() {
         let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
         let identity_a = wallet_identity(&peer_a.wallet).await;
@@ -4671,17 +5070,20 @@ mod tests {
             .await
             .update_session(&session.session_nonce, session.clone());
 
-        let result = peer_b
-            .wait_for_certificate_validation_with_timeout(
-                &session,
-                std::time::Duration::from_millis(20),
-            )
-            .await;
+        let result = peer_b.wait_for_certificate_validation(&session).await;
 
         assert!(
             matches!(&result, Err(AuthError::Timeout(message))
                 if message.contains("Timeout waiting for certificate validation from peer")),
             "expected certificate-validation timeout, got {result:?}"
+        );
+        let terminal = peer_b
+            .session_by_identifier(&session.session_nonce)
+            .await
+            .expect("timed-out session remains recorded");
+        assert!(
+            terminal.certificate_validation_error.is_some(),
+            "the waiting side must record its own timeout as terminal"
         );
     }
 
@@ -4710,18 +5112,22 @@ mod tests {
                     .await
             })
         };
-        loop {
-            let ready = peer_b
-                .certificate_validation_waiters
-                .lock()
-                .unwrap()
-                .get(&session.session_nonce)
-                .is_some_and(|signal| signal.sender.receiver_count() == 1);
-            if ready {
-                break;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let ready = peer_b
+                    .certificate_validation_waiters
+                    .lock()
+                    .unwrap()
+                    .get(&session.session_nonce)
+                    .is_some_and(|signal| signal.sender.receiver_count() == 1);
+                if ready {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("first certificate waiter never registered");
         let second = {
             let peer_b = peer_b.clone();
             let session = session.clone();
@@ -4731,18 +5137,22 @@ mod tests {
                     .await
             })
         };
-        loop {
-            let ready = peer_b
-                .certificate_validation_waiters
-                .lock()
-                .unwrap()
-                .get(&session.session_nonce)
-                .is_some_and(|signal| signal.sender.receiver_count() == 2);
-            if ready {
-                break;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let ready = peer_b
+                    .certificate_validation_waiters
+                    .lock()
+                    .unwrap()
+                    .get(&session.session_nonce)
+                    .is_some_and(|signal| signal.sender.receiver_count() == 2);
+                if ready {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("second certificate waiter never registered");
 
         assert!(matches!(first.await.unwrap(), Err(AuthError::Timeout(_))));
         peer_b
@@ -4776,19 +5186,25 @@ mod tests {
             let session = session.clone();
             tokio::spawn(async move { peer_b.wait_for_certificate_validation(&session).await })
         };
-        loop {
-            if peer_b
-                .certificate_validation_waiters
-                .lock()
-                .unwrap()
-                .contains_key(&session.session_nonce)
-            {
-                break;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if peer_b
+                    .certificate_validation_waiters
+                    .lock()
+                    .unwrap()
+                    .contains_key(&session.session_nonce)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("cancelled certificate waiter never registered");
         waiter.abort();
-        let _ = waiter.await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("aborted certificate waiter did not stop");
         tokio::task::yield_now().await;
 
         assert!(
@@ -4874,23 +5290,29 @@ mod tests {
             let peer = peer.clone();
             tokio::spawn(async move { peer.fire_certificates_received_listeners("0", &[]).await })
         };
-        first_started.notified().await;
+        tokio::time::timeout(Duration::from_secs(1), first_started.notified())
+            .await
+            .expect("first certificate delivery listener never started");
 
         let mut backlog = Vec::new();
-        for index in 1..=64 {
-            let delivery_peer = peer.clone();
-            backlog.push(tokio::spawn(async move {
-                delivery_peer
-                    .fire_certificates_received_listeners(&index.to_string(), &[])
-                    .await
-            }));
-            loop {
-                if peer.certificate_deliveries.lock().unwrap().queue.len() == index {
-                    break;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            for index in 1..=64 {
+                let delivery_peer = peer.clone();
+                backlog.push(tokio::spawn(async move {
+                    delivery_peer
+                        .fire_certificates_received_listeners(&index.to_string(), &[])
+                        .await
+                }));
+                loop {
+                    if peer.certificate_deliveries.lock().unwrap().queue.len() == index {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
             }
-        }
+        })
+        .await
+        .expect("certificate delivery backlog did not fill");
         release_first.notify_one();
         first.await.unwrap().unwrap();
         for delivery in backlog {
@@ -4955,6 +5377,34 @@ mod tests {
             matches!(terminal, Err(AuthError::CertificateValidation(_))),
             "an authenticated empty response must terminate as rejected, not keep waiting: {terminal:?}"
         );
+
+        let certificate = issue_verifiable_certificate(
+            &peer_a.wallet,
+            &parse_public_key(&identity_b).unwrap(),
+            CertificateType([66; 32]),
+        )
+        .await;
+        let later_response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            waiting_session.session_nonce.clone(),
+            Some(vec![certificate]),
+            None,
+            None,
+        )
+        .await;
+        let later = peer_b.dispatch_message(later_response).await;
+        assert!(
+            matches!(later, Err(AuthError::CertificateValidation(_))),
+            "a later response must not promote a terminally rejected session: {later:?}"
+        );
+        let still_terminal = peer_b
+            .session_by_identifier(&waiting_session.session_nonce)
+            .await
+            .unwrap();
+        assert!(!still_terminal.certificates_validated);
+        assert!(still_terminal.certificate_validation_error.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5590,6 +6040,64 @@ mod tests {
             response.certificates.as_ref().is_some_and(Vec::is_empty),
             "TS 2.4.1 emits certificates: [] when the embedded request has no matches"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_initial_response_embedded_request_auto_responds_with_empty_set() {
+        let requester_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let responder_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let requester_identity = wallet_identity(&requester_wallet).await;
+        let responder_identity = wallet_identity(&responder_wallet).await;
+        let (requester_transport, responder_transport) = create_mock_transport_pair();
+        let mut responder_rx = responder_transport.subscribe();
+        let peer = Arc::new(Peer::new(requester_wallet, requester_transport));
+
+        let handshake = {
+            let peer = peer.clone();
+            let responder_identity = responder_identity.clone();
+            tokio::spawn(async move { peer.get_authenticated_session(&responder_identity).await })
+        };
+        let request = tokio::time::timeout(Duration::from_secs(1), responder_rx.recv())
+            .await
+            .expect("initialRequest timeout")
+            .expect("initialRequest");
+        let mut requested = RequestedCertificateSet::default();
+        requested.certifiers.push(
+            PrivateKey::from_random()
+                .unwrap()
+                .to_public_key()
+                .to_der_hex(),
+        );
+        requested.insert(base64_encode(&[67; 32]), vec!["name".to_string()]);
+        let mut response = signed_initial_response(
+            &responder_wallet,
+            responder_identity,
+            &requester_identity,
+            request.initial_nonce.unwrap(),
+            None,
+        )
+        .await;
+        response.requested_certificates = Some(requested);
+        responder_transport.send(response).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), handshake)
+            .await
+            .expect("handshake timeout")
+            .expect("handshake task")
+            .expect("handshake succeeds");
+        let certificate_response =
+            tokio::time::timeout(Duration::from_secs(1), responder_rx.recv())
+                .await
+                .expect("empty certificateResponse was not sent")
+                .expect("requester transport closed");
+        assert_eq!(
+            certificate_response.message_type,
+            MessageType::CertificateResponse
+        );
+        assert!(certificate_response
+            .certificates
+            .as_ref()
+            .is_some_and(Vec::is_empty));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

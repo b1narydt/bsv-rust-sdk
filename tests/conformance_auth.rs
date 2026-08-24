@@ -77,7 +77,7 @@ const GOVERNED_SKIPS: &[GovernedSkip<'_>] = &[
 const KNOWN_DIVERGENCES: &[KnownDivergence<'_>] = &[KnownDivergence {
     id: "auth.brc31-handshake.1",
     reason: "the corpus request example carries nonce/payload/signature, while real Rust and TS 2.4.1 Peer constructors do not",
-    evidence: "initialRequest JSON shape mismatch",
+    evidence: "initialRequest JSON shape mismatch: expected keys {\"identityKey\", \"initialNonce\", \"messageType\", \"nonce\", \"payload\", \"signature\", \"version\"}, got {\"identityKey\", \"initialNonce\", \"messageType\", \"requestedCertificates\", \"version\"}",
 }];
 
 struct CaptureTransport {
@@ -350,20 +350,20 @@ fn dispatch(vector: &Vector, observed: &Observations) -> Result<(), String> {
             let expected_keys: BTreeSet<&str> =
                 expected_object.keys().map(String::as_str).collect();
             let actual_keys: BTreeSet<&str> = actual_object.keys().map(String::as_str).collect();
-            ensure(actual_keys == expected_keys, || {
-                format!(
-                    "initialRequest JSON shape mismatch: expected keys {expected_keys:?}, got {actual_keys:?}"
-                )
-            })?;
             ensure(
                 actual_object.get("messageType") == expected_object.get("messageType")
                     && actual_object.get("version") == expected_object.get("version"),
                 || "real initialRequest changed messageType or version".to_string(),
             )?;
             ensure(
-                actual_object.get("nonce") == actual_object.get("initialNonce"),
-                || "real initialRequest nonce did not equal initialNonce".to_string(),
-            )
+                expected_object.get("nonce") == expected_object.get("initialNonce"),
+                || "corpus initialRequest nonce did not equal initialNonce".to_string(),
+            )?;
+            ensure(actual_keys == expected_keys, || {
+                format!(
+                    "initialRequest JSON shape mismatch: expected keys {expected_keys:?}, got {actual_keys:?}"
+                )
+            })
         }
         "auth.brc31-handshake.12" => {
             assert_required_fields(vector, &observed.initial_request)?;
@@ -420,9 +420,13 @@ async fn official_auth_conformance() {
         initial_response,
         request_id,
     };
-    run_corpora(CORPORA, GOVERNED_SKIPS, KNOWN_DIVERGENCES, |_, vector| {
+    let asserted = run_corpora(CORPORA, GOVERNED_SKIPS, KNOWN_DIVERGENCES, |_, vector| {
         dispatch(vector, &observed)
     });
+    assert_eq!(
+        asserted, 8,
+        "the auth conformance asserted-vector count must not silently erode"
+    );
 }
 
 #[tokio::test(start_paused = true)]

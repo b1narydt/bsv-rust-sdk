@@ -99,7 +99,7 @@ pub fn run_corpora(
     governed_skips: &[GovernedSkip<'_>],
     known: &[KnownDivergence<'_>],
     dispatch: impl Fn(&str, &Vector) -> Result<(), String>,
-) {
+) -> usize {
     let skip_ids: BTreeSet<&str> = governed_skips.iter().map(|skip| skip.id).collect();
     let known_by_id: BTreeMap<&str, KnownDivergence<'_>> =
         known.iter().map(|entry| (entry.id, *entry)).collect();
@@ -189,4 +189,5 @@ pub fn run_corpora(
         skipped.len(),
         failures.join("\n")
     );
+    asserted
 }
