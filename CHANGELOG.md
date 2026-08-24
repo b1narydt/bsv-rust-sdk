@@ -27,14 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrequested types, then decrypts every revealed field with the verifier wallet,
   matching @bsv/sdk 2.4.1. Certificate discovery also forwards the requested
   certifier set to `list_certificates` instead of querying every certifier.
-- **General messages are gated on required certificate validation without
-  blocking the pull-based transport drain.** Dispatch verifies a frame before
-  placing it in a bounded per-session deferred queue, then flushes it after
-  validation. Duplicate, overflowed, malformed, and expired deferrals are
-  dropped without contaminating an unrelated caller's drain. Direct dispatch
-  reports its own frame error; shared drains isolate it and continue. The public
-  HTTP-middleware path and both outbound APIs reject a pending gate immediately.
-  Explicit certificate waiters retain independent 30-second deadlines.
+- **`Peer` owns a background receive task; callers no longer pump transport
+  progress.** `initialResponse` frames route to nonce-keyed handshake waiters;
+  other frames dispatch concurrently in separate bounded lanes (64 general,
+  16 control). Certificate-gated general frames wait in their independent
+  dispatch tasks while the receiver continues accepting the response that
+  releases them. The deferred-message queue and pending-initial-response store,
+  including their expiry/overflow/flush machinery, are removed. Direct
+  dispatch still returns its own error; background receive/dispatch errors are
+  exposed through the new bounded, best-effort `Peer::on_error()` receiver and
+  never become sticky session state. No logging dependency was added.
 - **Empty certificate responses match each @bsv/sdk 2.4.1 producer site.** A
   standalone `certificateRequest` receives signed `[]`; an embedded request in
   `initialRequest` retains `certificates: []`; the post-handshake and AuthFetch
@@ -80,12 +82,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `HashMap<String, String>`.
 - `SessionManager::update_session` now returns `bool` (`false` means the session
   was evicted) instead of `()`, and `reap_idle` returns the removed nonces so
-  `Peer` can clean its waiter/deferred/pending state.
+  `Peer` can clean its nonce-keyed handshake and certificate waiters.
 - `PeerSession` adds public `requested_certificates`; certificate-gate failure
   is deliberately not retained as session-wide error state.
-- `Peer::process_next` reports the one consumed frame's dispatch error.
-  `Peer::process_pending` and nested handshake pumps isolate per-frame failures
-  because their callers own shared multi-frame drains.
+- `Peer::process_next` and `Peer::process_pending` are removed. `Peer::new`
+  starts receive processing immediately and therefore must be called inside a
+  Tokio runtime. `Peer` is cloneable; its background task shuts down when the
+  final handle is dropped.
+- Embedded certificate requests retain Rust's deliberate proof-first wire
+  order: `certificateResponse` is sent before the initiating call can emit its
+  first `general` frame. @bsv/sdk 2.4.1 permits the opposite race; Rust keeps
+  proof-first ordering so receivers never need to defer that first frame (#23).
 
 ## [0.7.1] - 2026-08-23
 

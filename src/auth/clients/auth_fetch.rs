@@ -393,11 +393,6 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             .clone()
             .unwrap_or_default();
 
-        // A handler-mode handshake can leave its certificateResponse queued.
-        // Advance available protocol work before the immediate outbound gate;
-        // the shared drain isolates errors belonging to other frames.
-        auth_peer.peer.process_pending().await?;
-
         let (response_tx, response_rx) = oneshot::channel::<Vec<u8>>();
         auth_peer
             .router
@@ -434,20 +429,8 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             return Err(e);
         }
 
-        // Drain the synchronous reqwest response (the HTTP transport enqueues
-        // the reply into general_rx as part of send()). `process_pending` only
-        // holds the peer's handshake mutex while pulling each frame and releases
-        // it before dispatch; the dispatcher task routes the decoded reply.
-        if let Err(e) = auth_peer.peer.process_pending().await {
-            auth_peer
-                .router
-                .lock()
-                .expect("router mutex poisoned")
-                .remove(&request_nonce_b64);
-            return Err(e);
-        }
-
-        // (f) Await our specific response via the oneshot, with a timeout.
+        // (f) The peer's background receive task dispatches the synchronous
+        // HTTP response into `general_rx`; await our nonce-routed oneshot.
         match tokio::time::timeout(Duration::from_secs(30), response_rx).await {
             Ok(Ok(response_payload)) => {
                 if response_payload.len() < 32 {
@@ -1762,7 +1745,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn auth_fetch_pumps_handler_mode_certificate_response_before_general_message() {
+    async fn auth_fetch_background_receive_handles_certificate_response_before_general_message() {
         let client_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
         let server_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
         let client_identity = identity(&client_wallet).await;
@@ -1860,28 +1843,27 @@ mod tests {
                 }));
         }
 
-        let mut handshake = {
+        let handshake = {
             let client_peer = client_peer.clone();
             tokio::spawn(async move { client_peer.get_authenticated_session("").await })
         };
-        let session = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                tokio::select! {
-                    result = &mut handshake => break result.unwrap().unwrap(),
-                    result = server_peer.process_pending() => {
-                        result.unwrap();
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("handler-mode handshake timed out");
+        let session = tokio::time::timeout(Duration::from_secs(1), handshake)
+            .await
+            .expect("handler-mode handshake timed out")
+            .unwrap()
+            .unwrap();
         assert!(!session.certificates_validated);
         release_response.notify_one();
         tokio::time::timeout(Duration::from_secs(1), response_sent.notified())
             .await
             .expect("handler-mode certificate response was not sent");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client_peer.wait_for_certificate_validation(&session),
+        )
+        .await
+        .expect("background certificate dispatch timed out")
+        .expect("background certificate dispatch validates the session");
 
         let general_rx = client_peer.on_general_message().unwrap();
         let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
@@ -1919,13 +1901,10 @@ mod tests {
         let server = {
             let server_peer = server_peer.clone();
             tokio::spawn(async move {
-                let request_payload = loop {
-                    server_peer.process_pending().await.unwrap();
-                    if let Ok((_sender, payload)) = server_general.try_recv() {
-                        break payload;
-                    }
-                    tokio::task::yield_now().await;
-                };
+                let (_sender, request_payload) = server_general
+                    .recv()
+                    .await
+                    .expect("background dispatcher delivers request");
                 let mut response_payload = request_payload[..32].to_vec();
                 write_varint_num(&mut response_payload, 200);
                 write_varint_num(&mut response_payload, 0);
@@ -1949,7 +1928,7 @@ mod tests {
         } else {
             server.await.unwrap();
         }
-        let response = result.expect("certificate response must be pumped before signing general");
+        let response = result.expect("certificate response must validate before signing general");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok");
         assert_eq!(response.server_identity_key, Some(server_identity));

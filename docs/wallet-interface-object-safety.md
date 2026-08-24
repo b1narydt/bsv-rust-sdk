@@ -141,20 +141,12 @@ With `#[async_trait]`, the futures returned by WalletInterface methods would be 
 - **LocalSet and spawn_local still work.** `spawn_local` accepts both Send and non-Send futures. The tests would compile and run unchanged.
 - **Optionally**, these tests could be simplified to use regular `tokio::spawn` instead of `spawn_local`, since the futures are now Send. This is a simplification, not a requirement.
 
-### Impact on Cooperative Dispatch
+### Impact on background dispatch
 
-`Peer::process_next` and `Peer::process_pending` use cooperative polling (`try_recv` + `.await`) instead of `tokio::spawn`. This pattern:
-
-```rust
-pub async fn process_next(&mut self) -> Result<bool, AuthError> {
-    match rx.try_recv() {
-        Ok(msg) => { self.dispatch_message(msg).await?; Ok(true) }
-        // ...
-    }
-}
-```
-
-With `#[async_trait]`, `dispatch_message` would return a `Send` future. Since cooperative dispatch calls `.await` directly (no spawning), the Send bound has **zero impact** on this pattern. It continues to work identically.
+`Peer` now spawns bounded per-message dispatch futures from its background
+receive task. The `#[async_trait]` `Send` guarantee is therefore required: a
+wallet operation may move between Tokio worker threads while its frame is in
+flight.
 
 ### WalletWireProcessor: Already Requires Send+Sync
 
@@ -351,8 +343,8 @@ pub struct Peer<W: WalletInterface> {
 }
 
 impl<W: WalletInterface> Peer<W> {
-    pub async fn process_next(&mut self) -> Result<bool, AuthError> {
-        // ... wallet method calls work the same way
+    pub async fn dispatch_message(&self, message: AuthMessage) -> Result<(), AuthError> {
+        // wallet method calls work the same way
     }
 }
 ```

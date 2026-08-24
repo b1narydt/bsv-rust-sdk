@@ -202,7 +202,7 @@ The audit followed every `serde_json::to_vec`/`to_string` site to every
 | `MasterCertificate.master_keyring` and `VerifiableCertificate::new` input | `IndexMap<String, String>` | Yes, through verifier-keyring creation and auth response construction | **FIXED after R8 reopening** — caller/wallet order survives into signed JSON; live TS and Rust vectors pin `zeta, alpha, middle` |
 | `ProveCertificateResult.keyring_for_verifier` | `IndexMap<String, String>` | Yes: `get_verifiable_certificates` passes it into `VerifiableCertificate` | **FIXED after R8 reopening** — wallet result order is no longer destroyed before auth serialization |
 | `IdentityCertificate.publicly_revealed_keyring` / `decrypted_fields` | `IndexMap<String, String>` | Wallet discovery wire uses TS `Object.entries` order | **FIXED** — both public types and serializer/deserializer preserve order |
-| `Peer` waiter/deferred/pending/session indexes | `HashMap<...>` | No; internal state only, none derives `Serialize` or nests in `AuthMessage` | **SAFE / NOT WIRE DATA** |
+| `Peer` handshake/certificate waiter and session indexes | `HashMap<...>` | No; internal state only, none derives `Serialize` or nests in `AuthMessage` | **SAFE / NOT WIRE DATA** |
 | AuthFetch request headers | `HashMap<String, String>` | The resulting payload is signed, but the map itself is not serialized | **SAFE** — `signable_request_headers` normalizes and sorts into a vector before encoding |
 | Other wallet RPC maps (`PartialCertificate`, acquire/list/discovery args/results) | `HashMap<...>` | No path into `AuthMessage`; `Certificate` and the prove-result keyring are the separate ordered wire types | **OUTSIDE AUTH PREIMAGE** — keep `HashMap` |
 | Other crate JSON maps (registry/service/remittance metadata) | `HashMap<...>` | No JSON value is reserialized to reconstruct a `create_signature`/`verify_signature` preimage | **NOT THIS DEFECT CLASS** — transaction/message signatures consume the already-produced raw bytes rather than rebuilding them from a parsed map |
@@ -231,7 +231,7 @@ Reference points: TS is single-threaded (`Promise.all` = interleaved I/O, not pa
 |---|---|---|---|---|---|
 | 38 | `validate_certificates` over N certs | `Promise.all` (`dist/cjs/src/auth/utils/validateCertificates.js:14`) | **Worker pool**, `min(len(certs), NumCPU)`, first-error-cancels via `context.WithCancel` (`utils/validate_certificates.go:99-146`) | **FIXED** — `available_parallelism()`-bounded `FuturesUnordered`; first completed false/error drops siblings | Confirmed. Deterministic paused-time tests measured 1s sequential → 200ms bounded for 10 certs/8 CPUs and 7s → 0ms first-error cancellation. Single-cert behavior/order unchanged; multi-failure winner may differ, as in TS |
 | 39 | `get_verifiable_certificates` → `prove_certificate` per cert | `Promise.all` (`dist/cjs/src/auth/utils/getVerifiableCertificates.js:18`) | Sequential (`get_verifiable_certificates.go:60`) | Sequential, documented | **REFUTED as a defect** — leave sequential. Go's real-parallelism implementation made this deliberate Layer-2 choice; local wallet fan-out has no demonstrated value |
-| 40 | Transport receive/dispatch | Background `onData` callbacks | **Background goroutine** `go t.receiveMessages()` (`websocket_transport.go:74`) | **Caller-driven pull loop** (`process_next`/`process_pending`) — unique to the Rust port | **DECISION — analysis written** in `docs/CONFORMANCE-AND-CONCURRENCY.md`; no implementation per task. Background receive could remove the pull mutex/pending-response net and conditionally the deferred queue, but breaks pumping APIs/tests and requires new error/lifecycle/bounding semantics |
+| 40 | Transport receive/dispatch | Background `onData` callbacks | **Background goroutine** `go t.receiveMessages()` (`websocket_transport.go:74`) | **FIXED** — peer-owned background receiver; nonce-routed handshake waiters; independent 64-general/16-control dispatch lanes; bounded async error observer | Implemented on `feat/background-receive-task`. `process_next`/`process_pending`, the pull mutex, deferred queue, and pending-response net are deleted; concurrency width and the certificate-release deadlock are mutation-proven |
 | 41 | Certificate gate on general messages | Present (`dist/cjs/src/auth/Peer.js:102-105`, receive path later in the same file) | **Absent** — `PeerSession` has no `CertificatesRequired`/`CertificatesValidated` fields at all | Kept, with registered pull-transport divergences | **REFUTED as a reason to remove it** — acceptance timing is peer-observable Layer 1, so TS remains normative. Go's omission informs mechanism/load-bearing analysis only |
 
 ## Decisions outstanding
@@ -241,5 +241,7 @@ Reference points: TS is single-threaded (`Promise.all` = interleaved I/O, not pa
 - **One TS bug conformed to deliberately**, documented in code, to be raised upstream:
   1. TS commits `certificatesValidated` *before* awaiting listeners, so a rejecting listener leaves
      validation committed
-- **Mechanism divergence** (#3): Rust defers rather than blocks because TS assumes a callback transport.
-  The non-identical overflow/duplicate/expiry/error behavior is now stated explicitly in the charter.
+- **Receive architecture resolved** (#40): Rust now has a background receiver and
+  bounded independent dispatch, so certificate-gated frames wait without a
+  deferred queue or caller-driven pump. Background errors are per-frame events,
+  never session latches.

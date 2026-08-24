@@ -7,12 +7,13 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock, Semaphore};
 
 use super::error::AuthError;
 use super::session_manager::{MarkSeen, SessionManager};
@@ -60,12 +61,9 @@ pub type OnCertificatesReceived =
 
 const CERTIFICATE_WAIT_TIMEOUT: Duration = Duration::from_millis(30_000);
 const CERTIFICATE_LISTENER_TIMEOUT: Duration = Duration::from_millis(30_000);
-const MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION: usize = 128;
-
-struct DeferredGeneralMessage {
-    message: AuthMessage,
-    deadline: tokio::time::Instant,
-}
+const MAX_IN_FLIGHT_GENERAL_DISPATCHES: usize = 64;
+const MAX_IN_FLIGHT_CONTROL_DISPATCHES: usize = 16;
+const BACKGROUND_ERROR_CHANNEL_CAPACITY: usize = 128;
 
 struct CertificateDelivery {
     identity_key: String,
@@ -111,6 +109,36 @@ struct CertificateWaiterSignal {
 
 type CertificateWaiterMap = HashMap<String, Arc<CertificateWaiterSignal>>;
 
+struct HandshakeWaiter {
+    id: u64,
+    sender: oneshot::Sender<AuthMessage>,
+}
+
+type HandshakeWaiterMap = HashMap<String, HandshakeWaiter>;
+
+/// Owns one nonce-keyed handshake response registration. Cancellation and
+/// timeout remove only this call's entry; a later handshake cannot inherit it.
+struct HandshakeWaiterRegistration {
+    waiters: Arc<StdMutex<HandshakeWaiterMap>>,
+    session_nonce: String,
+    id: u64,
+}
+
+impl Drop for HandshakeWaiterRegistration {
+    fn drop(&mut self) {
+        let mut waiters = self
+            .waiters
+            .lock()
+            .expect("handshake waiters lock poisoned");
+        if waiters
+            .get(&self.session_nonce)
+            .is_some_and(|waiter| waiter.id == self.id)
+        {
+            waiters.remove(&self.session_nonce);
+        }
+    }
+}
+
 /// Owns exactly one waiter registration. Dropping a timeout/cancelled future
 /// removes only that registration; it cannot close a signal still used by a
 /// concurrent waiter on the same session.
@@ -136,30 +164,6 @@ impl Drop for CertificateWaiterRegistration {
             waiters.remove(&self.session_nonce);
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Interior-mutability state for the handshake / transport-drain path
-// ---------------------------------------------------------------------------
-
-/// All the mutable handshake/transport state that must be serialized so the
-/// rest of `Peer` can be `&self`-shareable as `Arc<Peer<W>>`.
-///
-/// This holds only the single-consumer transport receiver. It lives behind a
-/// `tokio::sync::Mutex` on `Peer` so that the handshake path (`initiate_handshake`,
-/// `process_pending`, `process_next`) can drain/await on it while the lock-free
-/// general-message hot path (`verify_general_message`, `create_general_message`)
-/// never touches it.
-///
-/// The lock IS held across `rx.recv().await` inside `initiate_handshake` (a peer
-/// can only meaningfully run one handshake-drain at a time — the transport
-/// receiver is single-consumer), but it is NOT held across the wallet crypto
-/// awaits in the message handlers: handlers take `&self` and are invoked after
-/// a message has been pulled out of the receiver, so concurrent crypto work
-/// (and the general-message hot path) proceeds without contention on this mutex.
-struct HandshakeState {
-    /// Transport incoming message receiver (single-consumer).
-    transport_rx: Option<mpsc::Receiver<AuthMessage>>,
 }
 
 type EventReceiver<T> = StdMutex<Option<mpsc::Receiver<T>>>;
@@ -268,11 +272,18 @@ fn now_ms() -> u64 {
 /// A peer capable of performing BRC-103 mutual authentication.
 ///
 /// Manages sessions, handles authentication handshakes, certificate requests
-/// and responses, and sends/receives general messages over a Transport.
+/// and responses, and sends/receives general messages over a Transport. The
+/// transport receiver is owned by a bounded background dispatch task started
+/// by [`Peer::new`]; callers never need to pump receive progress.
 ///
 /// Generic over `W: WalletInterface` for cryptographic operations.
 /// Feature-gated behind `network` since it depends on tokio and Transport.
 pub struct Peer<W: WalletInterface> {
+    inner: Arc<PeerInner<W>>,
+}
+
+#[doc(hidden)]
+pub struct PeerInner<W: WalletInterface> {
     wallet: W,
     transport: Arc<dyn Transport>,
     /// Session store wrapped in an `Arc<RwLock>` so that the lock-free,
@@ -298,11 +309,18 @@ pub struct Peer<W: WalletInterface> {
     // before the Peer is shared, but must not require `&mut self`).
     general_message_rx: EventReceiver<(String, Vec<u8>)>,
     certificate_request_rx: StdMutex<Option<mpsc::Receiver<(String, RequestedCertificateSet)>>>,
+    background_error_tx: mpsc::Sender<AuthError>,
+    background_error_rx: EventReceiver<AuthError>,
 
-    /// Mutable handshake/transport-drain surface behind a single async mutex.
-    /// Locked only by the handshake path (`process_pending`, `process_next`,
-    /// `initiate_handshake`); the general-message hot path never touches it.
-    handshake: AsyncMutex<HandshakeState>,
+    /// The receive task routes initial responses directly to the initiating
+    /// call. This map never stores completed responses.
+    handshake_waiters: Arc<StdMutex<HandshakeWaiterMap>>,
+    handshake_waiter_id: AtomicU64,
+    general_dispatch_slots: Arc<Semaphore>,
+    control_dispatch_slots: Arc<Semaphore>,
+    /// Kept solely so dropping the final `Peer` closes the receive task's
+    /// watch receiver. The task itself owns no strong reference to this core.
+    _receive_task_lifetime: watch::Sender<()>,
 
     // Listener callbacks for incoming certificateRequest messages.
     // Mirrors TS SDK `onCertificateRequestReceivedCallbacks`.
@@ -324,17 +342,33 @@ pub struct Peer<W: WalletInterface> {
     /// Per-session retained validation signals. `watch` avoids missed wakeups:
     /// a waiter subscribing concurrently with validation still observes `true`.
     certificate_validation_waiters: Arc<StdMutex<CertificateWaiterMap>>,
-    /// General messages that arrived before this session's certificates were
-    /// validated. Each entry has its own deadline; the session stays usable.
-    deferred_general_messages: AsyncMutex<HashMap<String, VecDeque<DeferredGeneralMessage>>>,
-    /// Initial responses pulled by a nested dispatcher before their initiating
-    /// handshake resumes. Entries only exist for known unauthenticated sessions.
-    pending_initial_responses: StdMutex<HashMap<String, AuthMessage>>,
     callback_id_counter: StdMutex<u64>,
 }
 
-impl<W: WalletInterface> Peer<W> {
-    /// Create a new Peer with the given wallet and transport.
+impl<W: WalletInterface> Clone for Peer<W> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<W: WalletInterface> Deref for Peer<W> {
+    type Target = PeerInner<W>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<W: WalletInterface + 'static> Peer<W> {
+    /// Create a new Peer with the given wallet and transport, immediately
+    /// starting its background receive task.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime because the peer-owned
+    /// receive task must be spawned during construction.
     pub fn new(wallet: W, transport: Arc<dyn Transport>) -> Self {
         // General-message channel is bounded at 1024 (vs 32 for the
         // lower-traffic certificate-request observer) so that N concurrent in-flight general
@@ -344,8 +378,11 @@ impl<W: WalletInterface> Peer<W> {
         let (cert_req_tx, cert_req_rx) = mpsc::channel(32);
 
         let transport_rx = transport.subscribe();
+        let (background_error_tx, background_error_rx) =
+            mpsc::channel(BACKGROUND_ERROR_CHANNEL_CAPACITY);
+        let (receive_task_lifetime, receive_task_shutdown) = watch::channel(());
 
-        Peer {
+        let inner = Arc::new(PeerInner {
             wallet,
             transport,
             session_manager: Arc::new(RwLock::new(SessionManager::new())),
@@ -354,17 +391,98 @@ impl<W: WalletInterface> Peer<W> {
             certificate_request_tx: cert_req_tx,
             general_message_rx: StdMutex::new(Some(general_rx)),
             certificate_request_rx: StdMutex::new(Some(cert_req_rx)),
-            handshake: AsyncMutex::new(HandshakeState {
-                transport_rx: Some(transport_rx),
-            }),
+            background_error_tx,
+            background_error_rx: StdMutex::new(Some(background_error_rx)),
+            handshake_waiters: Arc::new(StdMutex::new(HashMap::new())),
+            handshake_waiter_id: AtomicU64::new(0),
+            general_dispatch_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_GENERAL_DISPATCHES)),
+            control_dispatch_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_CONTROL_DISPATCHES)),
+            _receive_task_lifetime: receive_task_lifetime,
             on_certificate_request_received_callbacks: StdMutex::new(BTreeMap::new()),
             on_certificates_received_callbacks: StdMutex::new(BTreeMap::new()),
             certificate_deliveries: StdMutex::new(CertificateDeliveryState::default()),
             certificate_validation_waiters: Arc::new(StdMutex::new(HashMap::new())),
-            deferred_general_messages: AsyncMutex::new(HashMap::new()),
-            pending_initial_responses: StdMutex::new(HashMap::new()),
             callback_id_counter: StdMutex::new(0),
+        });
+        Self::spawn_receive_task(Arc::downgrade(&inner), transport_rx, receive_task_shutdown);
+        Peer { inner }
+    }
+
+    fn spawn_receive_task(
+        peer: Weak<PeerInner<W>>,
+        mut transport_rx: mpsc::Receiver<AuthMessage>,
+        mut shutdown: watch::Receiver<()>,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                let message = tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    message = transport_rx.recv() => message,
+                };
+                let Some(message) = message else {
+                    if let Some(inner) = peer.upgrade() {
+                        Peer { inner }.report_background_error(AuthError::TransportNotConnected(
+                            "transport receive channel closed".to_string(),
+                        ));
+                    }
+                    break;
+                };
+                let Some(inner) = peer.upgrade() else {
+                    break;
+                };
+                let peer_handle = Peer { inner };
+
+                if message.message_type == MessageType::InitialResponse {
+                    peer_handle.route_initial_response(message);
+                    continue;
+                }
+
+                let (slots, lane) = if message.message_type == MessageType::General {
+                    (&peer_handle.general_dispatch_slots, "general")
+                } else {
+                    (&peer_handle.control_dispatch_slots, "control")
+                };
+                // Registered Layer-1 divergence: remote-controlled task fan-out
+                // is bounded. Saturated-lane frames are reported and dropped;
+                // admission never blocks the receiver behind a gated frame.
+                let permit = match slots.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        peer_handle.report_background_error(AuthError::TransportError(format!(
+                            "{lane} dispatch capacity exhausted; dropped inbound {:?} frame",
+                            message.message_type
+                        )));
+                        continue;
+                    }
+                };
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = peer_handle.dispatch_message(message).await {
+                        peer_handle.report_background_error(error);
+                    }
+                });
+            }
+        });
+    }
+
+    fn route_initial_response(&self, message: AuthMessage) {
+        let Some(session_nonce) = message.your_nonce.as_deref() else {
+            return;
+        };
+        let waiter = self
+            .handshake_waiters
+            .lock()
+            .expect("handshake waiters lock poisoned")
+            .remove(session_nonce);
+        if let Some(waiter) = waiter {
+            let _ = waiter.sender.send(message);
         }
+    }
+
+    fn report_background_error(&self, error: AuthError) {
+        let _ = self.background_error_tx.try_send(error);
     }
 
     /// Set certificate types to request from peers during handshake.
@@ -380,6 +498,19 @@ impl<W: WalletInterface> Peer<W> {
         self.general_message_rx
             .lock()
             .expect("general_message_rx lock poisoned")
+            .take()
+    }
+
+    /// Take the receiver for asynchronous receive/dispatch failures.
+    ///
+    /// Background failures belong to the frame that caused them and never
+    /// become session-wide state. Delivery is best-effort and bounded: if this
+    /// receiver is not drained, later errors are dropped instead of blocking
+    /// protocol progress.
+    pub fn on_error(&self) -> Option<mpsc::Receiver<AuthError>> {
+        self.background_error_rx
+            .lock()
+            .expect("background_error_rx lock poisoned")
             .take()
     }
 
@@ -709,18 +840,12 @@ impl<W: WalletInterface> Peer<W> {
         }
 
         {
-            let mut deferred = self.deferred_general_messages.lock().await;
-            for session_nonce in session_nonces {
-                deferred.remove(session_nonce);
-            }
-        }
-        {
-            let mut pending = self
-                .pending_initial_responses
+            let mut waiters = self
+                .handshake_waiters
                 .lock()
-                .expect("pending initial responses lock poisoned");
+                .expect("handshake waiters lock poisoned");
             for session_nonce in session_nonces {
-                pending.remove(session_nonce);
+                waiters.remove(session_nonce);
             }
         }
         for session_nonce in session_nonces {
@@ -742,9 +867,6 @@ impl<W: WalletInterface> Peer<W> {
             updated
         };
         self.resolve_certificate_validation(&session.session_nonce);
-        let _ = self
-            .flush_deferred_general_messages(&session.session_nonce)
-            .await;
         if updated {
             Ok(())
         } else {
@@ -753,118 +875,6 @@ impl<W: WalletInterface> Peer<W> {
                 session.session_nonce
             )))
         }
-    }
-
-    async fn defer_general_message(
-        &self,
-        session: &PeerSession,
-        message: AuthMessage,
-    ) -> Result<(), AuthError> {
-        let message_nonce = message.nonce.as_deref().unwrap_or_default();
-        let payload = message.payload.clone().unwrap_or_default();
-        let verify_result = match self
-            .wallet
-            .verify_signature(
-                VerifySignatureArgs {
-                    data: Some(payload),
-                    hash_to_directly_verify: None,
-                    signature: message.signature.clone().unwrap_or_default(),
-                    protocol_id: Protocol {
-                        security_level: 2,
-                        protocol: AUTH_PROTOCOL_ID.to_string(),
-                    },
-                    key_id: format!("{} {}", message_nonce, session.session_nonce),
-                    counterparty: Counterparty {
-                        counterparty_type: CounterpartyType::Other,
-                        public_key: Some(parse_public_key(&message.identity_key)?),
-                    },
-                    for_self: None,
-                    privileged: false,
-                    privileged_reason: None,
-                    seek_permission: None,
-                },
-                None,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => return Ok(()),
-        };
-        if !verify_result.valid {
-            return Ok(());
-        }
-
-        loop {
-            let mut deferred = self.deferred_general_messages.lock().await;
-            let manager = match self.session_manager.try_read() {
-                Ok(manager) => manager,
-                Err(_) => {
-                    drop(deferred);
-                    tokio::task::yield_now().await;
-                    continue;
-                }
-            };
-            let pending = manager
-                .get_session(&session.session_nonce)
-                .map(Self::certificate_validation_is_pending)
-                .unwrap_or(false);
-            if !pending {
-                drop(manager);
-                drop(deferred);
-                return self
-                    .handle_general_message_with_session(message, session.clone())
-                    .await;
-            }
-
-            let queue = deferred.entry(session.session_nonce.clone()).or_default();
-            if queue
-                .iter()
-                .any(|entry| entry.message.nonce.as_deref() == Some(message_nonce))
-            {
-                return Ok(());
-            }
-            if queue.len() >= MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION {
-                return Ok(());
-            }
-            queue.push_back(DeferredGeneralMessage {
-                message,
-                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
-            });
-            return Ok(());
-        }
-    }
-
-    async fn expire_deferred_general_messages(&self) -> Result<(), AuthError> {
-        let now = tokio::time::Instant::now();
-        let mut deferred = self.deferred_general_messages.lock().await;
-        deferred.retain(|_, queue| {
-            while queue.front().is_some_and(|entry| entry.deadline <= now) {
-                queue.pop_front();
-            }
-            !queue.is_empty()
-        });
-        Ok(())
-    }
-
-    /// Re-dispatch a session's deferred messages exactly once, in arrival
-    /// order. They were deliberately not entered in the replay set when queued;
-    /// normal verification below marks each authenticated message once. A
-    /// duplicate nonce in the queue is rejected before insertion, and a replay
-    /// of an already-processed message is still rejected by `mark_message_seen`.
-    async fn flush_deferred_general_messages(&self, session_nonce: &str) -> Result<(), AuthError> {
-        let queue = self
-            .deferred_general_messages
-            .lock()
-            .await
-            .remove(session_nonce)
-            .unwrap_or_default();
-        let now = tokio::time::Instant::now();
-        for deferred in queue {
-            if deferred.deadline > now {
-                let _ = self.dispatch_general_message(deferred.message).await;
-            }
-        }
-        Ok(())
     }
 
     /// Clone the "best" session for an identifier (peer identity key or
@@ -888,71 +898,6 @@ impl<W: WalletInterface> Peer<W> {
             .into_iter()
             .cloned()
             .collect()
-    }
-
-    /// Process one incoming message from the transport.
-    ///
-    /// Returns `Ok(true)` if a message was processed, `Ok(false)` if no message
-    /// was available (channel empty/closed).
-    pub async fn process_next(&self) -> Result<bool, AuthError> {
-        // Pull one message out under the handshake lock, then RELEASE the lock
-        // before dispatching — dispatch performs wallet crypto awaits and must
-        // not hold the transport mutex across them.
-        let msg = {
-            let mut hs = self.handshake.lock().await;
-            let rx = match hs.transport_rx.as_mut() {
-                Some(rx) => rx,
-                None => return Ok(false),
-            };
-            match rx.try_recv() {
-                Ok(msg) => msg,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    drop(hs);
-                    self.expire_deferred_general_messages().await?;
-                    return Ok(false);
-                }
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    drop(hs);
-                    self.expire_deferred_general_messages().await?;
-                    return Ok(false);
-                }
-            }
-        };
-
-        // This public API consumes exactly one frame, so its caller owns that
-        // frame's result. Shared multi-frame drains isolate errors below.
-        self.dispatch_message(msg).await?;
-        Ok(true)
-    }
-
-    /// Process all pending incoming messages from the transport.
-    ///
-    /// Drains the transport receive buffer and dispatches each message.
-    pub async fn process_pending(&self) -> Result<usize, AuthError> {
-        let mut count = 0;
-        loop {
-            let msg = {
-                let mut hs = self.handshake.lock().await;
-                let rx = match hs.transport_rx.as_mut() {
-                    Some(rx) => rx,
-                    None => return Ok(count),
-                };
-                match rx.try_recv() {
-                    Ok(msg) => msg,
-                    Err(mpsc::error::TryRecvError::Empty)
-                    | Err(mpsc::error::TryRecvError::Disconnected) => {
-                        drop(hs);
-                        self.expire_deferred_general_messages().await?;
-                        return Ok(count);
-                    }
-                }
-            };
-
-            // A multi-frame pump does not own every queued frame. Keep draining
-            // so one bad message cannot strand a later response.
-            let _ = self.dispatch_message(msg).await;
-            count += 1;
-        }
     }
 
     async fn create_general_message_from_session(
@@ -1196,8 +1141,8 @@ impl<W: WalletInterface> Peer<W> {
 
     /// Initiate a BRC-103 handshake with the given peer.
     ///
-    /// Creates a nonce, sends an initialRequest, waits for the
-    /// initialResponse (polling the transport), and completes the handshake.
+    /// Creates a nonce, registers a response waiter, sends an initialRequest,
+    /// and awaits the receive task's nonce-correlated initialResponse.
     async fn initiate_handshake(&self, identity_key: &str) -> Result<PeerSession, AuthError> {
         let session_nonce = create_nonce(&self.wallet).await?;
         let requested_certificates = self
@@ -1250,61 +1195,43 @@ impl<W: WalletInterface> Peer<W> {
             signature: None,
         };
 
+        // Register before sending so even an immediate response cannot race
+        // ahead of its waiter. The receive task removes the entry when routing;
+        // the guard removes it on cancellation, send failure, or timeout.
+        let (response_tx, response_rx) = oneshot::channel();
+        let waiter_id = self.handshake_waiter_id.fetch_add(1, Ordering::Relaxed);
+        self.handshake_waiters
+            .lock()
+            .expect("handshake waiters lock poisoned")
+            .insert(
+                session_nonce.clone(),
+                HandshakeWaiter {
+                    id: waiter_id,
+                    sender: response_tx,
+                },
+            );
+        let _registration = HandshakeWaiterRegistration {
+            waiters: self.handshake_waiters.clone(),
+            session_nonce: session_nonce.clone(),
+            id: waiter_id,
+        };
+
         // Send the request
         self.transport.send(initial_request).await?;
 
-        // Wait for the response by polling the transport
         // Registered Layer-1 divergence: TS waits indefinitely; Rust bounds an
-        // unanswered handshake so the sole pull receiver is eventually freed.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err(AuthError::Timeout("handshake timeout".to_string()));
+        // unanswered handshake. The background receiver remains available to
+        // every other session while this call waits.
+        let response = match tokio::time::timeout(Duration::from_secs(30), response_rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                return Err(AuthError::TransportNotConnected(
+                    "handshake response waiter closed".to_string(),
+                ))
             }
-
-            let queued_response = self
-                .pending_initial_responses
-                .lock()
-                .expect("pending initial responses lock poisoned")
-                .remove(&session_nonce);
-            if let Some(response) = queued_response {
-                return self.complete_handshake(&session_nonce, response).await;
-            }
-
-            // Lock the handshake mutex only to pull the next message off the
-            // single-consumer transport receiver, then RELEASE it before any
-            // dispatch / complete-handshake crypto await below. Holding the
-            // lock across `rx.recv().await` is fine (only one drainer at a
-            // time), but holding it across wallet crypto would serialize the
-            // whole handshake path unnecessarily.
-            let msg = {
-                let mut hs = self.handshake.lock().await;
-                let rx = hs.transport_rx.as_mut().ok_or_else(|| {
-                    AuthError::TransportNotConnected("no transport rx".to_string())
-                })?;
-                match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
-                    Ok(Some(msg)) => msg,
-                    Ok(None) => {
-                        return Err(AuthError::TransportNotConnected(
-                            "transport closed".to_string(),
-                        ))
-                    }
-                    Err(_) => continue, // timeout, retry (lock released here)
-                }
-            };
-
-            // If this is the initialResponse we're waiting for, process it
-            if msg.message_type == MessageType::InitialResponse {
-                if let Some(ref your_nonce) = msg.your_nonce {
-                    if your_nonce == &session_nonce {
-                        return self.complete_handshake(&session_nonce, msg).await;
-                    }
-                }
-            }
-
-            // Otherwise dispatch the message normally
-            let _ = self.dispatch_message(msg).await;
-        }
+            Err(_) => return Err(AuthError::Timeout("handshake timeout".to_string())),
+        };
+        self.complete_handshake(&session_nonce, response).await
     }
 
     /// Complete a handshake after receiving the initialResponse.
@@ -1446,11 +1373,11 @@ impl<W: WalletInterface> Peer<W> {
         // initialResponse (TS Peer.ts:653-684). Same branching as the
         // standalone certificateRequest path.
         //
-        // Registered Layer-1 divergence: TS releases handshake waiters before
-        // awaiting this response, allowing a general frame to race ahead of the
-        // certificateResponse. The caller-driven Rust transport has no safe
-        // post-return continuation; keep deterministic proof-first ordering
-        // until the background receive-task decision in the charter is made.
+        // Registered Layer-1 divergence (#23): TS releases handshake waiters
+        // before answering this embedded request, allowing the caller's general
+        // frame to race ahead. Rust deliberately completes and sends the proof
+        // first so every conforming receiver sees certificates before the first
+        // general frame and never needs to defer that frame.
         if let Some(ref requested) = response.requested_certificates {
             if !requested.certifiers.is_empty() {
                 // Observer channel: non-blocking. If no one has taken the
@@ -1483,8 +1410,8 @@ impl<W: WalletInterface> Peer<W> {
     /// Dispatch an incoming message based on its type.
     /// Dispatch a single incoming auth message directly.
     ///
-    /// This is useful when you want to process one specific message without
-    /// draining the entire transport channel via `process_pending`.
+    /// This is useful for server middleware or tests that already own one
+    /// decoded frame. Transport-delivered frames are dispatched automatically.
     pub async fn dispatch_message(&self, msg: AuthMessage) -> Result<(), AuthError> {
         if msg.version != AUTH_VERSION {
             return Err(AuthError::InvalidMessage(format!(
@@ -1495,58 +1422,50 @@ impl<W: WalletInterface> Peer<W> {
 
         match msg.message_type {
             MessageType::InitialRequest => self.handle_initial_request(msg).await,
-            MessageType::InitialResponse => self.queue_initial_response(msg).await,
+            MessageType::InitialResponse => {
+                self.route_initial_response(msg);
+                Ok(())
+            }
             MessageType::CertificateRequest => self.process_certificate_request(msg).await,
             MessageType::CertificateResponse => self.process_certificate_response(msg).await,
             MessageType::General => self.dispatch_general_message(msg).await,
         }
     }
 
-    /// Preserve an InitialResponse that a nested pull-loop consumer dequeued for
-    /// another in-progress handshake. Registered Layer-1 divergence: TS throws
-    /// for unsolicited/duplicate responses; Rust ignores them so they cannot
-    /// abort an unrelated shared drain.
-    async fn queue_initial_response(&self, msg: AuthMessage) -> Result<(), AuthError> {
-        let Some(session_nonce) = msg.your_nonce.clone() else {
-            return Ok(());
-        };
-        let is_waiting = self
-            .session_manager
-            .read()
-            .await
-            .get_session(&session_nonce)
-            .is_some_and(|session| !session.is_authenticated);
-        if is_waiting {
-            self.pending_initial_responses
-                .lock()
-                .expect("pending initial responses lock poisoned")
-                .insert(session_nonce, msg);
-        }
-        Ok(())
-    }
-
     /// Dispatch-path certificate gate.
     ///
-    /// **Intentional divergence from TS 2.4.1:** TS awaits its certificate
-    /// promise inside `processGeneralMessage`, which is safe because `onData`
-    /// callbacks can continue delivering the resolving response. Rust's
-    /// transport is pull-based: `process_next` owns the only receiver and awaits
-    /// dispatch inline. Blocking here would leave the `certificateResponse` (or
-    /// even the handshake's `initialResponse`) queued behind this message and
-    /// deadlock for the full timeout. Do not restore the TS waiting mechanism.
-    /// Rust preserves the observable contract by verifying the signature,
-    /// queueing without payload delivery, then re-dispatching after certificate
-    /// validation succeeds; each queued frame otherwise owns its own expiry.
+    /// The background receiver schedules this frame independently and reserves
+    /// separate capacity for control frames. It is therefore safe for this task
+    /// to await certificate validation while the receive task accepts and
+    /// dispatches the `certificateResponse` that releases it.
     async fn dispatch_general_message(&self, msg: AuthMessage) -> Result<(), AuthError> {
-        let session = self.resolve_general_message_session(&msg).await?;
-        if Self::certificate_validation_is_pending(&session) {
-            return self.defer_general_message(&session, msg).await;
-        }
+        let mut session = self.resolve_general_message_session(&msg).await?;
         if !session.is_authenticated {
             return Err(AuthError::NotAuthenticated(format!(
                 "session not authenticated for nonce: {}",
                 session.session_nonce
             )));
+        }
+        if Self::certificate_validation_is_pending(&session) {
+            // Authenticate before occupying a bounded wait slot. Replay state
+            // is committed only after the gate opens, exactly once below.
+            self.verify_general_message_signature(&msg, &session)
+                .await?;
+            self.wait_for_certificate_validation(&session).await?;
+            session = self
+                .session_manager
+                .read()
+                .await
+                .get_session(&session.session_nonce)
+                .cloned()
+                .ok_or_else(|| {
+                    AuthError::SessionNotFound(format!(
+                        "Session not found for nonce: {}",
+                        session.session_nonce
+                    ))
+                })?;
+            self.mark_general_message_seen(&msg, &session).await?;
+            return self.deliver_general_message(msg);
         }
         self.handle_general_message_with_session(msg, session).await
     }
@@ -2007,10 +1926,7 @@ impl<W: WalletInterface> Peer<W> {
     ///   out before the wallet crypto await — the read lock is never held
     ///   across `.await`), so N concurrent verifies on one session proceed
     ///   without contention;
-    /// - does **not** call `process_pending()` and does **not** touch the
-    ///   transport's `pending` correlation map (that drain/map is confined to
-    ///   the handshake path — it was the root cause of the server 400s under
-    ///   concurrency);
+    /// - does **not** touch the transport receiver or handshake response map;
     /// - does **not** push to the `general_message` channel (the server path
     ///   only needs the verification result, not the decoded payload).
     ///
@@ -2106,11 +2022,16 @@ impl<W: WalletInterface> Peer<W> {
         msg: AuthMessage,
         session: &PeerSession,
     ) -> Result<(), AuthError> {
-        let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
-            AuthError::InvalidMessage("missing yourNonce in general message".to_string())
-        })?;
+        self.verify_general_message_signature(&msg, session).await?;
+        self.mark_general_message_seen(&msg, session).await
+    }
+
+    async fn verify_general_message_signature(
+        &self,
+        msg: &AuthMessage,
+        session: &PeerSession,
+    ) -> Result<(), AuthError> {
         let msg_nonce = msg.nonce.as_deref().unwrap_or("");
-        let now = now_ms();
 
         // Verify signature
         let payload = msg.payload.clone().unwrap_or_default();
@@ -2150,6 +2071,20 @@ impl<W: WalletInterface> Peer<W> {
             )));
         }
 
+        Ok(())
+    }
+
+    async fn mark_general_message_seen(
+        &self,
+        msg: &AuthMessage,
+        session: &PeerSession,
+    ) -> Result<(), AuthError> {
+        let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
+            AuthError::InvalidMessage("missing yourNonce in general message".to_string())
+        })?;
+        let msg_nonce = msg.nonce.as_deref().unwrap_or("");
+        let now = now_ms();
+
         // Anti-replay gate (AFTER signature verification, so the seen-set is
         // never poisoned by unauthenticated input; BEFORE dispatch). Brief
         // synchronous write lock — no `.await` is held while it is taken, so the
@@ -2179,6 +2114,17 @@ impl<W: WalletInterface> Peer<W> {
         Ok(())
     }
 
+    fn deliver_general_message(&self, msg: AuthMessage) -> Result<(), AuthError> {
+        let identity_key = msg.identity_key;
+        let payload = msg.payload.unwrap_or_default();
+
+        // Registered Layer-1 divergence: this bounded observer channel uses
+        // non-blocking delivery. At capacity a payload can be dropped after its
+        // nonce entered the replay set; the charter records this API behavior.
+        let _ = self.general_message_tx.try_send((identity_key, payload));
+        Ok(())
+    }
+
     /// Handle an incoming general message on the dispatch path (client side).
     ///
     /// Verifies via [`Peer::verify_general_message`], then pushes the decoded
@@ -2191,19 +2137,10 @@ impl<W: WalletInterface> Peer<W> {
         msg: AuthMessage,
         session: PeerSession,
     ) -> Result<(), AuthError> {
-        let identity_key = msg.identity_key.clone();
-        let payload = msg.payload.clone().unwrap_or_default();
-
         // The dispatch path already resolved and gate-checked this session.
-        self.verify_general_message_with_session(msg, &session)
+        self.verify_general_message_with_session(msg.clone(), &session)
             .await?;
-
-        // Registered Layer-1 divergence: this bounded observer channel uses
-        // non-blocking delivery. At capacity a payload can be dropped after its
-        // nonce entered the replay set; the charter records this API behavior.
-        let _ = self.general_message_tx.try_send((identity_key, payload));
-
-        Ok(())
+        self.deliver_general_message(msg)
     }
 
     /// Get this peer's identity public key as a hex string.
@@ -2225,14 +2162,6 @@ impl<W: WalletInterface> Peer<W> {
             )
             .await?;
         Ok(result.public_key.to_der_hex())
-    }
-
-    /// Test-only: take the transport receiver out of the handshake state so a
-    /// test can directly inspect inbound wire messages. Not part of the public
-    /// API; the handshake mutex is uncontended in single-threaded tests.
-    #[cfg(test)]
-    async fn take_transport_rx(&self) -> Option<mpsc::Receiver<AuthMessage>> {
-        self.handshake.lock().await.transport_rx.take()
     }
 }
 
@@ -2273,7 +2202,7 @@ mod tests {
     }
 
     /// Compile-time proof for the public async paths used by spawned handlers.
-    fn _assert_futures_send<W: WalletInterface + Send + Sync>(
+    fn _assert_futures_send<W: WalletInterface + Send + Sync + 'static>(
         peer: &Peer<W>,
         message: AuthMessage,
         session: &PeerSession,
@@ -2281,7 +2210,6 @@ mod tests {
         fn is_send<T: Send>(_: T) {}
         is_send(peer.verify_general_message(message.clone()));
         is_send(peer.dispatch_message(message));
-        is_send(peer.process_pending());
         is_send(peer.wait_for_certificate_validation(session));
         is_send(peer.send_message("peer", Vec::new()));
         is_send(peer.create_general_message("peer", Vec::new()));
@@ -2294,6 +2222,23 @@ mod tests {
     struct TestWallet {
         inner: ProtoWallet,
         verify_hmac_calls: AtomicUsize,
+        verify_probe: Option<Arc<VerifyProbe>>,
+        certificates_to_list: Vec<CertificateResult>,
+    }
+
+    struct VerifyProbe {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        entered: mpsc::UnboundedSender<()>,
+        release: Semaphore,
+    }
+
+    struct VerifyProbeGuard<'a>(&'a AtomicUsize);
+
+    impl Drop for VerifyProbeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     impl TestWallet {
@@ -2301,6 +2246,30 @@ mod tests {
             TestWallet {
                 inner: ProtoWallet::new(pk),
                 verify_hmac_calls: AtomicUsize::new(0),
+                verify_probe: None,
+                certificates_to_list: Vec::new(),
+            }
+        }
+
+        fn with_verify_probe(pk: PrivateKey, verify_probe: Arc<VerifyProbe>) -> Self {
+            TestWallet {
+                inner: ProtoWallet::new(pk),
+                verify_hmac_calls: AtomicUsize::new(0),
+                verify_probe: Some(verify_probe),
+                certificates_to_list: Vec::new(),
+            }
+        }
+
+        fn with_certificate(pk: PrivateKey, certificate: Certificate) -> Self {
+            TestWallet {
+                inner: ProtoWallet::new(pk),
+                verify_hmac_calls: AtomicUsize::new(0),
+                verify_probe: None,
+                certificates_to_list: vec![CertificateResult {
+                    certificate,
+                    keyring: None,
+                    verifier: None,
+                }],
             }
         }
     }
@@ -2482,6 +2451,30 @@ mod tests {
             args: VerifySignatureArgs,
             _originator: Option<&str>,
         ) -> Result<VerifySignatureResult, WalletError> {
+            let _probe_guard = if args
+                .data
+                .as_deref()
+                .is_some_and(|data| data.starts_with(b"dispatch-probe-"))
+            {
+                self.verify_probe.as_ref().map(|probe| {
+                    let active = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+                    probe.peak.fetch_max(active, Ordering::SeqCst);
+                    let _ = probe.entered.send(());
+                    VerifyProbeGuard(&probe.active)
+                })
+            } else {
+                None
+            };
+            if _probe_guard.is_some() {
+                self.verify_probe
+                    .as_ref()
+                    .expect("probe guard requires probe")
+                    .release
+                    .acquire()
+                    .await
+                    .expect("probe semaphore remains open")
+                    .forget();
+            }
             let valid = self.inner.verify_signature_sync(
                 args.data.as_deref(),
                 args.hash_to_directly_verify.as_deref(),
@@ -2501,15 +2494,21 @@ mod tests {
             _originator: Option<&str>,
         ) -> Result<ListCertificatesResult, WalletError> {
             Ok(ListCertificatesResult {
-                total_certificates: 0,
-                certificates: Vec::new(),
+                total_certificates: self.certificates_to_list.len() as u32,
+                certificates: self.certificates_to_list.clone(),
             })
         }
-        stub_method!(
-            prove_certificate,
-            ProveCertificateArgs,
-            ProveCertificateResult
-        );
+        async fn prove_certificate(
+            &self,
+            _args: ProveCertificateArgs,
+            _originator: Option<&str>,
+        ) -> Result<ProveCertificateResult, WalletError> {
+            Ok(ProveCertificateResult {
+                keyring_for_verifier: indexmap::IndexMap::new(),
+                certificate: None,
+                verifier: None,
+            })
+        }
         stub_method!(
             relinquish_certificate,
             RelinquishCertificateArgs,
@@ -2544,11 +2543,13 @@ mod tests {
         peer_tx: mpsc::Sender<AuthMessage>,
         /// Our incoming channel receiver (taken once by subscribe()).
         incoming_rx: StdMutex<Option<mpsc::Receiver<AuthMessage>>>,
+        sent_messages: StdMutex<Vec<AuthMessage>>,
     }
 
     /// Test transport that delivers the first send, then holds its caller at
     /// the send await until explicitly released. Later sends are unaffected.
-    /// This gives a nested handshake deterministic ownership of the pull loop.
+    /// This keeps the outer initiating call suspended while background receive
+    /// routes responses for two concurrent handshakes.
     struct GatedFirstSendTransport {
         inner: Arc<MockTransport>,
         sends: AtomicUsize,
@@ -2581,19 +2582,148 @@ mod tests {
         let transport_a = Arc::new(MockTransport {
             peer_tx: tx_b,
             incoming_rx: StdMutex::new(Some(rx_a)),
+            sent_messages: StdMutex::new(Vec::new()),
         });
 
         let transport_b = Arc::new(MockTransport {
             peer_tx: tx_a,
             incoming_rx: StdMutex::new(Some(rx_b)),
+            sent_messages: StdMutex::new(Vec::new()),
         });
 
         (transport_a, transport_b)
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_background_receive_dispatches_without_caller_pump() {
+        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+        let identity_b = wallet_identity(&wallet_b).await;
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(wallet_a, transport_a);
+        let peer_b = Peer::new(wallet_b, transport_b);
+        let mut messages = peer_b.on_general_message().expect("general receiver");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            peer_a.send_message(&identity_b, b"background delivery".to_vec()),
+        )
+        .await
+        .expect("background receive task must complete the handshake")
+        .expect("background send succeeds");
+
+        let (_, payload) = tokio::time::timeout(Duration::from_secs(1), messages.recv())
+            .await
+            .expect("background receive task must dispatch the general message")
+            .expect("general message channel remains open");
+        assert_eq!(payload, b"background delivery");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_background_general_dispatch_is_concurrent_and_bounded() {
+        let expected_width = 64;
+        assert_eq!(MAX_IN_FLIGHT_GENERAL_DISPATCHES, expected_width);
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let probe = Arc::new(VerifyProbe {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            entered: entered_tx,
+            release: Semaphore::new(0),
+        });
+        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+        let wallet_b =
+            TestWallet::with_verify_probe(PrivateKey::from_random().unwrap(), probe.clone());
+        let identity_b = wallet_identity(&wallet_b).await;
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(wallet_a, transport_a);
+        let peer_b = Peer::new(wallet_b, transport_b);
+        let mut messages = peer_b.on_general_message().expect("general receiver");
+        let mut errors = peer_b.on_error().expect("background error receiver");
+
+        bounded(peer_a.send_message(&identity_b, b"setup".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"setup");
+
+        for index in 0..=expected_width {
+            peer_a
+                .send_message(&identity_b, format!("dispatch-probe-{index}").into_bytes())
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..expected_width {
+            bounded(entered_rx.recv())
+                .await
+                .expect("every admitted dispatch reaches signature verification");
+        }
+        let capacity_error = bounded(errors.recv())
+            .await
+            .expect("overflow reports a background error");
+        assert!(
+            matches!(&capacity_error, AuthError::TransportError(message)
+                if message.contains("general dispatch capacity exhausted")),
+            "unexpected capacity error: {capacity_error:?}"
+        );
+        assert_eq!(
+            probe.peak.load(Ordering::SeqCst),
+            expected_width,
+            "measured peak dispatch width must equal the configured bound"
+        );
+
+        probe.release.add_permits(expected_width);
+        for _ in 0..expected_width {
+            bounded(messages.recv())
+                .await
+                .expect("every admitted dispatch completes after release");
+        }
+        assert_eq!(probe.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_embedded_certificate_response_precedes_first_general_frame() {
+        let private_a = PrivateKey::from_random().unwrap();
+        let certificate =
+            issue_certificate_for_subject(&private_a.to_public_key(), CertificateType([61; 32]))
+                .await;
+        let requested = requested_for_certificate(&certificate);
+        let wallet_a = TestWallet::with_certificate(private_a, certificate);
+        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+        let identity_b = wallet_identity(&wallet_b).await;
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(wallet_a, transport_a.clone());
+        let peer_b = Peer::new(wallet_b, transport_b);
+        peer_b.set_certificates_to_request(requested);
+
+        bounded(peer_a.send_message(&identity_b, b"first general".to_vec()))
+            .await
+            .unwrap();
+
+        let order: Vec<MessageType> = transport_a
+            .sent_messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|message| message.message_type.clone())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                MessageType::InitialRequest,
+                MessageType::CertificateResponse,
+                MessageType::General,
+            ],
+            "registered #23 divergence keeps proof-first wire order"
+        );
+    }
+
     #[async_trait]
     impl Transport for MockTransport {
         async fn send(&self, message: AuthMessage) -> Result<(), AuthError> {
+            self.sent_messages
+                .lock()
+                .expect("sent messages lock poisoned")
+                .push(message.clone());
             self.peer_tx
                 .send(message)
                 .await
@@ -2632,7 +2762,7 @@ mod tests {
 
     async fn complete_mock_handshake(
         peer_a: Peer<TestWallet>,
-        peer_b: &Peer<TestWallet>,
+        _peer_b: &Peer<TestWallet>,
         identity_b: &str,
     ) -> Peer<TestWallet> {
         let identity_b = identity_b.to_string();
@@ -2644,12 +2774,7 @@ mod tests {
             peer_a
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        bounded(peer_b.process_pending()).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let peer_a = send_handle.await.unwrap();
-        bounded(peer_b.process_pending()).await.unwrap();
-        peer_a
+        bounded(send_handle).await.unwrap()
     }
 
     async fn issue_certificate_for_subject(
@@ -2886,7 +3011,7 @@ mod tests {
                 let valid_b_nonce = create_nonce(&TestWallet::new(pk_b.clone())).await.unwrap();
 
                 let (transport_a, transport_b) = create_mock_transport_pair();
-                let peer_a = Peer::new(wallet_a, transport_a);
+                let peer_a = Peer::new(wallet_a, transport_a.clone());
                 let peer_b = Peer::new(wallet_b, transport_b);
                 let cert_events = record_certificate_events(&peer_b);
 
@@ -3576,7 +3701,8 @@ mod tests {
                 // Set up message receivers before starting
                 let mut msg_rx_b = peer_b.on_general_message().unwrap();
 
-                // Step 1: Peer A starts sending (will block waiting for handshake response)
+                // Peer A sends; both peers' background receive tasks drive the
+                // handshake and dispatch the trailing general frame.
                 let identity_b_clone = identity_b.clone();
                 let send_handle = tokio::task::spawn_local(async move {
                     peer_a
@@ -3586,31 +3712,10 @@ mod tests {
                     peer_a
                 });
 
-                // Step 2: Give Peer A time to send the initialRequest
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                // Step 3: Peer B processes the initialRequest (sends initialResponse)
-                let processed = bounded(peer_b.process_pending()).await.unwrap();
-                assert!(
-                    processed > 0,
-                    "Peer B should have received the initialRequest"
-                );
-
-                // Step 4: Give time for Peer A to receive and process initialResponse
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                // Step 5: Get Peer A back (handshake done, general msg sent)
-                let peer_a = send_handle.await.unwrap();
-
-                // Step 6: Peer B processes the general message
-                let processed = bounded(peer_b.process_pending()).await.unwrap();
-                assert!(
-                    processed > 0,
-                    "Peer B should have received the general message"
-                );
-
-                // Peer B should have received the message on the channel
-                let (sender_key, received_payload) = msg_rx_b.try_recv().unwrap();
+                let peer_a = bounded(send_handle).await.unwrap();
+                let (sender_key, received_payload) = bounded(msg_rx_b.recv())
+                    .await
+                    .expect("background-dispatched general message");
                 assert_eq!(sender_key, identity_a);
                 assert_eq!(received_payload, b"Hello from Peer A!");
 
@@ -3694,10 +3799,7 @@ mod tests {
                     (peer_a, result)
                 });
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                bounded(peer_b.process_pending()).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let (_peer_a, session) = send_handle.await.unwrap();
+                let (_peer_a, session) = bounded(send_handle).await.unwrap();
                 let session = session.expect("transport handshake completes");
                 assert!(session.is_authenticated);
                 assert!(session.certificates_required);
@@ -3721,7 +3823,7 @@ mod tests {
         // named callback. Register two listeners, stop one, handshake with
         // a cert request, and assert only the non-removed listener fires.
         // (This avoids exercising the auto-response path whose wallet
-        // stubs would otherwise panic inside process_pending.)
+        // stubs would otherwise panic inside background dispatch.)
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -3776,10 +3878,7 @@ mod tests {
                     (peer_a, result)
                 });
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                bounded(peer_b.process_pending()).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let (_peer_a, session) = send_handle.await.unwrap();
+                let (_peer_a, session) = bounded(send_handle).await.unwrap();
                 let session = session.expect("transport handshake completes");
                 assert!(session.is_authenticated);
                 assert!(session.certificates_required);
@@ -3853,10 +3952,7 @@ mod tests {
                     peer_a
                 });
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                bounded(peer_b.process_pending()).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let _ = send_handle.await.unwrap();
+                let _ = bounded(send_handle).await.unwrap();
 
                 assert_eq!(
                     *seen.lock().unwrap(),
@@ -3900,8 +3996,8 @@ mod tests {
                 // Build a one-way transport that captures what peer A sends
                 // so we can inspect the CertificateResponse wire message.
                 let (transport_a, transport_b) = create_mock_transport_pair();
-                let peer_a = Peer::new(wallet_a, transport_a);
-                let peer_b = Peer::new(wallet_b, transport_b);
+                let peer_a = Peer::new(wallet_a, transport_a.clone());
+                let _peer_b = Peer::new(wallet_b, transport_b);
 
                 // Handshake via send_message so both sides end up with
                 // authenticated sessions.
@@ -3913,11 +4009,7 @@ mod tests {
                         .unwrap();
                     peer_a
                 });
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                bounded(peer_b.process_pending()).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let peer_a = send_handle.await.unwrap();
-                bounded(peer_b.process_pending()).await.unwrap(); // absorb the general msg
+                let peer_a = bounded(send_handle).await.unwrap();
 
                 let certificate = Certificate {
                     cert_type: CertificateType([0x21; 32]),
@@ -3940,17 +4032,17 @@ mod tests {
                     .await
                     .unwrap();
 
-                // Peer B's transport should have received a signed
-                // CertificateResponse. Intercept by draining the incoming
-                // channel directly.
-                let mut rx = peer_b
-                    .take_transport_rx()
-                    .await
-                    .expect("transport_rx available");
-                let msg = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
-                    .await
-                    .expect("transport recv timed out")
-                    .expect("transport channel closed");
+                // Inspect the sender-side wire record; the receiver is owned
+                // permanently by peer B's background task.
+                let msg = transport_a
+                    .sent_messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|message| message.message_type == MessageType::CertificateResponse)
+                    .cloned()
+                    .expect("signed certificateResponse was sent");
 
                 assert_eq!(msg.message_type, MessageType::CertificateResponse);
                 assert!(msg.nonce.is_some(), "request nonce must be populated");
@@ -3999,9 +4091,9 @@ mod tests {
                 let (transport_a, transport_b) = create_mock_transport_pair();
 
                 let peer_a = Peer::new(wallet_a, transport_a);
-                let peer_b = Peer::new(wallet_b, transport_b);
+                let _peer_b = Peer::new(wallet_b, transport_b);
 
-                // Interleaved handshake
+                // Background-driven handshake
                 let identity_b_clone = identity_b.clone();
                 let send_handle = tokio::task::spawn_local(async move {
                     peer_a
@@ -4011,11 +4103,7 @@ mod tests {
                     peer_a
                 });
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                bounded(peer_b.process_pending()).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                let peer_a = send_handle.await.unwrap();
+                let peer_a = bounded(send_handle).await.unwrap();
 
                 // Peer A should have a session for Peer B
                 assert!(
@@ -4028,7 +4116,7 @@ mod tests {
 
     /// Concurrency regression: N general messages on ONE authenticated session
     /// must all verify via the lock-free `&self` hot path on an `Arc<Peer>`,
-    /// concurrently, without touching the transport or process_pending.
+    /// concurrently, without touching the transport receiver.
     ///
     /// This is the server-middleware shape: the responder (peer B) holds an
     /// `Arc<Peer>` and fans out `verify_general_message` across many in-flight
@@ -4102,35 +4190,17 @@ mod tests {
         let peer_a = Peer::new(wallet_a, transport_a);
         let peer_b = Peer::new(wallet_b, transport_b);
 
-        // Drive the handshake A -> B so peer B holds an authenticated session
-        // for A. peer_a.send_message blocks on the initialResponse, so pump
-        // peer_b's dispatch concurrently.
+        // Drive the handshake A -> B; background receive owns progress.
         let identity_b_clone = identity_b.clone();
         let send_handle = tokio::spawn(async move {
             peer_a
-                .send_message(&identity_b_clone, b"handshake".to_vec())
+                .get_authenticated_session(&identity_b_clone)
                 .await
                 .unwrap();
             peer_a
         });
 
-        // Pump peer B until it has an authenticated session for A.
-        let mut send_handle = send_handle;
-        let peer_a = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                tokio::select! {
-                    result = &mut send_handle => break result.unwrap(),
-                    result = peer_b.process_pending() => {
-                        result.unwrap();
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("handshake pump timed out");
-        // Absorb the trailing general message from the handshake send.
-        bounded(peer_b.process_pending()).await.unwrap();
+        let peer_a = bounded(send_handle).await.unwrap();
 
         // Build N signed general messages from A bound to the same session.
         // Each carries your_nonce = B's session_nonce, which B verifies
@@ -4162,21 +4232,16 @@ mod tests {
     }
 
     /// Full interior-mutability proof: a SINGLE `Arc<Peer>` services a live
-    /// handshake (responder side — `&self` `process_pending` driving
-    /// `handle_initial_request`, which takes the internal `handshake` mutex
-    /// and a `SessionManager` *write* lock) AND, interleaved on the very same
+    /// handshake (responder-side background dispatch driving
+    /// `handle_initial_request`, which takes a `SessionManager` write lock)
+    /// AND, interleaved on the very same
     /// `Arc`, a fan-out of concurrent `verify_general_message` calls (lock-free
     /// against the handshake mutex, `SessionManager` *read* lock only) — all
     /// WITHOUT any outer `Mutex<Peer>`.
     ///
     /// This is the server-middleware shape end-to-end. To interleave a genuine
     /// B-side handshake-handler invocation with the verifies on ONE Arc, the
-    /// client A sends a SECOND `initialRequest` (over the same transport B is
-    /// subscribed to) right as the verify fan-out is launched: B's pump
-    /// dispatches `handle_initial_request` for that second request while the
-    /// verify tasks run. If the handshake mutex blocked the verify hot path,
-    /// or if any handler still required `&mut self`, this would not compile or
-    /// would deadlock/serialize.
+    /// client A sends another live frame right as the verify fan-out launches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_handshake_and_concurrent_verify_on_one_arc_peer() {
         let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
@@ -4206,31 +4271,12 @@ mod tests {
         let peer_a = Arc::new(Peer::new(wallet_a, transport_a));
         let peer_b = Arc::new(Peer::new(wallet_b, transport_b));
 
-        // 1. Establish A -> B session. send_message (&self on Arc<Peer>) blocks
-        //    on the initialResponse, so pump B concurrently.
+        // 1. Establish A -> B session without caller-driven progress.
         let pa = peer_a.clone();
         let id_b = identity_b.clone();
-        let mut send_handle =
+        let send_handle =
             tokio::spawn(async move { pa.send_message(&id_b, b"handshake".to_vec()).await });
-
-        let peer_b_pump = peer_b.clone();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                tokio::select! {
-                    result = &mut send_handle => {
-                        result.unwrap().unwrap();
-                        break;
-                    }
-                    result = peer_b_pump.process_pending() => {
-                        result.unwrap();
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("handshake pump timed out");
-        bounded(peer_b.process_pending()).await.unwrap(); // absorb trailing general msg
+        bounded(send_handle).await.unwrap().unwrap();
 
         // 2. Build N signed general messages from A bound to B's session.
         let n = 16usize;
@@ -4244,11 +4290,8 @@ mod tests {
             messages.push(msg);
         }
 
-        // 3. Have A initiate a SECOND handshake (fresh session_nonce) into B's
-        //    transport. This blocks awaiting B's initialResponse; what matters
-        //    is that B's pump will dispatch `handle_initial_request` for it,
-        //    interleaving a &self handshake handler (SessionManager WRITE lock)
-        //    with the verify fan-out (SessionManager READ locks) on one Arc.
+        // 3. Send another live background-dispatched frame while the direct
+        //    verification fan-out uses the same Arc<Peer>.
         let pa2 = peer_a.clone();
         let id_b2 = identity_b.clone();
         let second_handshake = tokio::spawn(async move {
@@ -4259,19 +4302,7 @@ mod tests {
             .await;
         });
 
-        // 4. Concurrently: B pumps its transport (servicing the inbound second
-        //    initialRequest -> handle_initial_request) WHILE the verify fan-out
-        //    runs against the same Arc<Peer> B. No outer mutex anywhere.
-        let pump = {
-            let pb = peer_b.clone();
-            tokio::spawn(async move {
-                for _ in 0..40 {
-                    bounded(pb.process_pending()).await.unwrap();
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-            })
-        };
-
+        // 4. Direct verification and background dispatch share the same peer.
         let mut handles = Vec::with_capacity(n);
         for msg in messages {
             let pb = peer_b.clone();
@@ -4286,8 +4317,7 @@ mod tests {
                 .expect("concurrent verify must succeed during a live handshake");
         }
 
-        pump.await.unwrap();
-        let _ = second_handshake.await;
+        bounded(second_handshake).await.unwrap();
 
         // Sanity: A still tracks its (first) authenticated session to B after
         // all the interleaved activity.
@@ -4331,28 +4361,13 @@ mod tests {
         let identity_b_clone = identity_b.clone();
         let send_handle = tokio::spawn(async move {
             peer_a
-                .send_message(&identity_b_clone, b"handshake".to_vec())
+                .get_authenticated_session(&identity_b_clone)
                 .await
                 .unwrap();
             peer_a
         });
 
-        let mut send_handle = send_handle;
-        let peer_a = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                tokio::select! {
-                    result = &mut send_handle => break result.unwrap(),
-                    result = peer_b.process_pending() => {
-                        result.unwrap();
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("authenticated-pair handshake timed out");
-        // Absorb the trailing general message from the handshake send.
-        bounded(peer_b.process_pending()).await.unwrap();
+        let peer_a = bounded(send_handle).await.unwrap();
 
         (peer_a, Arc::new(peer_b), identity_b)
     }
@@ -4426,7 +4441,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_inbound_general_message_is_deferred_until_certificate_validation() {
+    async fn test_inbound_general_message_waits_in_its_dispatch_task() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let mut messages = peer_b.on_general_message().expect("general receiver");
         while messages.try_recv().is_ok() {}
@@ -4444,18 +4459,32 @@ mod tests {
             session.certificates_validated = false;
         }
 
-        tokio::time::timeout(Duration::from_secs(1), peer_b.dispatch_message(message))
-            .await
-            .expect("dispatch must defer instead of blocking the pull-based drain")
-            .expect("deferral succeeds");
+        let mut dispatch = Box::pin(peer_b.dispatch_message(message));
+        assert!(
+            dispatch.as_mut().now_or_never().is_none(),
+            "the independent dispatch task must wait at the certificate gate"
+        );
         assert!(
             messages.try_recv().is_err(),
-            "a deferred payload must not be delivered before validation"
+            "a gated payload must not be delivered before validation"
         );
+
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            sessions
+                .get_session_mut(&session_nonce)
+                .unwrap()
+                .certificates_validated = true;
+        }
+        peer_b.resolve_certificate_validation(&session_nonce);
+        bounded(dispatch)
+            .await
+            .expect("dispatch releases after validation");
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"must wait");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_unverified_general_message_never_consumes_a_deferred_slot() {
+    async fn test_unverified_gated_general_message_fails_before_waiting() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let mut message = peer_a
             .create_general_message(&identity_b, b"forged".to_vec())
@@ -4471,57 +4500,14 @@ mod tests {
         let last = message.signature.as_ref().unwrap().len() - 1;
         message.signature.as_mut().unwrap()[last] ^= 0x01;
 
-        bounded(peer_b.dispatch_message(message))
+        let error = bounded(peer_b.dispatch_message(message))
             .await
-            .expect("an invalid pending frame is dropped without aborting the drain");
-        assert!(
-            !peer_b
-                .deferred_general_messages
-                .lock()
-                .await
-                .contains_key(&session_nonce),
-            "an unauthenticated frame must not consume deferred capacity"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_defer_rechecks_session_after_acquiring_queue_lock() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
-        let mut messages = peer_b.on_general_message().unwrap();
-        while messages.try_recv().is_ok() {}
-        let message = peer_a
-            .create_general_message(&identity_b, b"race closed".to_vec())
-            .await
-            .unwrap();
-        let session_nonce = message.your_nonce.clone().unwrap();
-        let stale_pending = {
-            let mut sessions = peer_b.session_manager.write().await;
-            let session = sessions.get_session_mut(&session_nonce).unwrap();
-            session.certificates_required = true;
-            session.certificates_validated = false;
-            session.clone()
-        };
-        {
-            let mut sessions = peer_b.session_manager.write().await;
-            sessions
-                .get_session_mut(&session_nonce)
-                .unwrap()
-                .certificates_validated = true;
-        }
-
-        peer_b
-            .defer_general_message(&stale_pending, message)
-            .await
-            .expect("resolved validation dispatches instead of re-creating the queue");
-        let (_, payload) = tokio::time::timeout(Duration::from_secs(1), messages.recv())
-            .await
-            .expect("resolved message delivery timeout")
-            .expect("general message channel closed");
-        assert_eq!(payload, b"race closed");
+            .expect_err("an invalid pending frame is rejected before gate wait");
+        assert!(matches!(error, AuthError::InvalidSignature(_)));
         assert!(!peer_b
-            .deferred_general_messages
+            .certificate_validation_waiters
             .lock()
-            .await
+            .unwrap()
             .contains_key(&session_nonce));
     }
 
@@ -4577,9 +4563,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_drain_isolates_one_message_failure_and_continues() {
+    async fn test_background_dispatch_isolates_one_message_failure_and_continues() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let mut messages = peer_b.on_general_message().unwrap();
+        let mut errors = peer_b.on_error().unwrap();
         while messages.try_recv().is_ok() {}
         let valid = peer_a
             .create_general_message(&identity_b, b"survives".to_vec())
@@ -4590,18 +4577,17 @@ mod tests {
         peer_a.transport.send(invalid).await.unwrap();
         peer_a.transport.send(valid).await.unwrap();
 
-        let processed = tokio::time::timeout(Duration::from_secs(1), peer_b.process_pending())
-            .await
-            .expect("drain timed out")
-            .expect("one frame's failure is not the drain caller's error");
-
-        assert_eq!(processed, 2);
+        assert!(matches!(
+            bounded(errors.recv()).await.unwrap(),
+            AuthError::InvalidMessage(_)
+        ));
         assert_eq!(bounded(messages.recv()).await.unwrap().1, b"survives");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_process_next_reports_the_consumed_frames_error() {
+    async fn test_background_dispatch_reports_the_frames_error() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut errors = peer_b.on_error().unwrap();
         let mut invalid = peer_a
             .create_general_message(&identity_b, b"invalid version".to_vec())
             .await
@@ -4609,11 +4595,44 @@ mod tests {
         invalid.version = "hostile-version".to_string();
         peer_a.transport.send(invalid).await.unwrap();
 
-        let error = bounded(peer_b.process_next())
+        let error = bounded(errors.recv())
             .await
-            .expect_err("the single-frame caller owns and must receive this error");
+            .expect("background error channel remains open");
 
         assert!(matches!(error, AuthError::InvalidMessage(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_background_errors_do_not_cross_peer_boundaries() {
+        let (peer_a1, peer_b1, identity_b1) = authenticated_pair().await;
+        let (peer_a2, peer_b2, identity_b2) = authenticated_pair().await;
+        let mut errors_b1 = peer_b1.on_error().unwrap();
+        let mut errors_b2 = peer_b2.on_error().unwrap();
+        let mut messages_b2 = peer_b2.on_general_message().unwrap();
+
+        let mut invalid = peer_a1
+            .create_general_message(&identity_b1, b"peer one failure".to_vec())
+            .await
+            .unwrap();
+        invalid.version = "hostile-version".to_string();
+        peer_a1.transport.send(invalid).await.unwrap();
+        peer_a2
+            .send_message(&identity_b2, b"peer two success".to_vec())
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            bounded(errors_b1.recv()).await.unwrap(),
+            AuthError::InvalidMessage(_)
+        ));
+        assert_eq!(
+            bounded(messages_b2.recv()).await.unwrap().1,
+            b"peer two success"
+        );
+        assert!(matches!(
+            errors_b2.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4653,103 +4672,14 @@ mod tests {
         peer_a.transport.send(general).await.unwrap();
         peer_a.transport.send(response).await.unwrap();
 
-        let processed = tokio::time::timeout(Duration::from_millis(250), peer_b.process_pending())
-            .await
-            .expect("the certificateResponse queued second must still be drained")
-            .expect("both messages dispatch");
-
-        assert_eq!(processed, 2);
         assert_eq!(
             bounded(messages.recv()).await.unwrap().1,
             b"ordered payload"
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_general_before_initial_response_does_not_deadlock_handshake() {
-        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
-        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
-        let identity_a = wallet_identity(&wallet_a).await;
-        let identity_b = wallet_identity(&wallet_b).await;
-        let certificate = issue_verifiable_certificate(
-            &wallet_b,
-            &parse_public_key(&identity_a).unwrap(),
-            CertificateType([58; 32]),
-        )
-        .await;
-        let requested = requested_for_certificate(&certificate);
-        let (transport_a, transport_b) = create_mock_transport_pair();
-        let peer_a = Arc::new(Peer::new(wallet_a, transport_a));
-        peer_a.set_certificates_to_request(requested);
-        let mut messages = peer_a.on_general_message().unwrap();
-        let mut server_rx = transport_b.subscribe();
-
-        let handshake = {
-            let peer_a = peer_a.clone();
-            let identity_b = identity_b.clone();
-            tokio::spawn(async move { peer_a.get_authenticated_session(&identity_b).await })
-        };
-        let initial_request = bounded(server_rx.recv()).await.expect("initialRequest");
-        let receiver_session_nonce = initial_request.initial_nonce.clone().unwrap();
-        let message_nonce = base64_encode(&crate::primitives::random::random_bytes(32));
-        let payload = b"arrived before initialResponse".to_vec();
-        let signature = wallet_b
-            .create_signature(
-                CreateSignatureArgs {
-                    data: Some(payload.clone()),
-                    hash_to_directly_sign: None,
-                    protocol_id: Protocol {
-                        security_level: 2,
-                        protocol: AUTH_PROTOCOL_ID.to_string(),
-                    },
-                    key_id: format!("{} {}", message_nonce, receiver_session_nonce),
-                    counterparty: Counterparty {
-                        counterparty_type: CounterpartyType::Other,
-                        public_key: Some(parse_public_key(&identity_a).unwrap()),
-                    },
-                    privileged: false,
-                    privileged_reason: None,
-                    seek_permission: None,
-                },
-                None,
-            )
-            .await
-            .unwrap()
-            .signature;
-        let early_general = AuthMessage {
-            version: AUTH_VERSION.to_string(),
-            message_type: MessageType::General,
-            identity_key: identity_b.clone(),
-            nonce: Some(message_nonce),
-            your_nonce: Some(receiver_session_nonce.clone()),
-            initial_nonce: None,
-            certificates: None,
-            requested_certificates: None,
-            payload: Some(payload.clone()),
-            signature: Some(signature),
-        };
-        let initial_response = signed_initial_response(
-            &wallet_b,
-            identity_b,
-            &identity_a,
-            receiver_session_nonce,
-            Some(vec![certificate]),
-        )
-        .await;
-        transport_b.send(early_general).await.unwrap();
-        transport_b.send(initial_response).await.unwrap();
-
-        let session = tokio::time::timeout(Duration::from_secs(1), handshake)
-            .await
-            .expect("queued initialResponse must remain drainable")
-            .unwrap()
-            .unwrap();
-        assert!(session.certificates_validated);
-        assert_eq!(bounded(messages.recv()).await.unwrap().1, payload);
-    }
-
     #[tokio::test(start_paused = true)]
-    async fn test_deferred_general_message_expires_at_certificate_wait_timeout() {
+    async fn test_gated_general_dispatch_has_an_independent_timeout() {
         assert_eq!(CERTIFICATE_WAIT_TIMEOUT, Duration::from_secs(30));
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let message = peer_a
@@ -4764,90 +4694,46 @@ mod tests {
             session.certificates_validated = false;
         }
 
-        bounded(peer_b.dispatch_message(message))
-            .await
-            .expect("dispatch only defers");
+        let dispatch = {
+            let peer_b = peer_b.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(message).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if peer_b
+                    .certificate_validation_waiters
+                    .lock()
+                    .unwrap()
+                    .contains_key(&session_nonce)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("gated dispatch waiter registered");
         tokio::time::advance(CERTIFICATE_WAIT_TIMEOUT).await;
-        peer_a
-            .transport
-            .send(AuthMessage {
-                version: AUTH_VERSION.to_string(),
-                message_type: MessageType::InitialRequest,
-                identity_key: wallet_identity(&peer_a.wallet).await,
-                nonce: None,
-                initial_nonce: Some(create_nonce(&peer_a.wallet).await.unwrap()),
-                your_nonce: None,
-                certificates: None,
-                requested_certificates: None,
-                payload: None,
-                signature: None,
-            })
-            .await
-            .unwrap();
-        let result = bounded(peer_b.process_pending()).await;
-        assert_eq!(
-            result.expect("background expiry must not contaminate the caller"),
-            1,
-            "the unrelated initialRequest must complete normally"
-        );
+        let result = dispatch.await.unwrap();
+        assert!(matches!(result, Err(AuthError::Timeout(_))));
         let session = peer_b
             .session_by_identifier(&session_nonce)
             .await
             .expect("expired session remains inspectable");
         assert!(
             session.certificates_required && !session.certificates_validated,
-            "expiring one deferred message must leave the session gate pending"
+            "one dispatch timeout must leave the session gate pending"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_deferred_general_message_queue_is_bounded() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
-        let session_nonce = peer_b
-            .session_by_identifier(&wallet_identity(&peer_a.wallet).await)
-            .await
-            .unwrap()
-            .session_nonce;
-        {
-            let mut sessions = peer_b.session_manager.write().await;
-            let session = sessions.get_session_mut(&session_nonce).unwrap();
-            session.certificates_required = true;
-            session.certificates_validated = false;
-        }
-
-        for index in 0..MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION {
-            let message = peer_a
-                .create_general_message(&identity_b, index.to_le_bytes().to_vec())
-                .await
-                .unwrap();
-            bounded(peer_b.dispatch_message(message)).await.unwrap();
-        }
-        let overflow = peer_a
-            .create_general_message(&identity_b, b"overflow".to_vec())
-            .await
-            .unwrap();
-        let result = bounded(peer_b.dispatch_message(overflow)).await;
-        result.expect("overflow is dropped without aborting an unrelated drain");
-        assert_eq!(
-            peer_b
-                .deferred_general_messages
-                .lock()
-                .await
-                .get(&session_nonce)
-                .unwrap()
-                .len(),
-            MAX_DEFERRED_GENERAL_MESSAGES_PER_SESSION
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_deferred_message_is_marked_seen_once_and_replay_still_fails() {
+    async fn test_gated_duplicate_is_marked_seen_exactly_once_after_release() {
         let (peer_a, peer_b, identity_b) = authenticated_pair().await;
         let identity_a = wallet_identity(&peer_a.wallet).await;
         let mut messages = peer_b.on_general_message().unwrap();
         while messages.try_recv().is_ok() {}
         let captured = peer_a
-            .create_general_message(&identity_b, b"deferred once".to_vec())
+            .create_general_message(&identity_b, b"gated once".to_vec())
             .await
             .unwrap();
         let session_nonce = captured.your_nonce.clone().unwrap();
@@ -4858,11 +4744,16 @@ mod tests {
             session.certificates_validated = false;
         }
 
-        bounded(peer_b.dispatch_message(captured.clone()))
-            .await
-            .unwrap();
-        let duplicate = bounded(peer_b.dispatch_message(captured.clone())).await;
-        duplicate.expect("a duplicate deferral is dropped without aborting the drain");
+        let first = {
+            let peer_b = peer_b.clone();
+            let message = captured.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(message).await })
+        };
+        let duplicate = {
+            let peer_b = peer_b.clone();
+            let message = captured.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(message).await })
+        };
 
         let certificate = issue_verifiable_certificate(
             &peer_a.wallet,
@@ -4882,7 +4773,14 @@ mod tests {
         )
         .await;
         bounded(peer_b.dispatch_message(response)).await.unwrap();
-        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"deferred once");
+        let first = bounded(first).await.unwrap();
+        let duplicate = bounded(duplicate).await.unwrap();
+        assert!(
+            (first.is_ok() && matches!(duplicate, Err(AuthError::ReplayDetected(_))))
+                || (duplicate.is_ok() && matches!(first, Err(AuthError::ReplayDetected(_)))),
+            "exactly one duplicate dispatch must commit replay state"
+        );
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"gated once");
 
         let replay = peer_b.verify_general_message(captured).await;
         assert!(
@@ -4892,66 +4790,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_deferred_frame_error_does_not_fail_committed_certificate_exchange() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
-        let mut malformed = peer_a
-            .create_general_message(&identity_b, b"malformed deferred".to_vec())
+    async fn test_evicted_certificate_exchange_still_wakes_waiters() {
+        let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
             .await
-            .unwrap();
-        malformed.signature.as_mut().unwrap()[0] ^= 0xff;
-        let session_nonce = malformed.your_nonce.clone().unwrap();
+            .unwrap()
+            .session_nonce;
         let mut session = peer_b.session_by_identifier(&session_nonce).await.unwrap();
         session.certificates_required = true;
         session.certificates_validated = false;
-        peer_b
-            .session_manager
-            .write()
-            .await
-            .update_session(&session_nonce, session.clone());
-        peer_b
-            .deferred_general_messages
-            .lock()
-            .await
-            .entry(session_nonce.clone())
-            .or_default()
-            .push_back(DeferredGeneralMessage {
-                message: malformed,
-                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
-            });
-
-        peer_b
-            .finish_certificate_exchange(&mut session)
-            .await
-            .expect("a deferred frame error must not undo a committed handshake");
-        assert!(session.certificates_validated);
-        assert!(!peer_b
-            .deferred_general_messages
-            .lock()
-            .await
-            .contains_key(&session_nonce));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_evicted_certificate_exchange_still_cleans_waiters_and_deferred_queue() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
-        let message = peer_a
-            .create_general_message(&identity_b, b"orphan candidate".to_vec())
-            .await
-            .unwrap();
-        let session_nonce = message.your_nonce.clone().unwrap();
-        let mut session = peer_b.session_by_identifier(&session_nonce).await.unwrap();
-        session.certificates_required = true;
-        session.certificates_validated = false;
-        peer_b
-            .deferred_general_messages
-            .lock()
-            .await
-            .entry(session_nonce.clone())
-            .or_default()
-            .push_back(DeferredGeneralMessage {
-                message,
-                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
-            });
         let (sender, receiver) = watch::channel(false);
         peer_b
             .certificate_validation_waiters
@@ -4976,24 +4825,17 @@ mod tests {
             *receiver.borrow(),
             "session eviction must still wake certificate waiters"
         );
-        assert!(
-            !peer_b
-                .deferred_general_messages
-                .lock()
-                .await
-                .contains_key(&session_nonce),
-            "session eviction must still remove its deferred queue"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_session_reap_cleans_all_peer_owned_nonce_state() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
-        let message = peer_a
-            .create_general_message(&identity_b, b"orphan candidate".to_vec())
+        let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
             .await
-            .unwrap();
-        let session_nonce = message.your_nonce.clone().unwrap();
+            .unwrap()
+            .session_nonce;
         {
             let mut sessions = peer_b.session_manager.write().await;
             let session = sessions.get_session_mut(&session_nonce).unwrap();
@@ -5001,21 +4843,14 @@ mod tests {
             session.certificates_validated = false;
             sessions.touch(&session_nonce, 0);
         }
-        peer_b
-            .deferred_general_messages
-            .lock()
-            .await
-            .entry(session_nonce.clone())
-            .or_default()
-            .push_back(DeferredGeneralMessage {
-                message: message.clone(),
-                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
-            });
-        peer_b
-            .pending_initial_responses
-            .lock()
-            .unwrap()
-            .insert(session_nonce.clone(), message);
+        let (handshake_tx, _handshake_rx) = oneshot::channel();
+        peer_b.handshake_waiters.lock().unwrap().insert(
+            session_nonce.clone(),
+            HandshakeWaiter {
+                id: 7,
+                sender: handshake_tx,
+            },
+        );
         let (sender, receiver) = watch::channel(false);
         peer_b
             .certificate_validation_waiters
@@ -5047,12 +4882,7 @@ mod tests {
 
         assert!(peer_b.session_by_identifier(&session_nonce).await.is_none());
         assert!(!peer_b
-            .deferred_general_messages
-            .lock()
-            .await
-            .contains_key(&session_nonce));
-        assert!(!peer_b
-            .pending_initial_responses
+            .handshake_waiters
             .lock()
             .unwrap()
             .contains_key(&session_nonce));
@@ -5515,10 +5345,15 @@ mod tests {
         bounded(peer_b.dispatch_message(request))
             .await
             .expect("valid certificate request");
-        assert!(
-            bounded(peer_a.process_next()).await.unwrap(),
-            "empty auto-response was not sent"
-        );
+        bounded(async {
+            loop {
+                if !certificate_events.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         assert_eq!(certificate_events.lock().unwrap().len(), 1);
         assert!(certificate_events.lock().unwrap()[0].1.is_empty());
         assert!(
@@ -5667,7 +5502,7 @@ mod tests {
     /// unauthenticated/absent session always triggers `initiateHandshake`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_expired_session_refused_on_reuse_and_rehandshake_recovers() {
-        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let (peer_a, _peer_b, identity_b) = authenticated_pair().await;
 
         let old_nonce = peer_a
             .session_by_identifier(&identity_b)
@@ -5691,18 +5526,7 @@ mod tests {
             err
         );
 
-        // Recovery: get_authenticated_session sees no active session and
-        // re-handshakes. Pump B so the handshake can complete.
-        let pump = {
-            let pb = peer_b.clone();
-            tokio::spawn(async move {
-                for _ in 0..200 {
-                    bounded(pb.process_pending()).await.unwrap();
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-            })
-        };
-
+        // Recovery: background receive completes a fresh handshake.
         let fresh = peer_a
             .get_authenticated_session(&identity_b)
             .await
@@ -5724,8 +5548,6 @@ mod tests {
             .create_general_message(&identity_b, b"alive".to_vec())
             .await
             .expect("fresh session must sign");
-
-        pump.abort();
     }
 
     /// Outbound sends refresh `last_used_ms` (TS Peer.ts:163 parity), so an
@@ -5866,7 +5688,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_listener_nested_handshake_cannot_steal_outer_initial_response() {
+    async fn test_listener_nested_handshake_routes_each_initial_response_by_nonce() {
         let requester_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let outer_responder_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let nested_responder_wallet = TestWallet::new(PrivateKey::from_random().unwrap());

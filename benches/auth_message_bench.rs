@@ -367,8 +367,8 @@ async fn establish_session() -> (
     // backpressures during the handshake's general message.
     let _msg_rx_b = peer_b.on_general_message().unwrap();
 
-    // Peer A initiates by sending a message; this blocks on the handshake until
-    // B replies. Drive both sides manually with process_pending() in a loop.
+    // Peer A initiates by sending a message; both background receive tasks own
+    // handshake and dispatch progress.
     let peer_a2 = peer_a.clone();
     let identity_b2 = identity_b.clone();
     let send_handle = tokio::task::spawn_local(async move {
@@ -378,18 +378,6 @@ async fn establish_session() -> (
             .unwrap();
     });
 
-    // Pump messages between the two peers until the handshake completes.
-    // (initialRequest -> B; initialResponse -> A; general -> B)
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-        let _ = peer_b.process_pending().await.unwrap();
-        let _ = peer_a.process_pending().await.unwrap();
-        if send_handle.is_finished() {
-            // Final drain so B ingests the trailing general message.
-            let _ = peer_b.process_pending().await.unwrap();
-            break;
-        }
-    }
     send_handle.await.unwrap();
 
     // Sanity: both sides authenticated.

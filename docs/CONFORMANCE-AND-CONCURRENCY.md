@@ -82,11 +82,10 @@ Rust may differ from both references. The obligations are stability and speed.
 
 ### Concurrency policy
 
-0. **Isolate errors at message ownership boundaries.** `dispatch_message` and
-   single-frame `process_next` report the consumed message's error to their
-   caller. Shared multi-frame drains consume and isolate each result: whoever
-   happens to pump a receiver does not own every queued frame, and one frame
-   must never strand or fail another message/session.
+0. **Isolate errors at message ownership boundaries.** Direct
+   `dispatch_message` calls return their own error. Background receive/dispatch
+   reports each frame's failure through `Peer::on_error`; it never stores an
+   error on a session or returns one frame's failure through another call.
 1. **Bound every fan-out whose width is remote-controlled.** Certificate counts arrive from a peer.
    Unbounded `join_all` over peer-supplied input is a resource-exhaustion vector. Go's cap of
    `min(len(items), NumCPU)` is the reference.
@@ -103,8 +102,8 @@ Rust may differ from both references. The obligations are stability and speed.
    deadlines are per-message/per-waiter outcomes; they do not mutate the session
    or reject a later conforming response.
 7. **Session eviction owns all nonce-indexed cleanup.** Reaping a session also
-   removes its deferred frames and correlated initial response and wakes its
-   certificate waiters; session-manager eviction must not orphan peer state.
+   removes its handshake response registration and wakes its certificate
+   waiters; session-manager eviction must not orphan peer state.
 
 ### Reference table
 
@@ -115,32 +114,29 @@ Rust may differ from both references. The obligations are stability and speed.
 | Transport receive/dispatch | Background `onData` callbacks | Background goroutine | **No caller-driven pull loop on a path that can block.** The pull model is unique to this port and caused a head-of-line deadlock |
 | Certificate gate on general messages | Present | **Absent entirely** | Implement (TS is normative for the *behaviour*), but never by blocking a shared drain loop |
 
-### Transport receive-task decision analysis (#40)
+### Background transport receive task (#40)
 
-The current `process_next` / `process_pending` pull model gives callers ownership of the sole transport
-receiver. A background design would move that receiver into one task created with the peer, route
-`initialResponse` messages to nonce-keyed handshake waiters, and dispatch other messages independently.
-To avoid recreating head-of-line blocking inside the background task, dispatch would need bounded
-per-message tasks (or keyed workers), with ordering retained where the protocol requires it.
+`Peer::new` now gives the sole transport receiver to a background task. That task routes
+`initialResponse` frames directly to nonce-keyed one-shot handshake waiters and schedules every other
+frame independently. Callers never pump transport progress; `process_next` and `process_pending` were
+removed rather than retained as meaningless compatibility shims.
 
-That design could remove the handshake receiver mutex and the new `pending_initial_responses` safety net.
-It could also remove `deferred_general_messages` **if** certificate-gated general messages are allowed to
-wait in independent dispatch tasks while the receive task continues accepting the certificate response.
-A single background task that still awaits dispatch inline would not remove the deadlock and therefore
-would not justify deleting the deferred queue.
+Dispatch admission is bounded and non-blocking. General frames have 64 slots and control frames have 16.
+The lanes are separate because a general frame may wait at the certificate gate: sharing every permit, or
+awaiting a permit in receive order, could put the releasing `certificateResponse` behind the frame it must
+release. A frame that arrives after its lane is full is dropped and reported through the bounded
+`Peer::on_error` observer. The receive task never waits for dispatch capacity and never holds a lock across
+an await.
 
-The compatibility cost is material. `process_next` and `process_pending` currently expose caller-driven
-progress and exact processed counts; a background consumer would make those APIs meaningless or turn them
-into compatibility shims. Many tests manually pump one side and inspect intermediate frames, so they would
-need event/rendezvous-based replacements. Error propagation would also need a new channel because receive
-and dispatch errors could no longer return through the pumping caller.
+Certificate-gated general messages authenticate, then wait inside their own admitted dispatch task. After
+validation they atomically enter the replay set exactly once and are delivered. This makes both
+`deferred_general_messages` and `pending_initial_responses` unnecessary; both stores and their expiry,
+overflow, flush, and reap machinery are deleted. Session gate state remains pending-or-validated only.
 
-The main upside is safe concurrent per-message dispatch and elimination of listener/handshake message
-stealing by construction. The risks are task lifetime and shutdown ownership, bounding peer-controlled
-fan-out, preserving replay-check and wire-order invariants under concurrent dispatch, avoiding listener
-backpressure accumulation, keeping all spawned futures `Send + 'static`, and defining where asynchronous
-transport errors surface. This is a worthwhile architectural direction, but it is intentionally not
-implemented in this round.
+The receive task owns only a weak reference to peer state and exits when the final `Peer` handle is dropped.
+Receive-channel closure, dispatch failures, and admission failures are per-frame asynchronous errors. The
+bounded error observer uses non-blocking delivery so an absent or slow observer cannot become transport
+backpressure; errors beyond its capacity may be dropped. No logging dependency was added.
 
 ## Registered divergences
 
@@ -149,17 +145,17 @@ divergence needs only the comment.
 
 | Divergence | Layer | Rationale | Guard |
 |---|---|---|---|
-| Certificate wait defers rather than blocks | 1 | TS waits inside independently scheduled `onData` callbacks. Rust's pull receiver would deadlock if dispatch waited inline, so it verifies and queues up to 128 pending frames, later flushing valid unexpired frames in order. Queue overflow/expiry is peer-observable, hence Layer 1 even though the mechanism is motivated by Layer 2 | Real-2.4.1 two-Peer gate vector plus deterministic deferral, cap, expiry, and drain-isolation regressions |
-| Public middleware verification rejects a pending certificate gate immediately | 1 | TS `processGeneralMessage` waits, but Rust's public HTTP middleware has neither a background receive callback nor ownership of the certificate-response drain. Waiting lets unsigned input occupy a handler for 30 seconds | Immediate-future forged-signature regression; site comment |
+| Public middleware verification rejects a pending certificate gate immediately | 1 | TS `processGeneralMessage` waits, but Rust's direct HTTP middleware verification may not involve this peer's transport receiver. Waiting lets unsigned input occupy a handler for 30 seconds | Immediate-future forged-signature regression; site comment |
+| Dispatch admission drops frames when its lane is saturated | 1 | Remote-controlled task creation must be bounded. Rust admits at most 64 general and 16 control dispatches; later frames are dropped and surfaced locally through `Peer::on_error` so receive remains available to protocol-release frames | Instrumented test measures 64 simultaneous general dispatches and observes frame 65 rejected; separate control lane plus general-before-certificate-response deadlock regression |
 | Unparseable certifier or certificate type is skipped, not fatal | 1 | TS treats both as opaque strings; Rust's strongly typed wallet cannot forward malformed values, and erroring fails handshakes TS completes | Site comments and malformed-value regressions |
 | Typed certificate identifiers are normalized before comparison | 1 | TS compares original strings exactly. Rust parses `PublicKey` values (case normalization and uncompressed→compressed conversion) and base64 certificate types into 32-byte values before comparing, so the original spelling cannot be recovered without raw-string shadow state | Sites in certificate validation; equivalence regressions; raise upstream |
 | Certificate validation uses the session's advertised request snapshot | 1 | TS reads mutable peer state for `initialResponse` and an attacker-controlled inbound field for `certificateResponse`. Either permits TOCTOU/relabeling. Rust validates the request it actually put on the wire | Session-snapshot regression tests; raise upstream |
-| Embedded certificate response is sent before the initiating call returns | 1 | TS releases handshake waiters before answering the peer's embedded certificate request, so a general frame can race ahead. The pull architecture has no safe post-return continuation without a background receive/dispatch task; proof-first ordering is deterministic and safer | Documented here pending the #40 architecture decision |
+| Embedded certificate response precedes the first general frame (#23) | 1 | TS releases handshake waiters before answering the peer's embedded certificate request, so a client can send `general` first. Rust deliberately completes the embedded proof before releasing the initiating call: receivers see certificates first and never need to defer the first general frame | Live @bsv/sdk 2.4.1 probe observes `initialRequest, general, certificateResponse`; Rust wire-record regression observes `initialRequest, certificateResponse, general`; site comment |
 | Certificate-request callbacks are fire-and-forget | 1 | TS awaits each callback; Rust's synchronous callback API spawns async work. A peer can observe `initialResponse` / `certificateResponse` wire order changes, the mirror of the preceding row | Handler-mode ordering regression; callback API comment |
 | Sessions expire after 15 minutes idle | 1 | TS retains sessions indefinitely. Rust bounds session and replay-set memory and requires a new handshake after expiry | TTL/re-handshake regressions; `session_manager.rs` comment |
 | Per-message replay protection and mandatory nonce | 1 | TS accepts a missing per-message nonce and has no replay set. Rust rejects missing/replayed nonces after signature verification | Missing-nonce and replay regressions |
 | Handshake has a 30-second deadline | 1 | TS waits indefinitely; Rust abandons an unanswered handshake after 30 seconds | Paused-time handshake regression |
-| Unsolicited/duplicate `initialResponse` is dropped | 1 | TS dispatch throws; Rust retains only a response correlated to a known unauthenticated session and otherwise ignores it so shared drains remain isolated | Correlation regressions |
+| Unsolicited/duplicate `initialResponse` is dropped | 1 | TS dispatch throws; Rust routes only a response correlated to a live nonce-keyed handshake waiter and otherwise ignores it so one frame cannot contaminate another session | Concurrent nested-handshake correlation regression |
 | Full general-message observer channel drops after replay consumption | 1 | The bounded event channel uses `try_send`; at capacity a verified payload can be dropped after its nonce enters the replay set | Capacity behavior documented at the site; replace with explicit application backpressure in a future API revision |
 | Certificate listener execution is capped at 30 seconds | 1 | TS awaits listeners without a deadline. Rust cancels an application callback after 30 seconds so transport progress is bounded | Paused-time listener-timeout regression |
 
@@ -178,7 +174,7 @@ a shared bug, because no Rust↔Rust test can detect it.
 | Layer 1 conformance | Vector generated from the real reference, byte equality asserted **both directions**, fixture committed and regenerable |
 | A test pins a property | Mutation: revert the fix, show the test goes **red**. A test that passes both ways is worthless |
 | Concurrency correctness | A test that fails deterministically, not via `sleep` + `is_finished()` — under load that passes on a reverted build |
-| No regression hangs | Tests touching `dispatch_message`/`process_pending` must be time-bounded; `cargo test` has no per-test timeout, so a regression hangs instead of failing |
+| No regression hangs | Tests touching background dispatch or `dispatch_message` must be time-bounded; `cargo test` has no per-test timeout, so a regression hangs instead of failing |
 | Performance claim | A benchmark, not an argument |
 
 Generators must pin the reference version and assert it (`name === '@bsv/sdk' && version === '2.4.1'`),

@@ -35,6 +35,7 @@
     "listen_for_certificates_received": "public listener-registration API for external Peer consumers; reviewed 2026-08-23",
     "merge_beef_from_binary": "pre-existing; reviewed 2026-08-22",
     "merge_raw_tx": "pre-existing; reviewed 2026-08-22",
+    "on_error": "public background receive/dispatch error observer for external Peer consumers; reviewed 2026-08-24",
     "op_return_data": "pre-existing; reviewed 2026-08-22",
     "schnorr_verify_proof": "pre-existing; reviewed 2026-08-22",
     "seen_nonce_count": "pre-existing; reviewed 2026-08-22",
