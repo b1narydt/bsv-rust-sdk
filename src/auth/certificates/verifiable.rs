@@ -27,7 +27,7 @@ pub struct VerifiableCertificate {
     pub certificate: Certificate,
     /// Maps field names to base64-encoded encrypted symmetric keys for the verifier.
     pub keyring: IndexMap<String, String>,
-    /// Cached decrypted fields (populated after decrypt_fields is called).
+    /// Optional decrypted fields explicitly supplied by a caller.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub decrypted_fields: Option<IndexMap<String, String>>,
 }
@@ -62,11 +62,9 @@ impl VerifiableCertificate {
     /// 2. Uses the symmetric key to decrypt the field value
     ///
     /// The counterparty is the certificate subject (the party who created the keyring).
-    /// Results are cached in `self.decrypted_fields`.
-    ///
     /// Translated from TS SDK VerifiableCertificate.decryptFields().
     pub async fn decrypt_fields<W: WalletInterface + ?Sized>(
-        &mut self,
+        &self,
         verifier_wallet: &W,
     ) -> Result<IndexMap<String, String>, AuthError> {
         if self.keyring.is_empty() {
@@ -94,7 +92,6 @@ impl VerifiableCertificate {
             ))
         })?;
 
-        self.decrypted_fields = Some(result.clone());
         Ok(result)
     }
 }

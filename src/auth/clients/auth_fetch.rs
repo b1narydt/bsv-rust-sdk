@@ -393,6 +393,11 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             .clone()
             .unwrap_or_default();
 
+        // A handler-mode handshake can leave its certificateResponse queued.
+        // Advance available protocol work before the immediate outbound gate;
+        // the shared drain isolates errors belonging to other frames.
+        auth_peer.peer.process_pending().await?;
+
         let (response_tx, response_rx) = oneshot::channel::<Vec<u8>>();
         auth_peer
             .router
@@ -864,9 +869,14 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                             let verifiable =
                                 get_verifiable_certificates(&wallet, &requested, &verifier_pubkey)
                                     .await?;
-                            peer_arc
-                                .send_certificate_response(&verifier_key, verifiable)
-                                .await?;
+                            // TS AuthFetch suppresses an empty listener-mode
+                            // response; its finally block still releases the
+                            // pending queue after the grace window below.
+                            if !verifiable.is_empty() {
+                                peer_arc
+                                    .send_certificate_response(&verifier_key, verifiable)
+                                    .await?;
+                            }
                             Ok(())
                         }
                         .await;
@@ -1760,7 +1770,7 @@ mod tests {
         let certifier_key = PrivateKey::from_random().unwrap();
         let certifier_wallet = Arc::new(ProtoWallet::new(certifier_key.clone()));
         let cert_type = CertificateType([77; 32]);
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "handler mode".to_string());
         let master = MasterCertificate::issue_certificate_for_subject(
             &cert_type,
@@ -1946,7 +1956,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ensure_peer_listener_sends_empty_certificate_response() {
+    async fn ensure_peer_listener_suppresses_empty_certificate_response() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2010,7 +2020,7 @@ mod tests {
         let requests = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let requests = server.received_requests().await.unwrap_or_default();
-                if requests.len() >= 2 {
+                if !requests.is_empty() {
                     break requests;
                 }
                 tokio::task::yield_now().await;
@@ -2022,11 +2032,12 @@ mod tests {
             .iter()
             .filter_map(|request| serde_json::from_slice::<AuthMessage>(&request.body).ok())
             .collect::<Vec<_>>();
-        let response = messages
-            .iter()
-            .find(|message| message.message_type == MessageType::CertificateResponse)
-            .expect("listener emitted no certificateResponse");
-        assert!(response.certificates.as_ref().is_some_and(Vec::is_empty));
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.message_type != MessageType::CertificateResponse),
+            "TS AuthFetch listener suppresses standalone empty certificateResponse messages"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -31,15 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocking the pull-based transport drain.** Dispatch verifies a frame before
   placing it in a bounded per-session deferred queue, then flushes it after
   validation. Duplicate, overflowed, malformed, and expired deferrals are
-  dropped without contaminating an unrelated caller's `process_pending` result.
-  The public HTTP-middleware verification path waits on the per-session signal,
-  while outbound `send_message` rejects a pending gate immediately like TS.
-  Both wait paths have a terminal 30-second deadline.
-- **Empty certificate responses are preserved end-to-end.** Standalone
-  and handshake-embedded certificate requests now receive a signed `[]`
-  response when no certificate matches. An authenticated empty response is a
-  terminal rejection rather than an indefinitely pending gate, and every
-  authenticated `certificateResponse` notifies listeners, including `[]`.
+  dropped without contaminating an unrelated caller's drain. Direct dispatch
+  reports its own frame error; shared drains isolate it and continue. The public
+  HTTP-middleware path and both outbound APIs reject a pending gate immediately.
+  Explicit certificate waiters retain independent 30-second deadlines.
+- **Empty certificate responses match each @bsv/sdk 2.4.1 producer site.** A
+  standalone `certificateRequest` receives signed `[]`; an embedded request in
+  `initialRequest` retains `certificates: []`; the post-handshake and AuthFetch
+  guards suppress empty standalone responses. Receiving `[]` notifies listeners
+  but leaves the gate pending and does not poison later valid responses.
 - **Handshake envelope bytes now match the real @bsv/sdk 2.4.1 constructors.**
   `initialRequest` and `initialResponse` always include the default
   `requestedCertificates: { certifiers: [], types: {} }`; `general` omits
@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   insertion order.** `VerifiableCertificate::decrypted_fields` and the
   decryption return value now use `IndexMap`, closing the same randomized JSON
   ordering class previously fixed for `fields` and `keyring`.
+- **Issued and discovered certificate maps retain deterministic order.**
+  `MasterCertificate::issue_certificate_for_subject` accepts `IndexMap` and
+  preserves it through encryption; `IdentityCertificate` keyring/decrypted maps
+  and wallet-wire serialization do the same. `decrypt_fields` no longer mutates
+  the serializable certificate.
 - **Certificate delivery is lossless and ordered.** The bounded 32-entry channel
   has been replaced by sequentially awaited callbacks. Listener failures
   propagate. Matching @bsv/sdk 2.4.1, non-empty certificate validation is
@@ -66,17 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AuthMessage::certificates` and `Peer::send_certificate_response` now use
   `Vec<VerifiableCertificate>` instead of `Vec<Certificate>` so the verifier
   keyring remains part of the signed wire value.
-- `VerifiableCertificate::decrypted_fields` and
-  `VerifiableCertificate::decrypt_fields` now expose `IndexMap<String, String>`
-  instead of `HashMap<String, String>`.
+- `VerifiableCertificate::decrypted_fields`, its non-mutating
+  `decrypt_fields` return value, certificate issue fields, and identity discovery
+  maps now expose `IndexMap<String, String>` instead of `HashMap<String, String>`.
 - `SessionManager::update_session` now returns `bool` (`false` means the session
   was evicted) instead of `()`.
-- `PeerSession` adds public `requested_certificates` and
-  `certificate_validation_error` fields, alongside the previously added
-  certificate-gate state.
-- `Peer::process_next` and `Peer::process_pending` now return dispatch failures
-  through `Result`; an empty or disconnected receiver still yields `Ok(false)`
-  from `process_next`.
+- `PeerSession` adds public `requested_certificates`; certificate-gate failure
+  is deliberately not retained as session-wide error state.
+- `Peer::process_next` and `Peer::process_pending` isolate per-frame dispatch
+  failures because their caller owns a shared drain. Use direct
+  `dispatch_message` when the caller owns one frame and needs its error.
 
 ## [0.7.1] - 2026-08-23
 

@@ -306,6 +306,77 @@ const rustVector = async empty => {
 const rustToTypeScript = await rustVector(false)
 const emptyRustToTypeScript = await rustVector(true)
 
+// Real two-Peer behavioral observation for the certificate gate. This is a
+// Layer-1 vector: a conforming peer can observe both the standalone [] frame
+// and whether a general payload is delivered before validation succeeds.
+class LinkedTransport {
+  constructor () {
+    this.sent = []
+  }
+
+  async onData (callback) { this.callback = callback }
+  async send (message) {
+    this.sent.push(message)
+    await this.peer.callback(message)
+  }
+}
+const transportA = new LinkedTransport()
+const transportB = new LinkedTransport()
+transportA.peer = transportB
+transportB.peer = transportA
+const emptyReceiverWallet = new Proxy(receiverWallet, {
+  get (target, property, receiver) {
+    if (property === 'listCertificates') {
+      return async () => ({ totalCertificates: 0, certificates: [] })
+    }
+    const value = Reflect.get(target, property, receiver)
+    return typeof value === 'function' ? value.bind(target) : value
+  }
+})
+const behaviorPeerA = new Peer(senderWallet, transportA)
+const behaviorPeerB = new Peer(emptyReceiverWallet, transportB)
+await Promise.all([behaviorPeerA.ready, behaviorPeerB.ready])
+await behaviorPeerA.initiateHandshake(receiverPublicKey)
+const behaviorSession = await behaviorPeerA.sessionManager.getSession(receiverPublicKey)
+behaviorSession.certificatesRequired = true
+behaviorSession.certificatesValidated = false
+await behaviorPeerA.sessionManager.updateSession(behaviorSession)
+const receivedEmptySets = []
+behaviorPeerA.listenForCertificatesReceived(async (_identity, received) => {
+  receivedEmptySets.push(received)
+})
+await behaviorPeerA.requestCertificates(standaloneRequest, receiverPublicKey)
+const standaloneEmptyResponses = transportB.sent
+  .filter(message => message.messageType === 'certificateResponse' && message.certificates?.length === 0)
+const emptyResponseLeftGatePending = behaviorSession.certificatesValidated !== true
+
+let generalDeliveries = 0
+behaviorPeerA.listenForGeneralMessages(async () => { generalDeliveries++ })
+const blockedGeneral = behaviorPeerB.toPeer([4, 5, 6], senderPublicKey)
+let waitRegistered = false
+for (let attempt = 0; attempt < 100; attempt++) {
+  if (behaviorPeerA.certificateValidationPromises.has(behaviorSession.sessionNonce)) {
+    waitRegistered = true
+    break
+  }
+  await Promise.resolve()
+}
+if (!waitRegistered || generalDeliveries !== 0) {
+  throw new Error('TS certificate gate did not retain the general message before validation')
+}
+behaviorSession.certificatesValidated = true
+await behaviorPeerA.sessionManager.updateSession(behaviorSession)
+behaviorPeerA.resolveCertificateValidation(behaviorSession.sessionNonce)
+await blockedGeneral
+const certificateGateBehavior = {
+  standaloneEmptyResponseSent: standaloneEmptyResponses.length === 1,
+  emptyResponseListenerFired: receivedEmptySets.length === 1 && receivedEmptySets[0].length === 0,
+  emptyResponseLeftGatePending,
+  generalWaitRegistered: waitRegistered,
+  generalDeliveredBeforeValidation: false,
+  generalDeliveredAfterValidation: generalDeliveries === 1
+}
+
 const rustHandshakeProcess = spawnSync(
   'cargo',
   ['run', '--quiet', '--example', 'generate_auth_certificate_rust_vector', '--features', 'serde', '--', '--handshake'],
@@ -406,6 +477,7 @@ const fixture = {
   emptyRustToTypeScript,
   typeScriptAuthMessages,
   rustAuthMessages,
+  certificateGateBehavior,
   emptyInitialResponseShape,
   optionalFieldSerializations,
   decryptedFieldSerializations

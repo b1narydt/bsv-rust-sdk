@@ -2147,8 +2147,8 @@ pub struct IdentityCertificate {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     pub certifier_info: IdentityCertifier,
-    pub publicly_revealed_keyring: HashMap<String, String>,
-    pub decrypted_fields: HashMap<String, String>,
+    pub publicly_revealed_keyring: IndexMap<String, String>,
+    pub decrypted_fields: IndexMap<String, String>,
 }
 
 /// Arguments for discovering certificates by identity key.

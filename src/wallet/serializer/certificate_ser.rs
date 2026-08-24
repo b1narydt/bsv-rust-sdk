@@ -7,7 +7,6 @@ use super::*;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 /// Serialize a Certificate (including signature at the end).
 pub fn serialize_certificate(cert: &Certificate) -> Result<Vec<u8>, WalletError> {
@@ -108,17 +107,18 @@ pub fn serialize_identity_certificate(cert: &IdentityCertificate) -> Result<Vec<
         write_string(w, &cert.certifier_info.icon_url)?;
         write_string(w, &cert.certifier_info.description)?;
         write_byte(w, cert.certifier_info.trust)?;
-        // PubliclyRevealedKeyring (sorted keys, values are base64 -> decoded bytes)
-        let mut keys: Vec<&String> = cert.publicly_revealed_keyring.keys().collect();
-        keys.sort();
-        write_varint(w, keys.len() as u64)?;
-        for key in keys {
+        // TS serializes both maps with Object.entries insertion order.
+        write_varint(w, cert.publicly_revealed_keyring.len() as u64)?;
+        for (key, value) in &cert.publicly_revealed_keyring {
             write_string(w, key)?;
-            let value_bytes = base64_decode(&cert.publicly_revealed_keyring[key])?;
+            let value_bytes = base64_decode(value)?;
             write_bytes(w, &value_bytes)?;
         }
-        // DecryptedFields (string map)
-        write_string_map(w, &cert.decrypted_fields)?;
+        write_varint(w, cert.decrypted_fields.len() as u64)?;
+        for (key, value) in &cert.decrypted_fields {
+            write_string(w, key)?;
+            write_string(w, value)?;
+        }
         Ok(())
     })
 }
@@ -137,14 +137,18 @@ pub fn deserialize_identity_certificate(
     let trust = read_byte(reader)?;
     // PubliclyRevealedKeyring
     let keyring_len = read_varint(reader)?;
-    let mut publicly_revealed_keyring = HashMap::with_capacity(keyring_len as usize);
+    let mut publicly_revealed_keyring = IndexMap::with_capacity(keyring_len as usize);
     for _ in 0..keyring_len {
         let key = read_string(reader)?;
         let value_bytes = read_bytes(reader)?;
         publicly_revealed_keyring.insert(key, base64_encode(&value_bytes));
     }
     // DecryptedFields
-    let decrypted_fields = read_string_map(reader)?;
+    let decrypted_fields_len = read_varint(reader)?;
+    let mut decrypted_fields = IndexMap::with_capacity(decrypted_fields_len as usize);
+    for _ in 0..decrypted_fields_len {
+        decrypted_fields.insert(read_string(reader)?, read_string(reader)?);
+    }
     Ok(IdentityCertificate {
         certificate,
         certifier_info: IdentityCertifier {

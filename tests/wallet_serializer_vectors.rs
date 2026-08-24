@@ -12,6 +12,7 @@ use bsv::wallet::interfaces::*;
 use bsv::wallet::serializer::frame::*;
 use bsv::wallet::serializer::*;
 use bsv::wallet::types::*;
+use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1067,12 +1068,12 @@ test_result_vector!(
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
         fields.insert("email".to_string(), "alice@example.com".to_string());
-        let mut pub_keyring = HashMap::new();
+        let mut pub_keyring = IndexMap::new();
         pub_keyring.insert(
             "pubField".to_string(),
             "AlrUOiKsONC8H4usqrsyO11jRwO3p3TEJo9qCeTd95CX".to_string(),
         );
-        let mut decrypted = HashMap::new();
+        let mut decrypted = IndexMap::new();
         decrypted.insert("name".to_string(), "Alice".to_string());
         DiscoverCertificatesResult {
             total_certificates: 1,
@@ -1131,12 +1132,12 @@ test_result_vector!(
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
         fields.insert("email".to_string(), "alice@example.com".to_string());
-        let mut pub_keyring = HashMap::new();
+        let mut pub_keyring = IndexMap::new();
         pub_keyring.insert(
             "pubField".to_string(),
             "AlrUOiKsONC8H4usqrsyO11jRwO3p3TEJo9qCeTd95CX".to_string(),
         );
-        let mut decrypted = HashMap::new();
+        let mut decrypted = IndexMap::new();
         decrypted.insert("name".to_string(), "Alice".to_string());
         DiscoverCertificatesResult {
             total_certificates: 1,

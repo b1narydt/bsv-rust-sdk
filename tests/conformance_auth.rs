@@ -445,7 +445,6 @@ async fn certificate_gate_matches_vector_ten_30_second_timeout() {
         requested_certificates: Some(requested),
         certificates_required: true,
         certificates_validated: false,
-        certificate_validation_error: None,
     };
     let mut wait = Box::pin(peer.wait_for_certificate_validation(&session));
     assert!(wait.as_mut().now_or_never().is_none());

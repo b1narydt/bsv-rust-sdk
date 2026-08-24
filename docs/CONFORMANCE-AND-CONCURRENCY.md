@@ -82,6 +82,11 @@ Rust may differ from both references. The obligations are stability and speed.
 
 ### Concurrency policy
 
+0. **Isolate errors at message ownership boundaries.** `dispatch_message` reports
+   an error to its direct caller because that caller owns the message. Shared
+   transport drains consume and isolate that result: whoever happens to pump a
+   receiver does not own every queued frame, and one frame must never strand or
+   fail another message/session.
 1. **Bound every fan-out whose width is remote-controlled.** Certificate counts arrive from a peer.
    Unbounded `join_all` over peer-supplied input is a resource-exhaustion vector. Go's cap of
    `min(len(items), NumCPU)` is the reference.
@@ -93,6 +98,10 @@ Rust may differ from both references. The obligations are stability and speed.
 4. **Never let one peer's work block another's.** No blocking wait may sit on a shared dispatch path.
 5. **Hold no lock across an `.await`.** Existing invariant; the `!Send` future that results breaks
    downstream `Handler` bounds in ways this crate's own tests cannot detect.
+6. **Certificate-gate state is never an error-valued session latch.** The live
+   state is only pending or validated. Empty/invalid responses and local waiter
+   deadlines are per-message/per-waiter outcomes; they do not mutate the session
+   or reject a later conforming response.
 
 ### Reference table
 
@@ -137,13 +146,19 @@ divergence needs only the comment.
 
 | Divergence | Layer | Rationale | Guard |
 |---|---|---|---|
-| Certificate wait defers rather than blocks | 2 | TS blocks a callback-driven transport; Rust's pull transport would deadlock if dispatch blocked. Rust verifies before queueing, caps each session at 128 frames, and later flushes valid frames in arrival order. Duplicate, overflowed, malformed, and expired deferrals are dropped without surfacing an error through an unrelated pump caller; expiry advances when the transport drain reaches empty | Comment at the site stating that restoring the TS mechanism reintroduces the deadlock; bounded/error-isolation regressions |
-| Empty certificate result is sent explicitly | 1 | TS suppresses a standalone empty `certificateResponse`. Rust sends signed `[]`: TS receivers harmlessly return early, while Rust receivers can terminate the certificate gate instead of waiting for silence | Exact empty-response tests at the standalone and embedded-request send sites; raise upstream |
-| Empty response or local deadline terminates the wait | 1 | TS's `length > 0` guard ignores authenticated `[]`, and a conforming TS client never sends `[]`. Rust records an empty answer as terminal rejection and independently makes its 30-second wait deadline terminal, preventing TS↔Rust sessions from stalling indefinitely | Empty-response terminality and paused-time local-deadline tests; raise upstream |
+| Certificate wait defers rather than blocks | 1 | TS waits inside independently scheduled `onData` callbacks. Rust's pull receiver would deadlock if dispatch waited inline, so it verifies and queues up to 128 pending frames, later flushing valid unexpired frames in order. Queue overflow/expiry is peer-observable, hence Layer 1 even though the mechanism is motivated by Layer 2 | Real-2.4.1 two-Peer gate vector plus deterministic deferral, cap, expiry, and drain-isolation regressions |
+| Public middleware verification rejects a pending certificate gate immediately | 1 | TS `processGeneralMessage` waits, but Rust's public HTTP middleware has neither a background receive callback nor ownership of the certificate-response drain. Waiting lets unsigned input occupy a handler for 30 seconds | Immediate-future forged-signature regression; site comment |
 | Unparseable certifier or certificate type is skipped, not fatal | 1 | TS treats both as opaque strings; Rust's strongly typed wallet cannot forward malformed values, and erroring fails handshakes TS completes | Site comments and malformed-value regressions |
-| Certifier hex comparison is case-insensitive after parsing | 1 | TS compares the original wire string exactly. Rust stores a typed `PublicKey`, which normalizes hex during deserialization, so the original case cannot be recovered without raw-string shadow state. Equivalent compressed keys are accepted | Site comment; raise upstream |
+| Typed certificate identifiers are normalized before comparison | 1 | TS compares original strings exactly. Rust parses `PublicKey` values (case normalization and uncompressed→compressed conversion) and base64 certificate types into 32-byte values before comparing, so the original spelling cannot be recovered without raw-string shadow state | Sites in certificate validation; equivalence regressions; raise upstream |
 | Certificate validation uses the session's advertised request snapshot | 1 | TS reads mutable peer state for `initialResponse` and an attacker-controlled inbound field for `certificateResponse`. Either permits TOCTOU/relabeling. Rust validates the request it actually put on the wire | Session-snapshot regression tests; raise upstream |
 | Embedded certificate response is sent before the initiating call returns | 1 | TS releases handshake waiters before answering the peer's embedded certificate request, so a general frame can race ahead. The pull architecture has no safe post-return continuation without a background receive/dispatch task; proof-first ordering is deterministic and safer | Documented here pending the #40 architecture decision |
+| Certificate-request callbacks are fire-and-forget | 1 | TS awaits each callback; Rust's synchronous callback API spawns async work. A peer can observe `initialResponse` / `certificateResponse` wire order changes, the mirror of the preceding row | Handler-mode ordering regression; callback API comment |
+| Sessions expire after 15 minutes idle | 1 | TS retains sessions indefinitely. Rust bounds session and replay-set memory and requires a new handshake after expiry | TTL/re-handshake regressions; `session_manager.rs` comment |
+| Per-message replay protection and mandatory nonce | 1 | TS accepts a missing per-message nonce and has no replay set. Rust rejects missing/replayed nonces after signature verification | Missing-nonce and replay regressions |
+| Handshake has a 30-second deadline | 1 | TS waits indefinitely; Rust abandons an unanswered handshake after 30 seconds | Paused-time handshake regression |
+| Unsolicited/duplicate `initialResponse` is dropped | 1 | TS dispatch throws; Rust retains only a response correlated to a known unauthenticated session and otherwise ignores it so shared drains remain isolated | Correlation regressions |
+| Full general-message observer channel drops after replay consumption | 1 | The bounded event channel uses `try_send`; at capacity a verified payload can be dropped after its nonce enters the replay set | Capacity behavior documented at the site; replace with explicit application backpressure in a future API revision |
+| Certificate listener execution is capped at 30 seconds | 1 | TS awaits listeners without a deadline. Rust cancels an application callback after 30 seconds so transport progress is bounded | Paused-time listener-timeout regression |
 
 ### Conformed-to TS defects
 

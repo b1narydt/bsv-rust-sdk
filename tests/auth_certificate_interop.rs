@@ -8,9 +8,11 @@ use bsv::primitives::private_key::PrivateKey;
 use bsv::primitives::public_key::PublicKey;
 use bsv::wallet::proto_wallet::ProtoWallet;
 use bsv::wallet::types::{Counterparty, CounterpartyType, Protocol};
+use indexmap::IndexMap;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{path::PathBuf, process::Command};
 use tokio::sync::mpsc;
 
 const VECTORS: &str = include_str!("vectors/auth_certificate_interop.json");
@@ -30,6 +32,8 @@ struct Fixture {
     type_script_auth_messages: AuthMessageVectors,
     #[serde(rename = "rustAuthMessages")]
     rust_auth_messages: AuthMessageVectors,
+    #[serde(rename = "certificateGateBehavior")]
+    certificate_gate_behavior: CertificateGateBehavior,
     #[serde(rename = "emptyInitialResponseShape")]
     empty_initial_response_shape: EmptyInitialResponseShape,
     #[serde(rename = "optionalFieldSerializations")]
@@ -70,6 +74,17 @@ impl ExactWireMessage {
 struct EmptyInitialResponseShape {
     has_certificates_member: bool,
     serialized_member: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateGateBehavior {
+    standalone_empty_response_sent: bool,
+    empty_response_listener_fired: bool,
+    empty_response_left_gate_pending: bool,
+    general_wait_registered: bool,
+    general_delivered_before_validation: bool,
+    general_delivered_after_validation: bool,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +150,22 @@ impl Transport for CaptureTransport {
 
 fn vector_file() -> Fixture {
     serde_json::from_str(VECTORS).expect("auth certificate interop fixture is valid JSON")
+}
+
+fn type_script_sdk_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("BSV_TS_SDK_PATH") {
+        return path.into();
+    }
+    let repository_copy = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("node_modules")
+        .join("@bsv")
+        .join("sdk");
+    if repository_copy.exists() {
+        return repository_copy;
+    }
+    PathBuf::from(
+        "/private/tmp/claude-501/-Users-donot-Project-Atlas/03591944-f737-4bbf-9300-4eb98375a634/scratchpad/tssdk/package",
+    )
 }
 
 fn auth_protocol() -> Protocol {
@@ -221,6 +252,7 @@ fn typescript_certificate_response_round_trips_the_exact_signed_preimage() {
     );
     let with_decrypted: VerifiableCertificate =
         serde_json::from_str(&fixture.decrypted_field_serializations[1]).unwrap();
+    let _: &IndexMap<String, String> = with_decrypted.decrypted_fields.as_ref().unwrap();
     assert_eq!(
         with_decrypted
             .decrypted_fields
@@ -254,6 +286,23 @@ fn rust_certificate_response_vector_is_accepted_by_typescript_and_rust() {
 
     assert_eq!(&rust_preimage, expected_preimage);
     assert!(verify_vector_signature(vector, message, &rust_preimage));
+}
+
+#[test]
+fn rust_vectors_are_accepted_by_real_typescript_at_test_time() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("node")
+        .arg(root.join("tests/vectors/verify_auth_certificate_interop.mjs"))
+        .arg(type_script_sdk_path())
+        .arg(root.join("tests/vectors/auth_certificate_interop.json"))
+        .output()
+        .expect("Node is required for the TypeScript interop assertion");
+    assert!(
+        output.status.success(),
+        "live TypeScript interop check failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -302,6 +351,17 @@ fn typescript_initial_response_retains_empty_certificates_member() {
         fixture.empty_initial_response_shape.serialized_member,
         r#"{"certificates":[]}"#
     );
+}
+
+#[test]
+fn typescript_certificate_gate_behavior_is_pinned_from_two_real_peers() {
+    let behavior = vector_file().certificate_gate_behavior;
+    assert!(behavior.standalone_empty_response_sent);
+    assert!(behavior.empty_response_listener_fired);
+    assert!(behavior.empty_response_left_gate_pending);
+    assert!(behavior.general_wait_registered);
+    assert!(!behavior.general_delivered_before_validation);
+    assert!(behavior.general_delivered_after_validation);
 }
 
 #[test]

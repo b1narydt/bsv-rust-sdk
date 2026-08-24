@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+
+use indexmap::IndexMap;
 use std::ops::Deref;
 
 use crate::auth::certificates::certificate::{base64_decode, base64_encode, AuthCertificate};
@@ -104,10 +106,10 @@ impl MasterCertificate {
     ///
     /// Returns (encrypted_fields, master_keyring).
     pub async fn create_certificate_fields<W: WalletInterface + ?Sized>(
-        fields: &HashMap<String, String>,
+        fields: &IndexMap<String, String>,
         certifier_wallet: &W,
         subject: &PublicKey,
-    ) -> Result<(HashMap<String, String>, HashMap<String, String>), AuthError> {
+    ) -> Result<(IndexMap<String, String>, HashMap<String, String>), AuthError> {
         // Use encrypt_fields with serial_number=None for master cert creation
         AuthCertificate::encrypt_fields(fields, None, subject, certifier_wallet).await
     }
@@ -253,7 +255,7 @@ impl MasterCertificate {
     pub async fn issue_certificate_for_subject<W, F, Fut>(
         cert_type: &CertificateType,
         subject: &PublicKey,
-        fields: HashMap<String, String>,
+        fields: IndexMap<String, String>,
         certifier_wallet: &W,
         get_revocation_outpoint: F,
         serial_number: Option<SerialNumber>,
@@ -308,7 +310,7 @@ impl MasterCertificate {
             subject: subject.clone(),
             certifier: certifier_identity.public_key,
             revocation_outpoint: Some(revocation_outpoint),
-            fields: Some(encrypted_fields.into_iter().collect()),
+            fields: Some(encrypted_fields),
             signature: None,
         };
 
@@ -634,7 +636,7 @@ mod tests {
 
         let cert_type = CertificateType([1u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
         fields.insert("email".to_string(), "alice@example.com".to_string());
 
@@ -688,7 +690,7 @@ mod tests {
         let cert_type = CertificateType([2u8; 32]);
         let certifier_pubkey = certifier_pk.to_public_key();
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Bob".to_string());
         fields.insert("age".to_string(), "30".to_string());
         fields.insert("country".to_string(), "USA".to_string());
@@ -724,7 +726,7 @@ mod tests {
         assert!(!verifier_keyring.contains_key("age"));
 
         // 3. Verifier decrypts fields using VerifiableCertificate
-        let mut verifiable =
+        let verifiable =
             VerifiableCertificate::new(master_cert.certificate.clone(), verifier_keyring);
 
         let decrypted = verifiable
@@ -737,8 +739,10 @@ mod tests {
         // "age" should not be in decrypted results (not in keyring)
         assert!(!decrypted.contains_key("age"));
 
-        // Verify cached fields
-        assert!(verifiable.decrypted_fields.is_some());
+        assert!(
+            verifiable.decrypted_fields.is_none(),
+            "decrypt_fields must not mutate a serializable certificate before forwarding"
+        );
     }
 
     #[tokio::test]
@@ -753,7 +757,7 @@ mod tests {
 
         let cert_type = CertificateType([3u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("secret".to_string(), "hidden_value".to_string());
 
         let master_cert = MasterCertificate::issue_certificate_for_subject(
@@ -792,7 +796,7 @@ mod tests {
         let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
         let cert_type = CertificateType([11u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
 
         let master_cert = MasterCertificate::issue_certificate_for_subject(
@@ -837,7 +841,7 @@ mod tests {
         let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
         let cert_type = CertificateType([12u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Bob".to_string());
 
         let provided_serial = SerialNumber([9u8; 32]);
@@ -903,7 +907,7 @@ mod tests {
             subject_pubkey: &PublicKey,
             certifier_wallet: &TestWallet,
         ) -> ([u8; 32], String) {
-            let mut fields = HashMap::new();
+            let mut fields = IndexMap::new();
             fields.insert("k".to_string(), "v".to_string());
             let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let seen_cb = seen.clone();
@@ -935,6 +939,39 @@ mod tests {
         assert_ne!(
             serial_a, serial_b,
             "None serial_number must generate a fresh random serial each issuance"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_issue_preserves_caller_field_order_deterministically() {
+        let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject = PrivateKey::from_random().unwrap().to_public_key();
+        let mut fields = IndexMap::new();
+        fields.insert("zeta".to_string(), "last alphabetically".to_string());
+        fields.insert("alpha".to_string(), "first alphabetically".to_string());
+        fields.insert("middle".to_string(), "middle".to_string());
+
+        let certificate = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([14; 32]),
+            &subject,
+            fields,
+            &certifier_wallet,
+            default_get_revocation_outpoint,
+            Some(SerialNumber([15; 32])),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            certificate
+                .certificate
+                .fields
+                .as_ref()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha", "middle"]
         );
     }
 }

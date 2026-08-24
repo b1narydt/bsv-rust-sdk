@@ -170,9 +170,4 @@ pub struct PeerSession {
     pub certificates_required: bool,
     /// Whether the peer's certificates have been validated for this session.
     pub certificates_validated: bool,
-    /// Terminal certificate-exchange failure, if the peer answered but did not
-    /// establish the requested identity evidence (for example an empty set or
-    /// a certificate validation error). `None` with `certificates_required`
-    /// and `!certificates_validated` is the only waiting state.
-    pub certificate_validation_error: Option<String>,
 }

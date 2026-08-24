@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use indexmap::IndexSet;
+
 use super::types::PeerSession;
 
 /// Default idle TTL for a session: 15 minutes.
@@ -75,7 +77,7 @@ pub struct SessionManager {
     /// Maps session_nonce -> PeerSession (primary index).
     nonce_to_session: HashMap<String, PeerSession>,
     /// Maps identity_key -> set of session nonces (secondary index).
-    identity_to_nonces: HashMap<String, HashSet<String>>,
+    identity_to_nonces: HashMap<String, IndexSet<String>>,
     /// Per-session replay + activity bookkeeping, keyed by session_nonce.
     /// Created lazily on first `touch`/`mark_message_seen`; dropped whenever the
     /// session is removed or reaped, which frees its seen-set (memory bound).
@@ -148,11 +150,12 @@ impl SessionManager {
         }
     }
 
-    /// Get the "best" session for an identity key (prefers authenticated).
+    /// Get the most recently active session for an identity key.
     ///
     /// Matches TS SDK SessionManager.getSession() behavior: if the identifier
     /// is a session nonce, returns that exact session. If it is an identity key,
-    /// returns the best (authenticated preferred) session.
+    /// returns the session with the greatest Rust `last_used_ms`, matching the
+    /// TS SDK's greatest `lastUpdate` selection. Ties retain insertion order.
     pub fn get_session_by_identifier(&self, identifier: &str) -> Option<&PeerSession> {
         // Try as direct nonce first
         if let Some(session) = self.nonce_to_session.get(identifier) {
@@ -161,21 +164,20 @@ impl SessionManager {
 
         // Try as identity key
         let nonces = self.identity_to_nonces.get(identifier)?;
-        let mut best: Option<&PeerSession> = None;
+        let mut best: Option<(&PeerSession, u64)> = None;
         for nonce in nonces {
             if let Some(session) = self.nonce_to_session.get(nonce) {
-                match best {
-                    None => best = Some(session),
-                    Some(b) => {
-                        // Prefer authenticated sessions
-                        if session.is_authenticated && !b.is_authenticated {
-                            best = Some(session);
-                        }
-                    }
+                let last_used_ms = self
+                    .session_meta
+                    .get(nonce)
+                    .map(|meta| meta.last_used_ms)
+                    .unwrap_or(0);
+                if best.is_none_or(|(_, best_last_used)| last_used_ms > best_last_used) {
+                    best = Some((session, last_used_ms));
                 }
             }
         }
-        best
+        best.map(|(session, _)| session)
     }
 
     /// Check if a session exists for a given nonce.
@@ -208,7 +210,7 @@ impl SessionManager {
             let old_identity = old_session.peer_identity_key.clone();
             if old_identity != session.peer_identity_key {
                 if let Some(nonces) = self.identity_to_nonces.get_mut(&old_identity) {
-                    nonces.remove(nonce);
+                    nonces.shift_remove(nonce);
                     if nonces.is_empty() {
                         self.identity_to_nonces.remove(&old_identity);
                     }
@@ -234,7 +236,7 @@ impl SessionManager {
         if let Some(session) = self.nonce_to_session.remove(nonce) {
             // Clean up identity index
             if let Some(nonces) = self.identity_to_nonces.get_mut(&session.peer_identity_key) {
-                nonces.remove(nonce);
+                nonces.shift_remove(nonce);
                 if nonces.is_empty() {
                     self.identity_to_nonces.remove(&session.peer_identity_key);
                 }
@@ -395,7 +397,6 @@ mod tests {
             requested_certificates: None,
             certificates_required: false,
             certificates_validated: true,
-            certificate_validation_error: None,
         }
     }
 
@@ -462,9 +463,36 @@ mod tests {
         let s = mgr.get_session_by_identifier("nonce1").unwrap();
         assert_eq!(s.session_nonce, "nonce1");
 
-        // Identity key lookup should prefer authenticated session
+        // TS chooses the latest timestamp and retains insertion order on a tie.
         let best = mgr.get_session_by_identifier("id_key_A").unwrap();
-        assert!(best.is_authenticated);
+        assert_eq!(best.session_nonce, "nonce1");
+    }
+
+    #[test]
+    fn test_identity_lookup_selects_most_recent_session() {
+        let mut mgr = SessionManager::new();
+        mgr.add_session(make_session("nonce1", "id_key_A", true));
+        mgr.add_session(make_session("nonce2", "id_key_A", true));
+        let first_in_hash_iteration = mgr.identity_to_nonces["id_key_A"]
+            .iter()
+            .next()
+            .unwrap()
+            .clone();
+        let newest = if first_in_hash_iteration == "nonce1" {
+            "nonce2"
+        } else {
+            "nonce1"
+        };
+        mgr.touch(&first_in_hash_iteration, 1);
+        mgr.touch(newest, 2);
+
+        assert_eq!(
+            mgr.get_session_by_identifier("id_key_A")
+                .unwrap()
+                .session_nonce,
+            newest,
+            "identity lookup must match TS by choosing max lastUpdate"
+        );
     }
 
     #[test]

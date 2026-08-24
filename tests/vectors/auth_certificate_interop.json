@@ -1800,6 +1800,14 @@
       "verifiedByTypeScript": true
     }
   },
+  "certificateGateBehavior": {
+    "standaloneEmptyResponseSent": true,
+    "emptyResponseListenerFired": true,
+    "emptyResponseLeftGatePending": true,
+    "generalWaitRegistered": true,
+    "generalDeliveredBeforeValidation": false,
+    "generalDeliveredAfterValidation": true
+  },
   "emptyInitialResponseShape": {
     "hasCertificatesMember": true,
     "serializedMember": "{\"certificates\":[]}"

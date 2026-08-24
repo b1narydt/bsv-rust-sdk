@@ -139,8 +139,7 @@ async fn validate_certificate<W: WalletInterface + ?Sized>(
         }
     }
 
-    let mut cert_to_verify = cert.clone();
-    cert_to_verify.decrypt_fields(verifier_wallet).await?;
+    cert.decrypt_fields(verifier_wallet).await?;
     Ok(true)
 }
 
@@ -595,7 +594,7 @@ mod tests {
 
         let cert_type = CertificateType([5u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "Test User".to_string());
 
         let master_cert = MasterCertificate::issue_certificate_for_subject(
@@ -635,7 +634,7 @@ mod tests {
     async fn test_validate_certificates_rejects_undecryptable_keyring() {
         let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "Test User".to_string());
         let master_cert = MasterCertificate::issue_certificate_for_subject(
             &CertificateType([8u8; 32]),
@@ -669,7 +668,7 @@ mod tests {
 
         let cert_type = CertificateType([6u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("data".to_string(), "value".to_string());
 
         let master_cert = MasterCertificate::issue_certificate_for_subject(
@@ -739,7 +738,7 @@ mod tests {
 
         let cert_type = CertificateType([7u8; 32]);
 
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("field".to_string(), "val".to_string());
 
         let master_cert = MasterCertificate::issue_certificate_for_subject(
@@ -794,7 +793,7 @@ mod tests {
         let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let subject_pubkey = PrivateKey::from_random().unwrap().to_public_key();
         let cert_type = CertificateType([9u8; 32]);
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "Test User".to_string());
         let master_cert = MasterCertificate::issue_certificate_for_subject(
             &cert_type,
@@ -939,7 +938,7 @@ mod tests {
         let cert = MasterCertificate::issue_certificate_for_subject(
             &CertificateType([13; 32]),
             &subject.to_public_key(),
-            HashMap::new(),
+            indexmap::IndexMap::new(),
             &certifier_wallet,
             default_get_revocation_outpoint,
             None,
@@ -985,7 +984,7 @@ mod tests {
         let verifier_pk = PrivateKey::from_random().unwrap();
         let verifier_wallet = TestWallet::new(verifier_pk.clone());
         let cert_type = CertificateType([14; 32]);
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "Case Test".to_string());
         let master = MasterCertificate::issue_certificate_for_subject(
             &cert_type,
@@ -1045,7 +1044,7 @@ mod tests {
             ..DecryptProbe::default()
         });
         let verifier_wallet = TestWallet::with_decrypt_probe(verifier_pk.clone(), probe.clone());
-        let mut fields = HashMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), "Concurrency Test".to_string());
         let master = MasterCertificate::issue_certificate_for_subject(
             &CertificateType([15; 32]),

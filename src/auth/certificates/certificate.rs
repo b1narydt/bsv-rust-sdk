@@ -432,12 +432,12 @@ impl AuthCertificate {
     /// to base64-encoded encrypted values, and keyring maps field names to
     /// base64-encoded encrypted symmetric keys.
     pub async fn encrypt_fields<W: WalletInterface + ?Sized>(
-        fields: &HashMap<String, String>,
+        fields: &IndexMap<String, String>,
         serial_number: Option<&str>,
         counterparty: &PublicKey,
         wallet: &W,
-    ) -> Result<(HashMap<String, String>, HashMap<String, String>), AuthError> {
-        let mut encrypted_fields = HashMap::new();
+    ) -> Result<(IndexMap<String, String>, HashMap<String, String>), AuthError> {
+        let mut encrypted_fields = IndexMap::new();
         let mut keyring = HashMap::new();
 
         for (field_name, field_value) in fields {

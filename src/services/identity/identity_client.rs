@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 use super::contacts_manager::ContactsManager;
 use super::types::{
     default_identity, Contact, DisplayableIdentity, IdentityClientOptions, KnownIdentityTypes,
@@ -319,7 +321,7 @@ impl<W: WalletInterface + ?Sized> IdentityClient<W> {
     /// by checking common field names. Matches TS SDK tryToParseGenericIdentity.
     fn try_parse_generic_identity(
         cert_type: &str,
-        fields: &HashMap<String, String>,
+        fields: &IndexMap<String, String>,
         certifier: &crate::wallet::interfaces::IdentityCertifier,
     ) -> (String, String, String, String, String) {
         let di = default_identity();
@@ -462,8 +464,8 @@ mod tests {
                 description: "Test".to_string(),
                 trust: 1,
             },
-            publicly_revealed_keyring: HashMap::new(),
-            decrypted_fields: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         // Default/unknown type should use generic parsing.
@@ -473,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_parse_identity_generic_with_name() {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
         fields.insert(
             "profilePhoto".to_string(),
@@ -500,7 +502,7 @@ mod tests {
                 description: "Test".to_string(),
                 trust: 1,
             },
-            publicly_revealed_keyring: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
             decrypted_fields: fields,
         };
 
@@ -512,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_parse_identity_generic_first_last_name() {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("firstName".to_string(), "Bob".to_string());
         fields.insert("lastName".to_string(), "Smith".to_string());
 
@@ -536,7 +538,7 @@ mod tests {
                 description: "".to_string(),
                 trust: 0,
             },
-            publicly_revealed_keyring: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
             decrypted_fields: fields,
         };
 

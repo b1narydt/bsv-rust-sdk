@@ -11,19 +11,39 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 ---
 
+## Fourth adversarial review of `609d0b0`
+
+The prior ledger overclaimed closure: 43 rows said fixed, but the review
+verified only 36 complete fixes (6 partial, 1 unverifiable). The corrections
+below supersede contradictory descriptions in older round summaries.
+
+| ID | Finding | Corrected status |
+|---|---|---|
+| F1 | Public `verify_general_message` waited 30 seconds before signature verification | **FIXED** — pending gates reject immediately; forged-signature future is immediately ready |
+| F2 / I1 | One frame's dispatch error aborted whoever owned the shared drain | **FIXED structurally** — direct dispatch reports its own error; `process_next`, `process_pending`, and nested handshake drains consume per-frame errors and continue |
+| F3 / I2 | Empty/invalid/timeout outcomes became a sticky session-wide error and destroyed independent waiter deadlines | **FIXED structurally** — error-valued session state and all terminalization sites removed; only successful validation mutates the gate; public waiters own independent deadlines; late valid responses remain accepted |
+| F4 | Empty-response charter rationale inverted TS 2.4.1 behavior | **FIXED** — real two-Peer vector proves standalone `[]` send, listener fan-out, and still-pending gate; embedded initial request includes `[]`; post-handshake and AuthFetch guards suppress `[]` |
+| F5 | Certificate issue API discarded field order through `HashMap` | **FIXED** — issue/encrypt APIs accept and preserve `IndexMap`; deterministic `zeta, alpha, middle` regression; discovery `IdentityCertificate` maps audited and converted too |
+| F6 | Ordering regressions could pass by randomized `HashMap` luck | **FIXED** — compile-time `IndexMap` assertion plus ordered fixtures; no shuffle-dependent assertion remains |
+| Perf/API | Double nonce verification, debug ECC timeout, opposite outbound gate semantics, mutating decrypt, random session selection | **FIXED** — resolved session is threaded once; `[profile.test] opt-level = 2`; both outbound APIs reject immediately; decrypt is non-mutating; identity lookup uses max activity timestamp |
+| #33 | 39 drain-sensitive test calls were untimed | **FIXED** — all direct calls use the five-second `bounded` helper; existing `timeout`/outer-timeout `select!` calls remain explicit |
+| #46 | Rust→TS cargo test asserted a generator-written boolean | **FIXED** — cargo test launches Node and real 2.4.1 verification; CI installs Node/SDK and separately regenerates + diffs the fixture |
+
+---
+
 ## Final adversarial review of `30ad72a`
 
 | ID | Finding | Status |
 |---|---|---|
 | B1 | `decrypted_fields` randomized inside signed JSON | **FIXED** — `IndexMap`; real TS three-key non-alphabetical fixture red/green |
-| B2 | Deferred expiry contaminates unrelated pump caller | **FIXED** — background expiry returns `Ok`, terminalizes only the owning session; unrelated `initialRequest` regression red/green |
+| B2 | Deferred expiry contaminates unrelated pump caller | **FIXED after reopening** — expiry removes only the expired message; it does not terminalize session state, and shared drains isolate frame errors |
 | B3 | Outbound 30-second gate only checks deadline when no work was processed | **FIXED** — unconditional top-of-loop deadline; zero-deadline remote-work regression red/green |
-| B4 | Unverified general frames consume deferred capacity and deferral errors abort drains | **FIXED** — signature verified before queue lock; failed verification, duplicate, and overflow frames are dropped without caller error; count remains capped at 128 |
+| B4 | Unverified general frames consume deferred capacity and deferral errors abort drains | **FIXED after reopening** — signature verified before queue lock; shared drains isolate all per-frame errors and keep draining; count remains capped at 128 |
 | B5 | Validation/deferral check-then-act race strands a message | **FIXED** — after acquiring the queue lock, `try_read` rechecks session state atomically with insertion; resolved-state regression red/green |
-| B6 | Empty certificate result only terminal on receive side; TS peer can still stall Rust | **FIXED by registered divergence** — all auto-response sites send signed `[]`; authenticated empty and local 30-second deadline are terminal |
+| B6 | Empty certificate result only terminal on receive side; TS peer can still stall Rust | **PREVIOUS FIX REVERTED; FIXED BY TS PARITY** — standalone requests send `[]`, the two guarded sites suppress it, and empty input leaves the gate pending without poisoning later work |
 | B7 | `handshake.1` pin accepted any key-set mismatch and hid dead checks | **FIXED** — exact expected/actual key-set evidence; checks execute before the known divergence; reverting #43 now fails the harness |
 | B8 | Release hygiene | **FIXED** — version 0.8.0; changelog covers wire/API breaks and current nonblocking mechanism |
-| H1 | Deferred-frame flush error fails a committed handshake | **FIXED** — flush errors are isolated after terminal state commit; malformed deferred-frame regression red/green |
+| H1 | Deferred-frame flush error fails a committed handshake | **FIXED** — flush errors are isolated after successful validation commits; malformed deferred-frame regression red/green |
 | H2 | Public `verify_general_message` rejects where TS waits | **FIXED** — public middleware path uses the retained per-session waiter; dispatch remains nonblocking |
 | H3 | `send_message` waits where TS rejects synchronously | **FIXED** — removed outbound pumping from `send_message`; immediate-result regression red/green |
 | H4 | Charter claims deferred behavior is identical | **FIXED** — queue cap, error isolation, and drain-triggered expiry differences are explicit |
@@ -31,7 +51,7 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 | M1 | Eviction returns before waiter/queue cleanup | **FIXED** — cleanup always runs before `SessionNotFound`; eviction regression red/green |
 | M2 | Malformed requested type is fatal unlike malformed certifier | **FIXED by registered divergence** — both unrepresentable typed values are skipped; red/green regression |
 | M3 | Case-insensitive certifier match differs from TS exact string match | **REGISTERED DIVERGENCE** — typed `PublicKey` parsing loses original case; no raw-string shadow state added |
-| #9 | Terminal validation error can later be cleared | **FIXED** — later authenticated responses preserve and return the existing terminal rejection |
+| #9 | Terminal validation error can later be cleared | **SUPERSEDED** — terminal session errors were the structural defect and no longer exist; later valid responses are intentionally accepted |
 | Tests | Unbounded loops, `is_finished`, hand-built AuthPeer, silent asserted-count erosion | **FIXED** — rendezvous timeouts, no `is_finished`, `ensure_peer` production-listener test, and exact eight-vector assertion |
 
 ---
@@ -43,7 +63,7 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 | 1 | Keyring absent from wire `Certificate` → TS↔Rust preimages differ, certificate exchange impossible in both directions | R1a | **FIXED** `039fbb2`, proven by cross-language vectors + an independent vector |
 | 2 | `keyring` as `HashMap` → randomized iteration order breaks the preimage whenever >1 field is revealed | codex, during fix | **FIXED** `039fbb2` (now `IndexMap`) |
 | 3 | Inbound 30s wait deadlocks the pull-based drain loop; releasing message sits behind the blocked one | R2b | **FIXED** — dispatch verifies then defers in a bounded per-session queue; it never waits on the sole pull receiver. Deterministic queued-general/certificate-response regression is green |
-| 4 | Peer with no matching cert never resolves the waiter → every inbound general message stalls 30s, forever | R2b | **FIXED** — empty results are sent explicitly; authenticated `[]` and the receiver's own 30-second deadline are terminal. Rust↔Rust empty send and TS↔Rust local-deadline regressions are green |
+| 4 | Peer with no matching cert never resolves the waiter → every inbound general message stalls 30s, forever | R2b | **FIXED without terminal state** — dispatch verifies/defer-expires per message and middleware rejects immediately; explicit waiters time out independently, matching TS session usability |
 | 5 | Outbound gate self-blocks handshake in cert-request-handler mode over `SimplifiedFetchTransport` | R2b | **FIXED** — AuthFetch's signing path pumps the certificate response before general-message creation; public `send_message` now rejects a pending gate immediately like TS. Handler-mode regression is time-bounded |
 | 6 | Unparseable certifier aborts the whole message; TS treats certifiers as opaque strings → failed handshake vs. normal response | R2a | **FIXED by registered divergence** — malformed certifiers and types are skipped because the strongly typed Rust wallet cannot forward them; both paths have focused regressions |
 | 7 | `try_send` fail-open: `certificates_validated=true` committed before delivery, drop leaves session claiming validated | R1b | **FIXED** — bounded channel removed entirely, replaced with awaited listeners |
@@ -57,8 +77,8 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 | # | Finding | Source | Status |
 |---|---|---|---|
-| 13 | One waiter's timeout drops the *shared* `watch::Sender`, killing co-waiters with a misleading error and no-op'ing later resolves | R2a/R2b | **FIXED** — retained per-session signal plus active registration count gives waiters independent deadlines; deterministic two-waiter regression is green |
-| 14 | Waiter map leaks on future cancellation (client disconnect / `select!` loser) and on session reap; no cap | R2b | **FIXED** — RAII registration removes cancelled/last waiters; the terminal 30-second deadline bounds entries after session loss. Cancellation and eviction-cleanup regressions are time-bounded |
+| 13 | One waiter's timeout drops the *shared* `watch::Sender`, killing co-waiters with a misleading error and no-op'ing later resolves | R2a/R2b | **FIXED after regression** — public waiters now share only a success signal; timeout never mutates session state, so staggered deadlines and a late valid response remain independent |
+| 14 | Waiter map leaks on future cancellation (client disconnect / `select!` loser) and on session reap; no cap | R2b | **FIXED** — RAII removes cancelled/last registrations; each waiter has its own bounded deadline; cancellation and eviction cleanup are time-bounded |
 | 15 | `listCertificates` `limit: 100` vs TS's default of 10 → the two SDKs reveal *different sets* for 11+ certs | R2a | **FIXED** — passes `limit: None`, selecting the wallet interface's TS-compatible default 10; focused argument-capture regression is green |
 | 16 | Requested types with an empty field list silently dropped; TS proves them | R2a | **FIXED** — all requested type keys are forwarded regardless of field-list length; proof-call regression is green |
 | 17 | Certifier comparison case-sensitive against a re-normalized lowercase key; TS compares the wire string verbatim | R2a | **RESOLVED BY REGISTERED DIVERGENCE** — typed `PublicKey` parsing loses original hex case, so Rust compares equivalent hex case-insensitively rather than adding raw-string shadow state |
@@ -74,7 +94,7 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 | 22 | `initialResponse` omits `certificates` where TS emits `[]` — wire-shape difference in a message TS peers parse | R2a | **FIXED** — empty auto-match now emits `Some(vec![])`; pinned 2.4.1 generator invokes real `Peer.processInitialRequest` and records `{"certificates":[]}` |
 | 23 | Frame ordering: TS releases handshake waiters *before* answering the embedded cert request, so a TS client can put a general message on the wire before its `certificateResponse`; Rust sends cert response first | R2a | **DECISION** — confirmed Layer 1 observable; current proof-first order retained as a registered divergence pending the background receive-task architecture decision (#40) |
 | 24 | `requested.is_empty()` early return (keyed on `types`) has no TS counterpart; undocumented short-circuit | R2a | **FIXED** — removed; Rust now calls `list_certificates` for empty `types`, matching TS and Go. Regression red/green |
-| 25 | Gate **fails open** on a reaped session: `still_waiting` re-check uses `get_session`, `None` → `false` → returns `Ok(())`. Fails closed downstream, so no security consequence, but semantics differ from TS | R2a | **REFUTED at `df0cf98`** — the alleged `still_waiting` expression no longer exists. Both the post-registration lookup and post-wakeup lookup use `ok_or_else(SessionNotFound)`, so a reaped session already failed closed before this round |
+| 25 | Gate allegedly failed open when a post-registration session lookup found a reaped session | R2a | **REFUTED at `df0cf98`** — both post-registration and post-wakeup lookups return `SessionNotFound`, so a reaped session fails closed |
 | 26 | Lost-update: `update_session` is a wholesale replace after several awaits, so it can resurrect a session `reap_idle` removed. Window lengthened by the new sequential `decrypt_fields` per certificate | R2b | **FIXED** — `update_session` only replaces an existing nonce and returns false after reap; async production callers convert that to `SessionNotFound`. Resurrection regression red/green |
 | 27 | No compile-time proof the changed futures are `Send`; `_assert_peer_send_sync` asserts the *type*, not the futures. `watch::Ref` is `!Send` and survives only by scoping | R2b | **FIXED** — in-crate `is_send` assertions cover `verify_general_message`, `dispatch_message`, and `process_pending`; the first stream-based concurrency attempt demonstrably failed downstream spawn compilation and was replaced |
 | 28 | Stale baseline entry `"on_certificates"` in `scripts/unwired-pub-fns.baseline.json:37` for a function that no longer exists | R2a | **FIXED** — stale entry replaced by the reviewed current external-consumer APIs; unwired-function ratchet is green |
@@ -85,16 +105,16 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 | # | Finding | Source | Status |
 |---|---|---|---|
 | 30 | `test_certificate_delivery_has_no_bounded_channel_limit` is a **tautology** — awaits each of 64 deliveries before the next, so a 1-entry channel passes identically. Cannot detect the bug it names | R2b | **FIXED** — blocks the first listener, concurrently accumulates 64 queued deliveries, then proves lossless ordered release; queue-fill rendezvous is time-bounded |
-| 31 | `test_inbound_general_message_waits_for_certificate_validation` rests on `sleep(50ms)` + `!is_finished()`; under load it passes on a reverted build. Same defect as the discarded 25ms probe — 2× duration, same mechanism | R2b | **FIXED** — replaced with deterministic immediate-future polling/rendezvous and explicit terminal release; no sleep-plus-`is_finished` probe remains |
+| 31 | `test_inbound_general_message_waits_for_certificate_validation` rests on `sleep(50ms)` + `!is_finished()`; under load it passes on a reverted build. Same defect as the discarded 25ms probe — 2× duration, same mechanism | R2b | **FIXED** — replaced with deterministic immediate-future polling/rendezvous and explicit successful-validation release; no sleep-plus-`is_finished` probe remains |
 | 32 | Nothing tests that `verify_general_message` itself times out, nor the value of `CERTIFICATE_WAIT_TIMEOUT`. The constant could be set to 30 minutes unnoticed | R2b | **FIXED** — paused-time conformance test pins 29,999ms pending / 30,000ms timeout; public verifier waiting is separately exercised |
-| 33 | Many tests call `dispatch_message`/`process_pending` untimed → a regression **hangs 30s per test** rather than failing; `cargo test` has no per-test timeout | R2b | **FIXED** — affected handshake pumps, waiter registration loops, deferred dispatch, and delivery backlog rendezvous now have explicit timeouts |
+| 33 | Many tests call `dispatch_message`/`process_pending` untimed → a regression **hangs 30s per test** rather than failing; `cargo test` has no per-test timeout | R2b | **FIXED after reopening** — every direct drain/dispatch call uses `bounded`; calls inside explicit `timeout` or a timeout-bounded `select!` retain those bounds |
 
 ## Refuted (investigated, not defects — recorded so they are not re-raised)
 
 - Lock held across the new await / futures non-`Send` — proved clean by scope analysis (R2b)
 - Two concurrent waiters deadlocking each other — cannot; Rust is *better* than TS here, whose
   `certificateValidationPromises` map silently overwrites and orphans the first waiter (R2b)
-- Lost wakeup from a late-registering waiter — the `still_waiting` re-read closes the window (R2b)
+- Lost wakeup from a late-registering waiter — the post-registration session re-read closes the window (R2b)
 - Timeout silently proceeding — returns `Err` before signature verification and `mark_message_seen` (R2b)
 - Listener registry reentrancy *deadlock* — guard dropped before awaiting (R2b). (The *message-stealing*
   hazard, #20, is a separate live finding.)
@@ -124,7 +144,7 @@ upstream and this repo mislabel BRC-103 as BRC-31.
 | 43 | Rust's default `initialRequest` omits `requestedCertificates`, while the real TS 2.4.1 constructor always emits its default `{ certifiers: [], types: {} }`. The vendored schema vector also omits it, so this Layer-1 discrepancy is hidden rather than exposed by the corpus | **FIXED** — handshake producers now normalize absent configuration to an explicit empty wire set while retaining Rust's internal no-request semantics. Real-`Peer` 2.4.1 and Rust constructor tests are mutation-proven red/green; exact envelope bytes are covered both directions |
 | 44 | `auth.brc31-handshake.10` requires the Express server to wait 30 seconds for certificates and map expiry to HTTP 408. This crate has no HTTP server/status mapper; its certificate waiter and deferred-message deadline are exactly 30 seconds, and public `verify_general_message` waits on that per-session signal | **RESOLVED** — Express 408 remains a governed middleware skip; crate timing is mutation-proven in `tests/conformance_auth.rs` |
 | 45 | `auth.brc31-handshake.12` and `messaging.authsocket.4` enumerate `initialRequest`, `initialResponse`, and `general`; the full BRC-103 SDK envelope also has `certificateRequest` and `certificateResponse` | **RESOLVED — assert the three listed values as real enum members, not as an exhaustive SDK enum; the vectors describe the middleware/AuthSocket subset** |
-| 46 | Cross-language vectors covered the signed `certificateResponse` preimage but not complete handshake envelopes, allowing #43 and key-order drift through | **FIXED** — real 2.4.1 `Peer` bytes for `initialRequest` and `initialResponse` round-trip byte-exactly through Rust; Rust envelopes are parsed and reserialized byte-exactly by 2.4.1. The same fixture now covers all five envelopes |
+| 46 | Cross-language vectors covered the signed `certificateResponse` preimage but not complete handshake envelopes, allowing #43 and key-order drift through | **FIXED and now test-time verified** — real 2.4.1 bytes cover every envelope; `cargo test` invokes Node to verify Rust signatures/bytes instead of trusting a fixture flag; CI regenerates and diffs the fixture |
 | 47 | Rust emitted `initialNonce` on `general`, while TS `Peer.toPeer` never creates that member | **FIXED** — Rust now omits it; a focused Rust-producer mutation test was red before and green after, and both-direction all-envelope vectors pin the TS shape |
 | 48 | Derived Rust field order serialized `yourNonce` before `initialNonce`; TS constructs `initialNonce` first on `initialResponse`, `certificateRequest`, and `certificateResponse` | **FIXED** — `AuthMessage` declaration order now matches all five real TS constructors. Exact 2.4.1 and Rust-produced envelope vectors pin the bytes; signed payloads are unchanged |
 
@@ -163,11 +183,12 @@ The audit followed every `serde_json::to_vec`/`to_string` site to every
 
 | Map site | Runtime type | Can reach a reserialized signature preimage? | Verdict |
 |---|---|---|---|
-| `Certificate.fields` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` and in the certificate's own binary signing format | **SAFE** — wire order is preserved for auth JSON; certificate binary signing explicitly applies TS field collation |
+| `Certificate.fields` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` and in the certificate's own binary signing format | **SAFE on receive and issue** — wire order is preserved; issuance now accepts ordered input and preserves it through encryption; binary signing separately applies TS field collation |
 | `VerifiableCertificate.keyring` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` | **SAFE** — inbound order is preserved; legacy `HashMap` constructor input is sorted once before conversion |
 | `VerifiableCertificate.decrypted_fields` | `Option<IndexMap<String, String>>` | Yes when explicitly present in `certificateResponse` | **FIXED** — three-key non-alphabetical TS fixture proves `zeta, alpha, middle` survives deserialize/reserialize |
 | `RequestedCertificateSet.types` | `IndexMap<String, Vec<String>>` | Yes: `certificateRequest` JSON is signed directly | **SAFE** — supplied wire order is preserved |
-| `MasterCertificate.master_keyring` and `VerifiableCertificate::new` input | `HashMap<String, String>` | Not directly; only the converted `VerifiableCertificate.keyring` is serializable on auth wire | **SAFE AT BOUNDARY** — conversion sorts into `IndexMap` before the value can enter `AuthMessage` |
+| `MasterCertificate.master_keyring` and `VerifiableCertificate::new` input | `HashMap<String, String>` | Not directly; only the converted `VerifiableCertificate.keyring` is serializable on auth wire | **SAFE AT BOUNDARY** — keyring conversion sorts into `IndexMap`; certificate issue fields are no longer accepted as `HashMap` |
+| `IdentityCertificate.publicly_revealed_keyring` / `decrypted_fields` | `IndexMap<String, String>` | Wallet discovery wire uses TS `Object.entries` order | **FIXED** — both public types and serializer/deserializer preserve order |
 | `Peer` waiter/deferred/pending/session indexes | `HashMap<...>` | No; internal state only, none derives `Serialize` or nests in `AuthMessage` | **SAFE / NOT WIRE DATA** |
 | AuthFetch request headers | `HashMap<String, String>` | The resulting payload is signed, but the map itself is not serialized | **SAFE** — `signable_request_headers` normalizes and sorts into a vector before encoding |
 | Wallet RPC maps (`PartialCertificate`, acquire/prove/list/discovery args/results) | `HashMap<...>` | No path into `AuthMessage`; `Certificate` is the separate ordered wire type | **OUTSIDE AUTH PREIMAGE** — keep `HashMap` |
@@ -195,10 +216,10 @@ Reference points: TS is single-threaded (`Promise.all` = interleaved I/O, not pa
 
 | # | Site | TS | Go | Rust today | Action |
 |---|---|---|---|---|---|
-| 38 | `validate_certificates` over N certs | `Promise.all` (`validateCertificates.js:17`) | **Worker pool**, `min(len(certs), NumCPU)`, first-error-cancels via `context.WithCancel` (`utils/validate_certificates.go:99-146`) | **FIXED** — `available_parallelism()`-bounded `FuturesUnordered`; first completed false/error drops siblings | Confirmed. Deterministic paused-time tests measured 1s sequential → 200ms bounded for 10 certs/8 CPUs and 7s → 0ms first-error cancellation. Single-cert behavior/order unchanged; multi-failure winner may differ, as in TS |
-| 39 | `get_verifiable_certificates` → `prove_certificate` per cert | `Promise.all` (`getVerifiableCertificates.js:20`) | Sequential (`get_verifiable_certificates.go:60`) | Sequential, documented | **REFUTED as a defect** — leave sequential. Go's real-parallelism implementation made this deliberate Layer-2 choice; local wallet fan-out has no demonstrated value |
+| 38 | `validate_certificates` over N certs | `Promise.all` (`dist/cjs/src/auth/utils/validateCertificates.js:14`) | **Worker pool**, `min(len(certs), NumCPU)`, first-error-cancels via `context.WithCancel` (`utils/validate_certificates.go:99-146`) | **FIXED** — `available_parallelism()`-bounded `FuturesUnordered`; first completed false/error drops siblings | Confirmed. Deterministic paused-time tests measured 1s sequential → 200ms bounded for 10 certs/8 CPUs and 7s → 0ms first-error cancellation. Single-cert behavior/order unchanged; multi-failure winner may differ, as in TS |
+| 39 | `get_verifiable_certificates` → `prove_certificate` per cert | `Promise.all` (`dist/cjs/src/auth/utils/getVerifiableCertificates.js:18`) | Sequential (`get_verifiable_certificates.go:60`) | Sequential, documented | **REFUTED as a defect** — leave sequential. Go's real-parallelism implementation made this deliberate Layer-2 choice; local wallet fan-out has no demonstrated value |
 | 40 | Transport receive/dispatch | Background `onData` callbacks | **Background goroutine** `go t.receiveMessages()` (`websocket_transport.go:74`) | **Caller-driven pull loop** (`process_next`/`process_pending`) — unique to the Rust port | **DECISION — analysis written** in `docs/CONFORMANCE-AND-CONCURRENCY.md`; no implementation per task. Background receive could remove the pull mutex/pending-response net and conditionally the deferred queue, but breaks pumping APIs/tests and requires new error/lifecycle/bounding semantics |
-| 41 | Certificate gate on general messages | Present (`Peer.js:114`, `:700`) | **Absent** — `PeerSession` has no `CertificatesRequired`/`CertificatesValidated` fields at all | Kept, faithfully to TS | **REFUTED as a reason to remove it** — acceptance timing is peer-observable Layer 1, so TS remains normative. Go's omission informs mechanism/load-bearing analysis only |
+| 41 | Certificate gate on general messages | Present (`dist/cjs/src/auth/Peer.js:102-105`, receive path later in the same file) | **Absent** — `PeerSession` has no `CertificatesRequired`/`CertificatesValidated` fields at all | Kept, with registered pull-transport divergences | **REFUTED as a reason to remove it** — acceptance timing is peer-observable Layer 1, so TS remains normative. Go's omission informs mechanism/load-bearing analysis only |
 
 ## Decisions outstanding
 

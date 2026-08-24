@@ -19,19 +19,45 @@ jobs:
       - run: cargo check --verbose
 
   test:
-    name: Test (${{ matrix.features == '' && 'default' || matrix.features }})
+    name: Test (${{ matrix.features }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         features:
-          - ""
-          - "--features serde"
-          - "--features network"
+          - default
+          - serde
+          - network
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --no-default-features ${{ matrix.features }} --verbose
+      - if: matrix.features == 'network'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: matrix.features == 'network'
+        run: npm install --no-save --ignore-scripts --no-audit --no-fund @bsv/sdk@2.4.1
+      - if: matrix.features == 'default'
+        run: cargo test --no-default-features --verbose
+      - if: matrix.features == 'serde'
+        run: cargo test --no-default-features --features serde --verbose
+      - if: matrix.features == 'network'
+        env:
+          BSV_TS_SDK_PATH: node_modules/@bsv/sdk
+        run: cargo test --no-default-features --features network --verbose
+
+  auth-interop-fixture:
+    name: Auth interop fixture drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save --ignore-scripts --no-audit --no-fund @bsv/sdk@2.4.1
+      - run: node tests/vectors/gen_auth_certificate_interop.mjs node_modules/@bsv/sdk
+      - run: git diff --exit-code -- tests/vectors/auth_certificate_interop.json
 
   wasm-build:
     name: WASM build (serde + wasm-js)
