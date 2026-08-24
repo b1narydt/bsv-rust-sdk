@@ -4,6 +4,7 @@
 
 use super::acquire_certificate::{base64_decode, base64_encode};
 use super::*;
+use crate::auth::certificates::certificate::locale_compare_field_name;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use indexmap::IndexMap;
@@ -27,10 +28,10 @@ pub fn serialize_certificate(cert: &Certificate) -> Result<Vec<u8>, WalletError>
             write_raw_bytes(w, &[0u8; 32])?;
             write_varint(w, 0)?;
         }
-        // Fields (sorted by key)
+        // Fields (TS `localeCompare` order; byte order changes signed bytes)
         let fields = cert.fields.clone().unwrap_or_default();
         let mut keys: Vec<&String> = fields.keys().collect();
-        keys.sort();
+        keys.sort_by(|a, b| locale_compare_field_name(a, b));
         write_varint(w, keys.len() as u64)?;
         for key in keys {
             write_bytes(w, key.as_bytes())?;

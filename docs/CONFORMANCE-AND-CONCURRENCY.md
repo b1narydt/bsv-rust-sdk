@@ -94,7 +94,8 @@ Rust may differ from both references. The obligations are stability and speed.
 3. **Do not copy `Promise.all` reflexively.** In a single-threaded runtime it interleaves I/O; it is
    not a claim that parallelism is correct or worthwhile. Where Go — which has real parallelism —
    chose sequential, that judgement is better evidence than TS's.
-4. **Never let one peer's work block another's.** No blocking wait may sit on a shared dispatch path.
+4. **Never let one remote identity/session's work block another's.** No blocking wait may consume
+   every slot on a shared dispatch path.
 5. **Hold no lock across an `.await`.** Existing invariant; the `!Send` future that results breaks
    downstream `Handler` bounds in ways this crate's own tests cannot detect.
 6. **Certificate-gate state is never an error-valued session latch.** The live
@@ -121,22 +122,27 @@ Rust may differ from both references. The obligations are stability and speed.
 frame independently. Callers never pump transport progress; `process_next` and `process_pending` were
 removed rather than retained as meaningless compatibility shims.
 
-Dispatch admission is bounded and non-blocking. General frames have 64 slots and control frames have 16.
-The lanes are separate because a general frame may wait at the certificate gate: sharing every permit, or
-awaiting a permit in receive order, could put the releasing `certificateResponse` behind the frame it must
-release. A frame that arrives after its lane is full is dropped and reported through the bounded
-`Peer::on_error` observer. The receive task never waits for dispatch capacity and never holds a lock across
-an await.
+Dispatch admission is bounded, non-blocking, and session-fair. General frames have 64 global slots plus an
+8-slot per-session sub-quota; control frames have a separate 16-slot lane. The lanes are separate because a
+general frame may wait at the certificate gate: sharing every permit, or awaiting a permit in receive order,
+could put the releasing `certificateResponse` behind the frame it must release. A frame that arrives after
+either applicable limit is full is dropped and reported through the bounded `Peer::on_error` observer. The
+receive task never waits for dispatch capacity and never holds a lock across an await.
 
 Certificate-gated general messages authenticate, then wait inside their own admitted dispatch task. After
 validation they atomically enter the replay set exactly once and are delivered. This makes both
 `deferred_general_messages` and `pending_initial_responses` unnecessary; both stores and their expiry,
 overflow, flush, and reap machinery are deleted. Session gate state remains pending-or-validated only.
 
-The receive task owns only a weak reference to peer state and exits when the final `Peer` handle is dropped.
+The receive task owns only a weak reference to peer state. Its shutdown sender is held by application-facing
+`Peer` handles, outside `PeerInner`; internal dispatch handles deliberately do not carry it. The receive task
+therefore exits when the final application `Peer` handle is dropped even while a dispatch remains in flight.
 Receive-channel closure, dispatch failures, and admission failures are per-frame asynchronous errors. The
 bounded error observer uses non-blocking delivery so an absent or slow observer cannot become transport
-backpressure; errors beyond its capacity may be dropped. No logging dependency was added.
+backpressure; errors beyond its capacity may be dropped. `AuthFetch` additionally consumes an internal
+metadata-bearing copy of this stream and routes general-frame failures by the response request ID, preserving
+the concrete authentication error instead of returning a generic response timeout. No logging dependency
+was added.
 
 ## Registered divergences
 
@@ -146,7 +152,8 @@ divergence needs only the comment.
 | Divergence | Layer | Rationale | Guard |
 |---|---|---|---|
 | Public middleware verification rejects a pending certificate gate immediately | 1 | TS `processGeneralMessage` waits, but Rust's direct HTTP middleware verification may not involve this peer's transport receiver. Waiting lets unsigned input occupy a handler for 30 seconds | Immediate-future forged-signature regression; site comment |
-| Dispatch admission drops frames when its lane is saturated | 1 | Remote-controlled task creation must be bounded. Rust admits at most 64 general and 16 control dispatches; later frames are dropped and surfaced locally through `Peer::on_error` so receive remains available to protocol-release frames | Instrumented test measures 64 simultaneous general dispatches and observes frame 65 rejected; separate control lane plus general-before-certificate-response deadlock regression |
+| Dispatch admission drops frames when its lane is saturated | 1 | Remote-controlled task creation must be bounded. Rust admits at most 64 general globally, 8 per session, and 16 control dispatches; later frames are dropped and surfaced locally through `Peer::on_error` so receive remains available to protocol-release frames and one gated session cannot starve another | Instrumented multi-session test measures 64 simultaneous general dispatches and observes frame 65 rejected; cross-session gated-fairness regression; separate control lane regression |
+| Case-insensitive duplicate authenticated request headers are rejected | 1 | TS retains both normalized entries in original object insertion order. Rust's public input is a `HashMap`, which cannot reproduce that order; rejecting the ambiguous preimage is deterministic and safer than randomly signing either order | Live `@bsv/sdk@2.4.1` probe records both insertion orders; Rust duplicate rejection and locale-order regressions |
 | Unparseable certifier or certificate type is skipped, not fatal | 1 | TS treats both as opaque strings; Rust's strongly typed wallet cannot forward malformed values, and erroring fails handshakes TS completes | Site comments and malformed-value regressions |
 | Typed certificate identifiers are normalized before comparison | 1 | TS compares original strings exactly. Rust parses `PublicKey` values (case normalization and uncompressed→compressed conversion) and base64 certificate types into 32-byte values before comparing, so the original spelling cannot be recovered without raw-string shadow state | Sites in certificate validation; equivalence regressions; raise upstream |
 | Certificate validation uses the session's advertised request snapshot | 1 | TS reads mutable peer state for `initialResponse` and an attacker-controlled inbound field for `certificateResponse`. Either permits TOCTOU/relabeling. Rust validates the request it actually put on the wire | Session-snapshot regression tests; raise upstream |

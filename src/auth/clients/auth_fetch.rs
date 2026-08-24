@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use tokio::sync::{oneshot, OnceCell, RwLock};
 
+use crate::auth::certificates::certificate::locale_compare_field_name;
 use crate::auth::error::AuthError;
-use crate::auth::peer::Peer;
+use crate::auth::peer::{BackgroundError, Peer};
 use crate::auth::transports::Transport;
 use crate::auth::types::RequestedCertificateSet;
 use crate::auth::utils::certificates::get_verifiable_certificates;
@@ -136,12 +137,56 @@ pub struct AuthFetchResponse {
 /// Router map: base64(request_nonce) -> oneshot sender awaiting the response.
 ///
 /// Every in-flight general message registers its 32-byte request nonce here
-/// before sending; the single per-peer dispatcher task (which owns
-/// `general_rx`) routes each decoded response back to the matching waiter by
-/// `key = base64(payload[..32])`. This is what lets N concurrent general
-/// messages share ONE authenticated session without stealing each other's
-/// replies.
-type ResponseRouter = Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
+/// before sending; the per-peer success/error dispatchers route each decoded
+/// response or frame-owned failure back to the matching waiter by `key =
+/// base64(payload[..32])`. This is what lets N concurrent general messages
+/// share ONE authenticated session without stealing each other's replies.
+type ResponseRouter = Arc<StdMutex<HashMap<String, oneshot::Sender<Result<Vec<u8>, AuthError>>>>>;
+
+fn spawn_response_dispatchers(
+    mut general_rx: tokio::sync::mpsc::Receiver<(String, Vec<u8>)>,
+    mut error_rx: tokio::sync::mpsc::Receiver<BackgroundError>,
+    router: ResponseRouter,
+) {
+    let successful_router = router.clone();
+    tokio::spawn(async move {
+        while let Some((_sender_key, payload)) = general_rx.recv().await {
+            if payload.len() < 32 {
+                continue;
+            }
+            let key = b64_encode(&payload[..32]);
+            let waiter = successful_router
+                .lock()
+                .expect("router mutex poisoned")
+                .remove(&key);
+            if let Some(tx) = waiter {
+                let _ = tx.send(Ok(payload));
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(failure) = error_rx.recv().await {
+            if failure.message_type != Some(crate::auth::types::MessageType::General) {
+                continue;
+            }
+            let waiter = {
+                let mut routes = router.lock().expect("router mutex poisoned");
+                match failure.request_id {
+                    Some(request_id) => routes.remove(&b64_encode(&request_id)),
+                    None if routes.len() == 1 => {
+                        let sole_key = routes.keys().next().cloned().unwrap();
+                        routes.remove(&sole_key)
+                    }
+                    None => None,
+                }
+            };
+            if let Some(tx) = waiter {
+                let _ = tx.send(Err(failure.error));
+            }
+        }
+    });
+}
 
 /// Internal tracking struct for a peer associated with a base URL.
 ///
@@ -150,9 +195,8 @@ type ResponseRouter = Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
 struct AuthPeer<W: WalletInterface> {
     /// The shared peer. Every `Peer` method is now `&self` (interior
     /// mutability), so no outer `Mutex` is needed — concurrent
-    /// `create_general_message` / `verify_general_message` run lock-free
-    /// against the handshake mutex, and the handshake path serializes
-    /// internally on the peer's own `handshake` mutex.
+    /// `create_general_message` / `verify_general_message` share the peer's
+    /// session `RwLock` without a caller-owned transport drain lock.
     peer: Arc<Peer<W>>,
     /// Server identity key learned at handshake completion. `RwLock` so the
     /// hot path reads it concurrently; written once when the handshake runs.
@@ -393,7 +437,21 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
             .clone()
             .unwrap_or_default();
 
-        let (response_tx, response_rx) = oneshot::channel::<Vec<u8>>();
+        let session = auth_peer
+            .peer
+            .session_by_identifier(&identity_key)
+            .await
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!(
+                    "Session not found for identity key: {identity_key}"
+                ))
+            })?;
+        auth_peer
+            .peer
+            .wait_for_certificate_validation(&session)
+            .await?;
+
+        let (response_tx, response_rx) = oneshot::channel::<Result<Vec<u8>, AuthError>>();
         auth_peer
             .router
             .lock()
@@ -432,7 +490,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         // (f) The peer's background receive task dispatches the synchronous
         // HTTP response into `general_rx`; await our nonce-routed oneshot.
         match tokio::time::timeout(Duration::from_secs(30), response_rx).await {
-            Ok(Ok(response_payload)) => {
+            Ok(Ok(Ok(response_payload))) => {
                 if response_payload.len() < 32 {
                     return Err(AuthError::InvalidMessage(
                         "general message response shorter than 32-byte nonce prefix".to_string(),
@@ -442,6 +500,7 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                 response.server_identity_key = Some(identity_key);
                 Ok(response)
             }
+            Ok(Ok(Err(error))) => Err(error),
             Ok(Err(_)) => {
                 // Sender dropped without sending (dispatcher gone / channel
                 // closed). Ensure no stale router entry remains.
@@ -783,39 +842,18 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
         let general_rx = peer.on_general_message().ok_or_else(|| {
             AuthError::InvalidMessage("general message receiver already taken".to_string())
         })?;
+        let error_rx = peer.on_error().ok_or_else(|| {
+            AuthError::InvalidMessage("background error receiver already taken".to_string())
+        })?;
 
         let peer_arc = Arc::new(peer);
         let pending = Arc::new(StdMutex::new(Vec::<bool>::new()));
         let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
 
-        // Spawn ONE dispatcher task per peer that owns general_rx for life.
-        // It routes each decoded (sender_key, payload) by
-        // key = base64(payload[..32]) to the matching oneshot waiter; drops
-        // unmatched messages. This is what makes N concurrent in-flight
-        // general messages on one session safe — each request awaits its own
-        // oneshot rather than racing to drain a shared receiver.
-        {
-            let router_dispatch = router.clone();
-            let mut general_rx = general_rx;
-            tokio::spawn(async move {
-                while let Some((_sender_key, payload)) = general_rx.recv().await {
-                    if payload.len() < 32 {
-                        continue;
-                    }
-                    let key = b64_encode(&payload[..32]);
-                    let waiter = router_dispatch
-                        .lock()
-                        .expect("router mutex poisoned")
-                        .remove(&key);
-                    if let Some(tx) = waiter {
-                        // Receiver may have already timed out and dropped; the
-                        // send error is benign in that case.
-                        let _ = tx.send(payload);
-                    }
-                    // Unmatched (no waiter) responses are dropped.
-                }
-            });
-        }
+        // Route successful replies and their frame-owned dispatch failures by
+        // the same 32-byte request ID, so AuthFetch never turns a concrete auth
+        // failure into a generic 30-second response timeout.
+        spawn_response_dispatchers(general_rx, error_rx, router.clone());
 
         // Register the cert-request listener. Captures Arc<Peer>, wallet,
         // and the pending queue. Fires synchronously inside dispatch, then
@@ -1267,8 +1305,17 @@ fn signable_request_headers(
     headers: &HashMap<String, String>,
 ) -> Result<Vec<(String, String)>, AuthError> {
     let mut included: Vec<(String, String)> = Vec::with_capacity(headers.len());
+    let mut normalized_names = std::collections::HashSet::with_capacity(headers.len());
     for (k, v) in headers {
         let key = k.to_lowercase();
+        // Registered Layer-1 divergence: TS preserves insertion order between
+        // duplicate normalized keys, but HashMap cannot represent that order.
+        // Reject the ambiguous signed preimage instead of choosing randomly.
+        if !normalized_names.insert(key.clone()) {
+            return Err(AuthError::InvalidMessage(format!(
+                "duplicate case-insensitive authenticated request header '{key}'"
+            )));
+        }
         if key.starts_with("x-bsv-auth") {
             return Err(AuthError::InvalidMessage(format!(
                 "header '{key}' is reserved for the auth transport and must not be set by callers"
@@ -1287,7 +1334,7 @@ fn signable_request_headers(
             )));
         }
     }
-    included.sort_by(|(a, _), (b, _)| a.cmp(b));
+    included.sort_by(|(a, _), (b, _)| locale_compare_field_name(a, b));
     Ok(included)
 }
 
@@ -1853,35 +1900,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!session.certificates_validated);
-        release_response.notify_one();
-        tokio::time::timeout(Duration::from_secs(1), response_sent.notified())
-            .await
-            .expect("handler-mode certificate response was not sent");
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            client_peer.wait_for_certificate_validation(&session),
-        )
-        .await
-        .expect("background certificate dispatch timed out")
-        .expect("background certificate dispatch validates the session");
 
         let general_rx = client_peer.on_general_message().unwrap();
+        let error_rx = client_peer.on_error().unwrap();
         let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
-        {
-            let router = router.clone();
-            tokio::spawn(async move {
-                let mut general_rx = general_rx;
-                while let Some((_sender, payload)) = general_rx.recv().await {
-                    if payload.len() >= 32 {
-                        if let Some(waiter) =
-                            router.lock().unwrap().remove(&b64_encode(&payload[..32]))
-                        {
-                            let _ = waiter.send(payload);
-                        }
-                    }
-                }
-            });
-        }
+        spawn_response_dispatchers(general_rx, error_rx, router.clone());
         let auth_peer = Arc::new(AuthPeer {
             peer: client_peer.clone(),
             identity_key: RwLock::new(Some(server_identity.clone())),
@@ -1917,12 +1940,21 @@ mod tests {
             })
         };
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            fetch.fetch("https://handler.test/data", "GET", None, None),
-        )
-        .await
-        .expect("AuthFetch handler-mode flow must not hang");
+        let mut fetch_request =
+            Box::pin(fetch.fetch("https://handler.test/data", "GET", None, None));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut fetch_request)
+                .await
+                .is_err(),
+            "fetch must remain in flight while the requested certificate response is withheld"
+        );
+        release_response.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), response_sent.notified())
+            .await
+            .expect("handler-mode certificate response was not sent");
+        let result = tokio::time::timeout(Duration::from_secs(1), fetch_request)
+            .await
+            .expect("AuthFetch handler-mode flow must not hang");
         if result.is_err() {
             server.abort();
         } else {
@@ -1932,6 +1964,86 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok");
         assert_eq!(response.server_identity_key, Some(server_identity));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn auth_fetch_surfaces_invalid_response_signature_without_waiting_for_timeout() {
+        let client_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
+        let server_wallet = Arc::new(ProtoWallet::new(PrivateKey::from_random().unwrap()));
+        let client_identity = identity(&client_wallet).await;
+        let server_identity = identity(&server_wallet).await;
+        let (client_transport, server_transport) = mock_transport_pair();
+        let client_peer = Arc::new(Peer::new(client_wallet.clone(), client_transport.clone()));
+        let server_peer = Arc::new(Peer::new(server_wallet, server_transport.clone()));
+        let mut server_general = server_peer.on_general_message().unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client_peer.get_authenticated_session(&server_identity),
+        )
+        .await
+        .expect("test handshake timed out")
+        .expect("test handshake succeeds");
+
+        let general_rx = client_peer.on_general_message().unwrap();
+        let error_rx = client_peer.on_error().unwrap();
+        let router: ResponseRouter = Arc::new(StdMutex::new(HashMap::new()));
+        spawn_response_dispatchers(general_rx, error_rx, router.clone());
+        let auth_peer = Arc::new(AuthPeer {
+            peer: client_peer,
+            identity_key: RwLock::new(Some(server_identity)),
+            router,
+            handshake_once: OnceCell::new(),
+            transport: client_transport,
+            pending_certificate_requests: Arc::new(StdMutex::new(Vec::new())),
+        });
+        auth_peer.handshake_once.set(()).unwrap();
+        let fetch = AuthFetch::new(client_wallet);
+        fetch
+            .peers
+            .write()
+            .await
+            .insert("https://invalid-signature.test".to_string(), auth_peer);
+
+        let server = tokio::spawn(async move {
+            let (_, request_payload) =
+                tokio::time::timeout(Duration::from_secs(1), server_general.recv())
+                    .await
+                    .expect("server request timeout")
+                    .expect("server receives request");
+            let mut response_payload = request_payload[..32].to_vec();
+            write_varint_num(&mut response_payload, 200);
+            write_varint_num(&mut response_payload, 0);
+            write_varint_num(&mut response_payload, 2);
+            response_payload.extend_from_slice(b"ok");
+            let mut invalid = server_peer
+                .create_general_message(&client_identity, response_payload)
+                .await
+                .unwrap();
+            let signature = invalid.signature.as_mut().unwrap();
+            let last = signature.len() - 1;
+            signature[last] ^= 0x01;
+            server_transport.send(invalid).await.unwrap();
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_millis(500),
+            fetch.fetch("https://invalid-signature.test/data", "GET", None, None),
+        )
+        .await
+        .expect("AuthFetch hid the dispatch error behind its 30-second timeout")
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                AuthError::InvalidSignature(_) | AuthError::Wallet(WalletError::InvalidSignature)
+            ),
+            "unexpected surfaced dispatch error: {error:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server task timed out")
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2117,6 +2229,35 @@ mod tests {
                 ("content-type".to_string(), "application/json".to_string()),
                 ("x-bsv-vault-id".to_string(), "vault-1".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn signable_headers_use_typescript_locale_compare_order() {
+        let mut headers = HashMap::new();
+        headers.insert("X-BSV-Tag_A".to_string(), "underscore".to_string());
+        headers.insert("X-BSV-Tag-A".to_string(), "hyphen".to_string());
+
+        assert_eq!(
+            signable_request_headers(&headers).unwrap(),
+            vec![
+                ("x-bsv-tag_a".to_string(), "underscore".to_string()),
+                ("x-bsv-tag-a".to_string(), "hyphen".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn signable_headers_reject_case_insensitive_duplicates() {
+        let mut headers = HashMap::new();
+        headers.insert("X-BSV-Foo".to_string(), "first".to_string());
+        headers.insert("x-bsv-foo".to_string(), "second".to_string());
+
+        let error = signable_request_headers(&headers).unwrap_err();
+        assert!(
+            matches!(&error, AuthError::InvalidMessage(message)
+                if message.contains("duplicate") && message.contains("x-bsv-foo")),
+            "unexpected duplicate-header error: {error:?}"
         );
     }
 

@@ -24,4 +24,4 @@ pub use clients::{
     PAYMENT_VERSION,
 };
 #[cfg(feature = "network")]
-pub use peer::Peer;
+pub use peer::{BackgroundError, Peer};

@@ -11,6 +11,7 @@ use reqwest::Client;
 use tokio::sync::mpsc;
 
 use super::Transport;
+use crate::auth::certificates::certificate::locale_compare_field_name;
 use crate::auth::error::AuthError;
 use crate::auth::types::{AuthMessage, MessageType};
 
@@ -288,7 +289,7 @@ impl SimplifiedHTTPTransport {
                 }
             }
         }
-        included_headers.sort_by(|a, b| a.0.cmp(&b.0));
+        sort_signed_headers(&mut included_headers);
 
         let body_bytes = response.bytes().await.map_err(|e| {
             AuthError::TransportError(format!("failed to read response body: {}", e))
@@ -345,6 +346,11 @@ impl SimplifiedHTTPTransport {
 
         Ok(())
     }
+}
+
+fn sort_signed_headers(headers: &mut [(String, String)]) {
+    // Signed response preimages use JS `localeCompare`, matching TS 2.4.1.
+    headers.sort_by(|a, b| locale_compare_field_name(&a.0, &b.0));
 }
 
 #[async_trait]
@@ -810,5 +816,18 @@ mod tests {
             HEADER_REQUESTED_CERTIFICATES,
             "x-bsv-auth-requested-certificates"
         );
+    }
+
+    #[test]
+    fn signed_response_headers_use_typescript_locale_compare_order() {
+        let mut headers = vec![
+            ("x-bsv-tag-a".to_string(), "hyphen".to_string()),
+            ("x-bsv-tag_a".to_string(), "underscore".to_string()),
+        ];
+
+        sort_signed_headers(&mut headers);
+
+        assert_eq!(headers[0].0, "x-bsv-tag_a");
+        assert_eq!(headers[1].0, "x-bsv-tag-a");
     }
 }

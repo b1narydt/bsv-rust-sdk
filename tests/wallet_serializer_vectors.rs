@@ -1254,6 +1254,35 @@ fn identity_certificate_maps_preserve_insertion_order() {
 }
 
 #[test]
+fn certificate_serializer_uses_typescript_locale_compare_field_order() {
+    let mut fields = IndexMap::new();
+    fields.insert("tag-A".to_string(), "hyphen".to_string());
+    fields.insert("tag_A".to_string(), "underscore".to_string());
+    let certificate = Certificate {
+        cert_type: type_from_base64(TYPE_B64),
+        serial_number: serial_from_base64(SERIAL_B64),
+        subject: pk_from_hex(PUB_KEY_HEX),
+        certifier: pk_from_hex(COUNTERPARTY_HEX),
+        revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+        fields: Some(fields),
+        signature: Some(sig_from_hex(SIG_HEX)),
+    };
+
+    let encoded = certificate_ser::serialize_certificate(&certificate).unwrap();
+    let decoded = certificate_ser::deserialize_certificate(&encoded).unwrap();
+
+    assert_eq!(
+        decoded
+            .fields
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["tag_A", "tag-A"]
+    );
+}
+
+#[test]
 fn prove_certificate_keyring_preserves_insertion_order() {
     let mut keyring_for_verifier = IndexMap::new();
     keyring_for_verifier.insert("zeta".to_string(), "eg==".to_string());
