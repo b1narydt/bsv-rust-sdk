@@ -274,7 +274,7 @@ mod tests {
     use crate::wallet::interfaces::*;
     use crate::wallet::types::{Counterparty, CounterpartyType, Protocol as WalletProtocol};
     use crate::wallet::ProtoWallet;
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
@@ -554,7 +554,7 @@ mod tests {
         ) -> Result<ProveCertificateResult, WalletError> {
             self.proved_with.lock().unwrap().push(args);
             Ok(ProveCertificateResult {
-                keyring_for_verifier: HashMap::new(),
+                keyring_for_verifier: IndexMap::new(),
                 certificate: None,
                 verifier: None,
             })
@@ -646,7 +646,7 @@ mod tests {
         )
         .await
         .expect("issue failed");
-        let verifiable = VerifiableCertificate::new(master_cert.certificate, HashMap::new());
+        let verifiable = VerifiableCertificate::new(master_cert.certificate, IndexMap::new());
         let verifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
 
         let result =
@@ -683,7 +683,7 @@ mod tests {
         .expect("issue failed");
 
         let verifiable =
-            VerifiableCertificate::new(master_cert.certificate.clone(), HashMap::new());
+            VerifiableCertificate::new(master_cert.certificate.clone(), IndexMap::new());
 
         // Use a DIFFERENT identity key as the sender -- should fail subject check
         let wrong_identity = PrivateKey::from_random().unwrap().to_public_key();
@@ -753,7 +753,7 @@ mod tests {
         .expect("issue failed");
 
         let verifiable =
-            VerifiableCertificate::new(master_cert.certificate.clone(), HashMap::new());
+            VerifiableCertificate::new(master_cert.certificate.clone(), IndexMap::new());
 
         // Create a requested set that does NOT include this cert type
         let mut requested = RequestedCertificateSet::default();
@@ -805,7 +805,7 @@ mod tests {
         )
         .await
         .expect("issue failed");
-        let verifiable = VerifiableCertificate::new(master_cert.certificate, HashMap::new());
+        let verifiable = VerifiableCertificate::new(master_cert.certificate, IndexMap::new());
         let mut requested = RequestedCertificateSet::default();
         requested.certifiers.push(
             PrivateKey::from_random()

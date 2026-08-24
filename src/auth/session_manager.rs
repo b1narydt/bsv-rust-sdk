@@ -344,11 +344,12 @@ impl SessionManager {
     }
 
     /// Evict every session idle longer than the configured TTL, freeing each
-    /// one's replay seen-set. Returns the number reaped.
+    /// one's replay seen-set. Returns the reaped nonces so the owning `Peer`
+    /// can remove its nonce-indexed async state too.
     ///
     /// Intended to be called on the low-frequency handshake path (not the hot
     /// verify path), which bounds memory without serializing message verifies.
-    pub fn reap_idle(&mut self, now_ms: u64) -> usize {
+    pub fn reap_idle(&mut self, now_ms: u64) -> Vec<String> {
         let ttl = self.idle_ttl_ms;
         let expired: Vec<String> = self
             .session_meta
@@ -356,10 +357,10 @@ impl SessionManager {
             .filter(|(_, m)| now_ms.saturating_sub(m.last_used_ms) > ttl)
             .map(|(nonce, _)| nonce.clone())
             .collect();
-        let mut reaped = 0;
+        let mut reaped = Vec::new();
         for nonce in expired {
             if self.remove_session(&nonce).is_some() {
-                reaped += 1;
+                reaped.push(nonce);
             }
         }
         reaped
@@ -626,12 +627,12 @@ mod tests {
 
         // Well within TTL: still present, still remembers nonces.
         assert!(!mgr.is_expired("sess1", 10_000 + ttl));
-        assert_eq!(mgr.reap_idle(10_000 + ttl), 0);
+        assert!(mgr.reap_idle(10_000 + ttl).is_empty());
         assert!(mgr.has_session("sess1"));
 
         // Past TTL: expired, reaped, seen-set freed.
         assert!(mgr.is_expired("sess1", 10_000 + ttl + 1));
-        assert_eq!(mgr.reap_idle(10_000 + ttl + 1), 1);
+        assert_eq!(mgr.reap_idle(10_000 + ttl + 1), vec!["sess1"]);
         assert!(!mgr.has_session("sess1"));
         assert_eq!(mgr.seen_nonce_count("sess1"), 0);
         // After eviction the captured nonce no longer resolves a session.
@@ -697,6 +698,6 @@ mod tests {
         // No touch yet -> no metadata -> not expired regardless of clock.
         assert!(!mgr.is_expired("sess1", u64::MAX));
         assert!(mgr.get_active_session("sess1", u64::MAX).is_some());
-        assert_eq!(mgr.reap_idle(u64::MAX), 0);
+        assert!(mgr.reap_idle(u64::MAX).is_empty());
     }
 }

@@ -703,6 +703,31 @@ impl<W: WalletInterface> Peer<W> {
         }
     }
 
+    async fn cleanup_reaped_sessions(&self, session_nonces: &[String]) {
+        if session_nonces.is_empty() {
+            return;
+        }
+
+        {
+            let mut deferred = self.deferred_general_messages.lock().await;
+            for session_nonce in session_nonces {
+                deferred.remove(session_nonce);
+            }
+        }
+        {
+            let mut pending = self
+                .pending_initial_responses
+                .lock()
+                .expect("pending initial responses lock poisoned");
+            for session_nonce in session_nonces {
+                pending.remove(session_nonce);
+            }
+        }
+        for session_nonce in session_nonces {
+            self.resolve_certificate_validation(session_nonce);
+        }
+    }
+
     async fn finish_certificate_exchange(
         &self,
         session: &mut PeerSession,
@@ -894,11 +919,9 @@ impl<W: WalletInterface> Peer<W> {
             }
         };
 
-        // A pull-loop caller owns the shared drain, not this particular frame.
-        // Direct callers of `dispatch_message` still receive that frame's
-        // error; drain callers continue so one peer/message cannot strand
-        // unrelated queued replies or fail whoever happened to be pumping.
-        let _ = self.dispatch_message(msg).await;
+        // This public API consumes exactly one frame, so its caller owns that
+        // frame's result. Shared multi-frame drains isolate errors below.
+        self.dispatch_message(msg).await?;
         Ok(true)
     }
 
@@ -907,10 +930,29 @@ impl<W: WalletInterface> Peer<W> {
     /// Drains the transport receive buffer and dispatches each message.
     pub async fn process_pending(&self) -> Result<usize, AuthError> {
         let mut count = 0;
-        while self.process_next().await? {
+        loop {
+            let msg = {
+                let mut hs = self.handshake.lock().await;
+                let rx = match hs.transport_rx.as_mut() {
+                    Some(rx) => rx,
+                    None => return Ok(count),
+                };
+                match rx.try_recv() {
+                    Ok(msg) => msg,
+                    Err(mpsc::error::TryRecvError::Empty)
+                    | Err(mpsc::error::TryRecvError::Disconnected) => {
+                        drop(hs);
+                        self.expire_deferred_general_messages().await?;
+                        return Ok(count);
+                    }
+                }
+            };
+
+            // A multi-frame pump does not own every queued frame. Keep draining
+            // so one bad message cannot strand a later response.
+            let _ = self.dispatch_message(msg).await;
             count += 1;
         }
-        Ok(count)
     }
 
     async fn create_general_message_from_session(
@@ -1173,7 +1215,7 @@ impl<W: WalletInterface> Peer<W> {
         // Create initial session (not yet authenticated). Write lock. Touch it
         // so idle reaping has a baseline, and opportunistically reap on this
         // low-frequency handshake path (keeps the hot verify path reap-free).
-        {
+        let reaped = {
             let certificates_required = requested_certificates
                 .as_ref()
                 .is_some_and(|requested| !requested.certifiers.is_empty());
@@ -1189,8 +1231,9 @@ impl<W: WalletInterface> Peer<W> {
             });
             let now = now_ms();
             mgr.touch(&session_nonce, now);
-            mgr.reap_idle(now);
-        }
+            mgr.reap_idle(now)
+        };
+        self.cleanup_reaped_sessions(&reaped).await;
 
         let identity_key_str = self.get_identity_public_key().await?;
 
@@ -1351,7 +1394,7 @@ impl<W: WalletInterface> Peer<W> {
 
         // Write lock: promote the session to authenticated, refresh its activity
         // timestamp, and opportunistically reap idle sessions.
-        {
+        let reaped = {
             let mut mgr = self.session_manager.write().await;
             if !mgr.update_session(session_nonce, session.clone()) {
                 return Err(AuthError::SessionNotFound(format!(
@@ -1361,8 +1404,9 @@ impl<W: WalletInterface> Peer<W> {
             }
             let now = now_ms();
             mgr.touch(session_nonce, now);
-            mgr.reap_idle(now);
-        }
+            mgr.reap_idle(now)
+        };
+        self.cleanup_reaped_sessions(&reaped).await;
 
         if certificates_required {
             if let Some(ref certs) = response.certificates {
@@ -1840,7 +1884,7 @@ impl<W: WalletInterface> Peer<W> {
         // Add session (authenticated -- responder trusts after signature
         // verification). Write lock. Touch for the idle-reaping baseline and
         // opportunistically reap idle sessions on this handshake path.
-        {
+        let reaped = {
             let certificates_required = requested_certificates
                 .as_ref()
                 .is_some_and(|requested| !requested.certifiers.is_empty());
@@ -1856,8 +1900,9 @@ impl<W: WalletInterface> Peer<W> {
             });
             let now = now_ms();
             mgr.touch(&session_nonce, now);
-            mgr.reap_idle(now);
-        }
+            mgr.reap_idle(now)
+        };
+        self.cleanup_reaped_sessions(&reaped).await;
 
         // If the peer requested certificates in their initialRequest, resolve
         // them here so we can embed the response in the single-round-trip
@@ -2852,7 +2897,10 @@ mod tests {
                     nonce: Some(base64_encode(&crate::primitives::random::random_bytes(32))),
                     your_nonce: Some(valid_b_nonce),
                     initial_nonce: None,
-                    certificates: Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
+                    certificates: Some(vec![VerifiableCertificate::new(
+                        cert,
+                        indexmap::IndexMap::new(),
+                    )]),
                     requested_certificates: None,
                     payload: None,
                     signature: Some(vec![1, 2, 3]),
@@ -2998,7 +3046,10 @@ mod tests {
                     identity_a,
                     &identity_b,
                     session_b.session_nonce,
-                    Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
+                    Some(vec![VerifiableCertificate::new(
+                        cert,
+                        indexmap::IndexMap::new(),
+                    )]),
                     None,
                     None,
                 )
@@ -3199,7 +3250,10 @@ mod tests {
                     identity_a,
                     &identity_b,
                     session_b.session_nonce.clone(),
-                    Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
+                    Some(vec![VerifiableCertificate::new(
+                        cert,
+                        indexmap::IndexMap::new(),
+                    )]),
                     Some(requested),
                     None,
                 )
@@ -3263,7 +3317,10 @@ mod tests {
                     identity_b.clone(),
                     &identity_a,
                     session_nonce.clone(),
-                    Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
+                    Some(vec![VerifiableCertificate::new(
+                        cert,
+                        indexmap::IndexMap::new(),
+                    )]),
                 )
                 .await;
 
@@ -3384,7 +3441,10 @@ mod tests {
                     identity_b.clone(),
                     &identity_a,
                     session_nonce.clone(),
-                    Some(vec![VerifiableCertificate::new(cert, HashMap::new())]),
+                    Some(vec![VerifiableCertificate::new(
+                        cert,
+                        indexmap::IndexMap::new(),
+                    )]),
                 )
                 .await;
 
@@ -3868,7 +3928,7 @@ mod tests {
                     fields: None,
                     signature: None,
                 };
-                let mut keyring = HashMap::new();
+                let mut keyring = indexmap::IndexMap::new();
                 keyring.insert("name".to_string(), "a2V5cmluZw==".to_string());
 
                 // Now peer A explicitly sends a verifier-ready response to B.
@@ -4510,7 +4570,10 @@ mod tests {
             1,
             "dispatch must thread its resolved session into general verification"
         );
-        assert_eq!(messages.recv().await.unwrap().1, b"one nonce check");
+        assert_eq!(
+            bounded(messages.recv()).await.unwrap().1,
+            b"one nonce check"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4533,7 +4596,24 @@ mod tests {
             .expect("one frame's failure is not the drain caller's error");
 
         assert_eq!(processed, 2);
-        assert_eq!(messages.recv().await.unwrap().1, b"survives");
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"survives");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_process_next_reports_the_consumed_frames_error() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let mut invalid = peer_a
+            .create_general_message(&identity_b, b"invalid version".to_vec())
+            .await
+            .unwrap();
+        invalid.version = "hostile-version".to_string();
+        peer_a.transport.send(invalid).await.unwrap();
+
+        let error = bounded(peer_b.process_next())
+            .await
+            .expect_err("the single-frame caller owns and must receive this error");
+
+        assert!(matches!(error, AuthError::InvalidMessage(_)));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4579,7 +4659,10 @@ mod tests {
             .expect("both messages dispatch");
 
         assert_eq!(processed, 2);
-        assert_eq!(messages.recv().await.unwrap().1, b"ordered payload");
+        assert_eq!(
+            bounded(messages.recv()).await.unwrap().1,
+            b"ordered payload"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4606,7 +4689,7 @@ mod tests {
             let identity_b = identity_b.clone();
             tokio::spawn(async move { peer_a.get_authenticated_session(&identity_b).await })
         };
-        let initial_request = server_rx.recv().await.expect("initialRequest");
+        let initial_request = bounded(server_rx.recv()).await.expect("initialRequest");
         let receiver_session_nonce = initial_request.initial_nonce.clone().unwrap();
         let message_nonce = base64_encode(&crate::primitives::random::random_bytes(32));
         let payload = b"arrived before initialResponse".to_vec();
@@ -4662,7 +4745,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(session.certificates_validated);
-        assert_eq!(messages.recv().await.unwrap().1, payload);
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, payload);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4799,7 +4882,7 @@ mod tests {
         )
         .await;
         bounded(peer_b.dispatch_message(response)).await.unwrap();
-        assert_eq!(messages.recv().await.unwrap().1, b"deferred once");
+        assert_eq!(bounded(messages.recv()).await.unwrap().1, b"deferred once");
 
         let replay = peer_b.verify_general_message(captured).await;
         assert!(
@@ -4901,6 +4984,84 @@ mod tests {
                 .contains_key(&session_nonce),
             "session eviction must still remove its deferred queue"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_session_reap_cleans_all_peer_owned_nonce_state() {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let message = peer_a
+            .create_general_message(&identity_b, b"orphan candidate".to_vec())
+            .await
+            .unwrap();
+        let session_nonce = message.your_nonce.clone().unwrap();
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            let session = sessions.get_session_mut(&session_nonce).unwrap();
+            session.certificates_required = true;
+            session.certificates_validated = false;
+            sessions.touch(&session_nonce, 0);
+        }
+        peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .entry(session_nonce.clone())
+            .or_default()
+            .push_back(DeferredGeneralMessage {
+                message: message.clone(),
+                deadline: tokio::time::Instant::now() + CERTIFICATE_WAIT_TIMEOUT,
+            });
+        peer_b
+            .pending_initial_responses
+            .lock()
+            .unwrap()
+            .insert(session_nonce.clone(), message);
+        let (sender, receiver) = watch::channel(false);
+        peer_b
+            .certificate_validation_waiters
+            .lock()
+            .unwrap()
+            .insert(
+                session_nonce.clone(),
+                Arc::new(CertificateWaiterSignal {
+                    sender,
+                    active_waiters: AtomicUsize::new(0),
+                }),
+            );
+
+        let request = AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::InitialRequest,
+            identity_key: wallet_identity(&peer_a.wallet).await,
+            nonce: None,
+            your_nonce: None,
+            initial_nonce: Some(create_nonce(&peer_a.wallet).await.unwrap()),
+            certificates: None,
+            requested_certificates: None,
+            payload: None,
+            signature: None,
+        };
+        bounded(peer_b.handle_initial_request(request))
+            .await
+            .expect("new handshake triggers idle reap");
+
+        assert!(peer_b.session_by_identifier(&session_nonce).await.is_none());
+        assert!(!peer_b
+            .deferred_general_messages
+            .lock()
+            .await
+            .contains_key(&session_nonce));
+        assert!(!peer_b
+            .pending_initial_responses
+            .lock()
+            .unwrap()
+            .contains_key(&session_nonce));
+        assert!(!peer_b
+            .certificate_validation_waiters
+            .lock()
+            .unwrap()
+            .contains_key(&session_nonce));
+        assert!(*receiver.borrow(), "reap must wake an active waiter");
     }
 
     #[tokio::test(start_paused = true)]

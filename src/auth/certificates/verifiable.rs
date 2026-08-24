@@ -4,7 +4,6 @@
 //! decryption of certificate fields for authorized verifiers.
 //! Translates from TS SDK VerifiableCertificate.ts.
 
-use std::collections::HashMap;
 use std::ops::Deref;
 
 use indexmap::IndexMap;
@@ -41,16 +40,10 @@ impl Deref for VerifiableCertificate {
 
 impl VerifiableCertificate {
     /// Create a VerifiableCertificate from a certificate and keyring.
-    pub fn new(certificate: Certificate, keyring: HashMap<String, String>) -> Self {
-        // A keyring is part of the signed auth-message JSON. HashMap iteration
-        // is randomized, so establish a stable order for locally-created
-        // keyrings. Deserialized keyrings retain their exact wire order through
-        // IndexMap's serde implementation.
-        let mut keyring: Vec<_> = keyring.into_iter().collect();
-        keyring.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    pub fn new(certificate: Certificate, keyring: IndexMap<String, String>) -> Self {
         VerifiableCertificate {
             certificate,
-            keyring: keyring.into_iter().collect(),
+            keyring,
             decrypted_fields: None,
         }
     }
@@ -93,5 +86,41 @@ impl VerifiableCertificate {
         })?;
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::private_key::PrivateKey;
+    use crate::wallet::interfaces::{CertificateType, SerialNumber};
+
+    #[test]
+    fn new_preserves_caller_keyring_order() {
+        let public_key = PrivateKey::from_random().unwrap().to_public_key();
+        let certificate = Certificate {
+            cert_type: CertificateType([1; 32]),
+            serial_number: SerialNumber([2; 32]),
+            subject: public_key.clone(),
+            certifier: public_key,
+            revocation_outpoint: None,
+            fields: None,
+            signature: None,
+        };
+        let mut keyring = IndexMap::new();
+        keyring.insert("zeta".to_string(), "eg==".to_string());
+        keyring.insert("alpha".to_string(), "YQ==".to_string());
+        keyring.insert("middle".to_string(), "bQ==".to_string());
+
+        let verifiable = VerifiableCertificate::new(certificate, keyring);
+
+        assert_eq!(
+            verifiable
+                .keyring
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha", "middle"]
+        );
     }
 }

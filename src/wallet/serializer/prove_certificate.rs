@@ -6,7 +6,6 @@ use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use crate::wallet::types::BooleanDefaultFalse;
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 pub fn serialize_prove_certificate_args(
     args: &ProveCertificateArgs,
@@ -162,11 +161,9 @@ pub fn serialize_prove_certificate_result(
 ) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
         write_varint(w, result.keyring_for_verifier.len() as u64)?;
-        let mut keys: Vec<&String> = result.keyring_for_verifier.keys().collect();
-        keys.sort();
-        for key in keys {
+        for (key, value) in &result.keyring_for_verifier {
             write_bytes(w, key.as_bytes())?;
-            let value_bytes = base64_decode(&result.keyring_for_verifier[key])?;
+            let value_bytes = base64_decode(value)?;
             write_bytes(w, &value_bytes)?;
         }
         Ok(())
@@ -178,7 +175,7 @@ pub fn deserialize_prove_certificate_result(
 ) -> Result<ProveCertificateResult, WalletError> {
     let mut r = std::io::Cursor::new(data);
     let keyring_len = read_varint(&mut r)?;
-    let mut keyring_for_verifier = HashMap::with_capacity(keyring_len as usize);
+    let mut keyring_for_verifier = IndexMap::with_capacity(keyring_len as usize);
     for _ in 0..keyring_len {
         let key = String::from_utf8(read_bytes(&mut r)?)
             .map_err(|e| WalletError::Internal(e.to_string()))?;

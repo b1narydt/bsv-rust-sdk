@@ -82,11 +82,11 @@ Rust may differ from both references. The obligations are stability and speed.
 
 ### Concurrency policy
 
-0. **Isolate errors at message ownership boundaries.** `dispatch_message` reports
-   an error to its direct caller because that caller owns the message. Shared
-   transport drains consume and isolate that result: whoever happens to pump a
-   receiver does not own every queued frame, and one frame must never strand or
-   fail another message/session.
+0. **Isolate errors at message ownership boundaries.** `dispatch_message` and
+   single-frame `process_next` report the consumed message's error to their
+   caller. Shared multi-frame drains consume and isolate each result: whoever
+   happens to pump a receiver does not own every queued frame, and one frame
+   must never strand or fail another message/session.
 1. **Bound every fan-out whose width is remote-controlled.** Certificate counts arrive from a peer.
    Unbounded `join_all` over peer-supplied input is a resource-exhaustion vector. Go's cap of
    `min(len(items), NumCPU)` is the reference.
@@ -102,6 +102,9 @@ Rust may differ from both references. The obligations are stability and speed.
    state is only pending or validated. Empty/invalid responses and local waiter
    deadlines are per-message/per-waiter outcomes; they do not mutate the session
    or reject a later conforming response.
+7. **Session eviction owns all nonce-indexed cleanup.** Reaping a session also
+   removes its deferred frames and correlated initial response and wakes its
+   certificate waiters; session-manager eviction must not orphan peer state.
 
 ### Reference table
 

@@ -2015,7 +2015,12 @@ mod tests {
             payload: None,
             signature: None,
         };
-        let _ = auth_peer.peer.dispatch_message(request).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            auth_peer.peer.dispatch_message(request),
+        )
+        .await
+        .expect("initialRequest dispatch timed out");
 
         let requests = tokio::time::timeout(Duration::from_secs(2), async {
             loop {

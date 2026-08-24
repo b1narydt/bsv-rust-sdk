@@ -1006,7 +1006,7 @@ test_result_vector!(
     prove_certificate::serialize_prove_certificate_result,
     prove_certificate::deserialize_prove_certificate_result,
     {
-        let mut keyring = HashMap::new();
+        let mut keyring = IndexMap::new();
         keyring.insert("name".to_string(), "bmFtZS1rZXk=".to_string());
         ProveCertificateResult {
             keyring_for_verifier: keyring,
@@ -1196,6 +1196,85 @@ fn test_wait_for_authentication_simple_args() {
     assert!(
         params.is_empty(),
         "waitForAuthentication args should be empty"
+    );
+}
+
+#[test]
+fn identity_certificate_maps_preserve_insertion_order() {
+    let certificate = Certificate {
+        cert_type: type_from_base64(TYPE_B64),
+        serial_number: serial_from_base64(SERIAL_B64),
+        subject: pk_from_hex(PUB_KEY_HEX),
+        certifier: pk_from_hex(COUNTERPARTY_HEX),
+        revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+        fields: None,
+        signature: Some(sig_from_hex(SIG_HEX)),
+    };
+    let mut publicly_revealed_keyring = IndexMap::new();
+    publicly_revealed_keyring.insert("zeta".to_string(), "eg==".to_string());
+    publicly_revealed_keyring.insert("alpha".to_string(), "YQ==".to_string());
+    publicly_revealed_keyring.insert("middle".to_string(), "bQ==".to_string());
+    let mut decrypted_fields = IndexMap::new();
+    decrypted_fields.insert("zeta".to_string(), "z".to_string());
+    decrypted_fields.insert("alpha".to_string(), "a".to_string());
+    decrypted_fields.insert("middle".to_string(), "m".to_string());
+    let identity = IdentityCertificate {
+        certificate,
+        certifier_info: IdentityCertifier {
+            name: "certifier".to_string(),
+            icon_url: String::new(),
+            description: String::new(),
+            trust: 1,
+        },
+        publicly_revealed_keyring,
+        decrypted_fields,
+    };
+
+    let encoded = certificate_ser::serialize_identity_certificate(&identity).unwrap();
+    let decoded =
+        certificate_ser::deserialize_identity_certificate(&mut std::io::Cursor::new(encoded))
+            .unwrap();
+
+    assert_eq!(
+        decoded
+            .publicly_revealed_keyring
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "alpha", "middle"]
+    );
+    assert_eq!(
+        decoded
+            .decrypted_fields
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "alpha", "middle"]
+    );
+}
+
+#[test]
+fn prove_certificate_keyring_preserves_insertion_order() {
+    let mut keyring_for_verifier = IndexMap::new();
+    keyring_for_verifier.insert("zeta".to_string(), "eg==".to_string());
+    keyring_for_verifier.insert("alpha".to_string(), "YQ==".to_string());
+    keyring_for_verifier.insert("middle".to_string(), "bQ==".to_string());
+    let result = ProveCertificateResult {
+        keyring_for_verifier,
+        certificate: None,
+        verifier: None,
+    };
+
+    let encoded = prove_certificate::serialize_prove_certificate_result(&result).unwrap();
+    let decoded = prove_certificate::deserialize_prove_certificate_result(&encoded).unwrap();
+
+    assert_eq!(
+        decoded
+            .keyring_for_verifier
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "alpha", "middle"]
     );
 }
 

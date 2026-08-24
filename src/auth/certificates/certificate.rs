@@ -4,7 +4,6 @@
 //! methods for the BRC-103 certificate exchange. Translates from
 //! TS SDK Certificate.ts and Go SDK certificate.go.
 
-use std::collections::HashMap;
 use std::ops::Deref;
 
 use indexmap::IndexMap;
@@ -436,9 +435,9 @@ impl AuthCertificate {
         serial_number: Option<&str>,
         counterparty: &PublicKey,
         wallet: &W,
-    ) -> Result<(IndexMap<String, String>, HashMap<String, String>), AuthError> {
+    ) -> Result<(IndexMap<String, String>, IndexMap<String, String>), AuthError> {
         let mut encrypted_fields = IndexMap::new();
-        let mut keyring = HashMap::new();
+        let mut keyring = IndexMap::new();
 
         for (field_name, field_value) in fields {
             // Generate random symmetric key

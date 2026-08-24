@@ -107,7 +107,8 @@ pub fn serialize_identity_certificate(cert: &IdentityCertificate) -> Result<Vec<
         write_string(w, &cert.certifier_info.icon_url)?;
         write_string(w, &cert.certifier_info.description)?;
         write_byte(w, cert.certifier_info.trust)?;
-        // TS serializes both maps with Object.entries insertion order.
+        // TS serializes both maps with Object.entries insertion order. These
+        // key orders are protocol data; do not canonicalize or sort them.
         write_varint(w, cert.publicly_revealed_keyring.len() as u64)?;
         for (key, value) in &cert.publicly_revealed_keyring {
             write_string(w, key)?;

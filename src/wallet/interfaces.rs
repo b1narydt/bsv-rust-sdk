@@ -2089,7 +2089,7 @@ pub struct ProveCertificateArgs {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateResult {
-    pub keyring_for_verifier: HashMap<String, String>,
+    pub keyring_for_verifier: IndexMap<String, String>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")

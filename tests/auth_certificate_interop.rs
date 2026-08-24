@@ -281,6 +281,15 @@ fn rust_certificate_response_vector_is_accepted_by_typescript_and_rust() {
     assert!(vector.verified_by_type_script);
     let message = &vector.message;
     let certificates = message.certificates.as_ref().expect("Rust certificates");
+    assert_eq!(
+        certificates[0]
+            .keyring
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "alpha", "middle"],
+        "Rust must preserve the caller's keyring order in the signed preimage"
+    );
     let rust_preimage = serde_json::to_vec(certificates).unwrap();
     let expected_preimage = &vector.preimage_bytes;
 

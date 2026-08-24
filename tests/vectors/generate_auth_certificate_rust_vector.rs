@@ -4,8 +4,6 @@
 //! remain hermetic at test time. It emits one certificateResponse signed by the
 //! Rust SDK; the Node generator verifies that signature with @bsv/sdk 2.4.1.
 
-use std::collections::HashMap;
-
 use bsv::auth::certificates::VerifiableCertificate;
 use bsv::auth::{AuthMessage, MessageType, RequestedCertificateSet};
 use bsv::primitives::private_key::PrivateKey;
@@ -165,8 +163,13 @@ fn main() {
         // direction separately carries a valid certificate signature.
         signature: None,
     };
-    let mut keyring = HashMap::new();
-    keyring.insert("middle".to_string(), "cnVzdC1rZXlyaW5n".to_string());
+    let mut keyring = IndexMap::new();
+    keyring.insert("zeta".to_string(), "cnVzdC1rZXlyaW5nLXpldGE=".to_string());
+    keyring.insert("alpha".to_string(), "cnVzdC1rZXlyaW5nLWFscGhh".to_string());
+    keyring.insert(
+        "middle".to_string(),
+        "cnVzdC1rZXlyaW5nLW1pZGRsZQ==".to_string(),
+    );
     let certificates = if empty {
         Vec::new()
     } else {

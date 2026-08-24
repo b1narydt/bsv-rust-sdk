@@ -4,6 +4,11 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+const watchdog = setTimeout(() => {
+  console.error('TS 2.4.1 verification timed out')
+  process.exit(124)
+}, 10_000)
+
 const [sdkPath, fixturePath] = process.argv.slice(2)
 if (sdkPath == null || fixturePath == null) {
   throw new Error('usage: node verify_auth_certificate_interop.mjs /path/to/@bsv/sdk fixture.json')
@@ -30,6 +35,13 @@ for (const name of ['rustToTypeScript', 'emptyRustToTypeScript']) {
   if (!result.valid) throw new Error(`TS 2.4.1 rejected ${name}`)
 }
 
+const rustKeyringKeys = Object.keys(
+  fixture.rustToTypeScript.message.certificates[0].keyring
+)
+if (JSON.stringify(rustKeyringKeys) !== JSON.stringify(['zeta', 'alpha', 'middle'])) {
+  throw new Error(`Rust keyring order diverged from TS: ${rustKeyringKeys.join(', ')}`)
+}
+
 for (const [name, vector] of Object.entries(fixture.rustAuthMessages)) {
   const parsed = JSON.parse(vector.json)
   if (Buffer.from(vector.hex, 'hex').toString('utf8') !== vector.json ||
@@ -38,4 +50,5 @@ for (const [name, vector] of Object.entries(fixture.rustAuthMessages)) {
   }
 }
 
+clearTimeout(watchdog)
 console.log('TS 2.4.1 accepted Rust certificate signatures and preserved every Rust auth envelope')

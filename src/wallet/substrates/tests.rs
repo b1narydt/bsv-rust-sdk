@@ -1,8 +1,6 @@
 //! Tests for wallet substrates: mock wallet, round-trip through
 //! WalletWireTransceiver -> WalletWireProcessor pipeline.
 
-use std::collections::HashMap;
-
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use crate::wallet::substrates::wallet_wire_calls::WalletWireCall;
@@ -230,7 +228,7 @@ impl WalletInterface for MockWallet {
         _originator: Option<&str>,
     ) -> Result<ProveCertificateResult, WalletError> {
         Ok(ProveCertificateResult {
-            keyring_for_verifier: HashMap::new(),
+            keyring_for_verifier: indexmap::IndexMap::new(),
             certificate: None,
             verifier: None,
         })

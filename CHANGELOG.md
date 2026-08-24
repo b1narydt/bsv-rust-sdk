@@ -48,8 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes from 0.7.1.
 - **Every map in the signed certificate-response preimage preserves wire
   insertion order.** `VerifiableCertificate::decrypted_fields` and the
-  decryption return value now use `IndexMap`, closing the same randomized JSON
-  ordering class previously fixed for `fields` and `keyring`.
+  decryption return value, locally produced verifier keyrings, and wallet
+  `ProveCertificateResult::keyring_for_verifier` now use `IndexMap`, closing the
+  same randomized JSON ordering class previously fixed for inbound `fields` and
+  `keyring`. The Rust-to-TS vector carries `zeta, alpha, middle` in both maps.
 - **Issued and discovered certificate maps retain deterministic order.**
   `MasterCertificate::issue_certificate_for_subject` accepts `IndexMap` and
   preserves it through encryption; `IdentityCertificate` keyring/decrypted maps
@@ -72,15 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Vec<VerifiableCertificate>` instead of `Vec<Certificate>` so the verifier
   keyring remains part of the signed wire value.
 - `VerifiableCertificate::decrypted_fields`, its non-mutating
-  `decrypt_fields` return value, certificate issue fields, and identity discovery
-  maps now expose `IndexMap<String, String>` instead of `HashMap<String, String>`.
+  `decrypt_fields` return value, constructor keyring, master-certificate
+  keyrings, `ProveCertificateResult::keyring_for_verifier`, certificate issue
+  fields, and identity discovery maps now expose `IndexMap<String, String>`
+  instead of `HashMap<String, String>`.
 - `SessionManager::update_session` now returns `bool` (`false` means the session
-  was evicted) instead of `()`.
+  was evicted) instead of `()`, and `reap_idle` returns the removed nonces so
+  `Peer` can clean its waiter/deferred/pending state.
 - `PeerSession` adds public `requested_certificates`; certificate-gate failure
   is deliberately not retained as session-wide error state.
-- `Peer::process_next` and `Peer::process_pending` isolate per-frame dispatch
-  failures because their caller owns a shared drain. Use direct
-  `dispatch_message` when the caller owns one frame and needs its error.
+- `Peer::process_next` reports the one consumed frame's dispatch error.
+  `Peer::process_pending` and nested handshake pumps isolate per-frame failures
+  because their callers own shared multi-frame drains.
 
 ## [0.7.1] - 2026-08-23
 

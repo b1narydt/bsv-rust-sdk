@@ -172,3 +172,69 @@ committed Rust auth envelope.
 websocket test ignored). That green baseline does not refute the findings: the outbound keyring vector
 has one entry, the reap seam has no test, `process_next` has no error-propagation test, and several tests
 can wait without an outer deadline.
+
+## Phase 2 resolution
+
+All five findings were confirmed during implementation; none became a false alarm.
+
+1. **Verifier-keyring order fixed.** The certificate, master-certificate, wallet interface, and prove-
+   certificate serializer paths now use `IndexMap` end to end. No alphabetical conversion remains on
+   the path into the signed auth JSON. The Rust-to-TS fixture now contains `zeta, alpha, middle`, and
+   both a direct real-TS Peer probe and a real `WalletWireProcessor`/`WalletWireTransceiver` probe
+   returned that order.
+2. **Single-frame errors restored.** `process_next` once again propagates the error from the frame it
+   consumed. `process_pending` retains per-frame isolation and continues routing later frames; the
+   shared-drain behavior is now explicit rather than inherited from `process_next`.
+3. **Reap ownership completed.** `SessionManager::reap_idle` returns the nonces it removed. Each Peer
+   reap boundary uses that list to remove deferred frames and pending initial responses, and to notify
+   and remove certificate-validation waiters.
+4. **Timeout audit corrected.** The identified dispatch and receive waits now have outer deadlines,
+   including the Round D peer tests, AuthFetch regression, conformance helper, and Node verifier.
+   `REVIEW-LEDGER.md` no longer claims that the older partial audit covered every relevant await.
+5. **Ordering properties pinned.** Multi-entry discovery and prove-certificate round trips assert the
+   exact insertion order rather than relying on one-entry fixtures.
+
+### Deterministic red/green evidence
+
+- `new_preserves_caller_keyring_order`: before the API/path fix, the new test failed to compile with
+  E0308 because `VerifiableCertificate::new` still required `HashMap`; after the fix it passed.
+- `test_process_next_reports_the_consumed_frames_error`: before the control-flow fix it failed because
+  `process_next` returned `Ok(true)` for the hostile frame; after the fix it passed with the expected
+  `InvalidMessage` error.
+- `test_session_reap_cleans_all_peer_owned_nonce_state`: before cleanup was connected to reaping it
+  failed on the retained deferred-message entry; after the fix it passed and all three nonce-indexed
+  stores were absent/notified.
+- `test_dispatch_general_resolves_nonce_once` timeout guard: in an isolated mutation suppressing
+  general-message delivery, the test failed at its five-second outer deadline instead of hanging; the
+  production implementation passed. The same bounded helper now covers every identified dependent
+  receive.
+- `identity_certificate_maps_preserve_insertion_order`: in an isolated mutation restoring alphabetical
+  sorting, it deterministically failed with `["alpha", "middle", "zeta"]` versus
+  `["zeta", "alpha", "middle"]`; the production implementation passed.
+- `prove_certificate_keyring_preserves_insertion_order`: in an isolated mutation restoring
+  alphabetical sorting, it deterministically failed with the same ordered-list mismatch; the
+  production implementation passed.
+
+No red/green result used randomized `HashMap` iteration, sleeps, or a state check after a sleep. The
+tests that wait for async work use explicit deadlines, so the regression mode is failure rather than an
+unbounded hang.
+
+### Wire-vector impact
+
+The Rust-to-TS certificate-response fixture was regenerated because its verifier keyring intentionally
+grew from the single entry `middle` to the ordered entries `zeta, alpha, middle`. That changes the
+certificate-response signed JSON preimage and therefore its signature. No protocol shape changed. A
+second generation from the required TS 2.4.1 package was byte-identical to the first, and the live TS
+verifier accepted it. All other cross-language vectors remained valid.
+
+### Final verification
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo clippy --all-targets --all-features -- -D warnings` — passed.
+- `cargo test --all-features -- --test-threads=1` — passed in isolation (1,170 library tests plus all
+  integration suites; one pre-existing websocket test ignored).
+- `cargo test --all-features` — passed under default parallel load with the same totals.
+- All cross-language vector tests passed in both complete runs.
+
+Nothing from the five findings is left undone. The pre-existing ignored websocket test remains outside
+this round's scope.

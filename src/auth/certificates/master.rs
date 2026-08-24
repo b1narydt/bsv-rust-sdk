@@ -4,7 +4,6 @@
 //! of verifier-specific keyrings for selective field revelation.
 //! Translates from TS SDK MasterCertificate.ts and Go SDK master.go.
 
-use std::collections::HashMap;
 use std::future::Future;
 
 use indexmap::IndexMap;
@@ -34,7 +33,7 @@ pub struct MasterCertificate {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// Maps field names to base64-encoded master encryption keys.
-    pub master_keyring: HashMap<String, String>,
+    pub master_keyring: IndexMap<String, String>,
 }
 
 impl Deref for MasterCertificate {
@@ -75,7 +74,7 @@ impl MasterCertificate {
     /// key in the master keyring.
     pub fn new(
         certificate: Certificate,
-        master_keyring: HashMap<String, String>,
+        master_keyring: IndexMap<String, String>,
     ) -> Result<Self, AuthError> {
         if let Some(ref fields) = certificate.fields {
             for field_name in fields.keys() {
@@ -109,7 +108,7 @@ impl MasterCertificate {
         fields: &IndexMap<String, String>,
         certifier_wallet: &W,
         subject: &PublicKey,
-    ) -> Result<(IndexMap<String, String>, HashMap<String, String>), AuthError> {
+    ) -> Result<(IndexMap<String, String>, IndexMap<String, String>), AuthError> {
         // Use encrypt_fields with serial_number=None for master cert creation
         AuthCertificate::encrypt_fields(fields, None, subject, certifier_wallet).await
     }
@@ -131,10 +130,10 @@ impl MasterCertificate {
         fields_to_reveal: &[String],
         certifier: &PublicKey,
         wallet: &W,
-    ) -> Result<HashMap<String, String>, AuthError> {
+    ) -> Result<IndexMap<String, String>, AuthError> {
         let fields = self.certificate.fields.clone().unwrap_or_default();
         let serial_number_b64 = base64_encode(&self.certificate.serial_number.0);
-        let mut verifier_keyring = HashMap::new();
+        let mut verifier_keyring = IndexMap::new();
 
         for field_name in fields_to_reveal {
             // Verify field exists in the certificate
@@ -328,7 +327,7 @@ impl MasterCertificate {
         &self,
         wallet: &W,
         counterparty: &PublicKey,
-    ) -> Result<HashMap<String, String>, AuthError> {
+    ) -> Result<IndexMap<String, String>, AuthError> {
         if self.master_keyring.is_empty() {
             return Err(AuthError::CertificateValidation(
                 "a MasterCertificate must have a valid master_keyring".to_string(),
@@ -336,7 +335,7 @@ impl MasterCertificate {
         }
 
         let fields = self.certificate.fields.clone().unwrap_or_default();
-        let mut decrypted = HashMap::new();
+        let mut decrypted = IndexMap::new();
 
         for (field_name, encrypted_value) in &fields {
             let master_key_encrypted = match self.master_keyring.get(field_name) {

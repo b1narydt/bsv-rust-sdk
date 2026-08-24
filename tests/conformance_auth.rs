@@ -162,19 +162,23 @@ async fn emitted_initial_response_with_request() -> Result<
         vec!["name".to_string()],
     );
     peer.set_certificates_to_request(requested.clone());
-    peer.dispatch_message(AuthMessage {
-        version: AUTH_VERSION.to_string(),
-        message_type: MessageType::InitialRequest,
-        identity_key: requester_identity.clone(),
-        nonce: None,
-        your_nonce: None,
-        initial_nonce: Some(requester_nonce.clone()),
-        certificates: None,
-        requested_certificates: None,
-        payload: None,
-        signature: None,
-    })
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        peer.dispatch_message(AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::InitialRequest,
+            identity_key: requester_identity.clone(),
+            nonce: None,
+            your_nonce: None,
+            initial_nonce: Some(requester_nonce.clone()),
+            certificates: None,
+            requested_certificates: None,
+            payload: None,
+            signature: None,
+        }),
+    )
     .await
+    .map_err(|_| "timed out dispatching real initialRequest".to_string())?
     .map_err(|error| error.to_string())?;
     let response = tokio::time::timeout(std::time::Duration::from_secs(1), sent.recv())
         .await
