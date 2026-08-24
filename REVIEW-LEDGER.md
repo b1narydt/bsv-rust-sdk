@@ -195,7 +195,7 @@ The audit followed every `serde_json::to_vec`/`to_string` site to every
 
 | Map site | Runtime type | Can reach a reserialized signature preimage? | Verdict |
 |---|---|---|---|
-| `Certificate.fields` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` and in the certificate's own binary signing format | **SAFE on receive and issue** — wire order is preserved; issuance now accepts ordered input and preserves it through encryption; binary signing separately applies TS field collation |
+| `Certificate.fields` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` and in the certificate's own binary signing format | **SAFE for preserved wire order; ASCII binary collation pinned** — issuance accepts ordered input and preserves it through encryption. **Registered non-ASCII divergence:** Rust's deterministic comparator differs from Node/ICU for legal Unicode field names, so cross-SDK signature verification fails closed for that unused domain |
 | `VerifiableCertificate.keyring` | `IndexMap<String, String>` | Yes: nested in `certificateResponse` | **SAFE** — inbound and locally produced order are preserved; the constructor requires `IndexMap` |
 | `VerifiableCertificate.decrypted_fields` | `Option<IndexMap<String, String>>` | Yes when explicitly present in `certificateResponse` | **FIXED** — three-key non-alphabetical TS fixture proves `zeta, alpha, middle` survives deserialize/reserialize |
 | `RequestedCertificateSet.types` | `IndexMap<String, Vec<String>>` | Yes: `certificateRequest` JSON is signed directly | **SAFE** — supplied wire order is preserved |

@@ -377,6 +377,15 @@ impl SessionManager {
             .map(|m| m.seen.len())
             .unwrap_or(0)
     }
+
+    /// Return the number of sessions currently waiting for required
+    /// certificate validation.
+    pub fn pending_certificate_validation_count(&self) -> usize {
+        self.nonce_to_session
+            .values()
+            .filter(|session| session.certificates_required && !session.certificates_validated)
+            .count()
+    }
 }
 
 impl Default for SessionManager {
