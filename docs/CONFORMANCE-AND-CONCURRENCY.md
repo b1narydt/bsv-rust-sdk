@@ -94,8 +94,12 @@ Rust may differ from both references. The obligations are stability and speed.
 3. **Do not copy `Promise.all` reflexively.** In a single-threaded runtime it interleaves I/O; it is
    not a claim that parallelism is correct or worthwhile. Where Go — which has real parallelism —
    chose sequential, that judgement is better evidence than TS's.
-4. **Never let one remote identity/session's work block another's.** No blocking wait may consume
-   every slot on a shared dispatch path.
+4. **General dispatch isolation is structural per session.** Each live session has one sequential
+   worker, so a certificate wait or slow general handler blocks only later general frames on that
+   same session. General workers share no dispatch permits, and control frames never enter their
+   queues; a releasing `certificateResponse` therefore remains independently dispatchable. An
+   identity opening several sessions gains no shared-path advantage because each session can occupy
+   only its own worker.
 5. **Hold no lock across an `.await`.** Existing invariant; the `!Send` future that results breaks
    downstream `Handler` bounds in ways this crate's own tests cannot detect.
 6. **Certificate-gate state is never an error-valued session latch.** The live
@@ -118,25 +122,33 @@ Rust may differ from both references. The obligations are stability and speed.
 ### Background transport receive task (#40)
 
 `Peer::new` now gives the sole transport receiver to a background task. That task routes
-`initialResponse` frames directly to nonce-keyed one-shot handshake waiters and schedules every other
-frame independently. Callers never pump transport progress; `process_next` and `process_pending` were
-removed rather than retained as meaningless compatibility shims.
+`initialResponse` frames directly to nonce-keyed one-shot handshake waiters, routes each resolvable
+`general` frame to its session's worker, and schedules the remaining control frames on their separate
+16-slot lane. Callers never pump transport progress; `process_next` and `process_pending` were removed
+rather than retained as meaningless compatibility shims.
 
-Dispatch admission is bounded, non-blocking, and session-fair. General frames have 64 global slots plus an
-8-slot per-session sub-quota; control frames have a separate 16-slot lane. The lanes are separate because a
-general frame may wait at the certificate gate: sharing every permit, or awaiting a permit in receive order,
-could put the releasing `certificateResponse` behind the frame it must release. A frame that arrives after
-either applicable limit is full is dropped and reported through the bounded `Peer::on_error` observer. The
-receive task never waits for dispatch capacity and never holds a lock across an await.
+One worker is spawned lazily on the first general frame for a session. Its bounded MPSC queue holds at
+most 64 waiting frames, and the worker awaits each `dispatch_general_message` to completion before
+receiving the next. Queue admission uses `try_send`: overflow drops the newest frame, reports it through
+the bounded `Peer::on_error` observer, and never blocks the receive task. Live sessions are capped at
+1024 because each can own a worker and queue. Handshake admission first reaps expired sessions and then
+evicts the least-recently-used session if the cap is still full; abandoned sessions therefore cannot
+cause a legitimate new handshake to be refused.
 
-Certificate-gated general messages authenticate, then wait inside their own admitted dispatch task. After
-validation they atomically enter the replay set exactly once and are delivered. This makes both
+Control messages never enter a general worker. This split is load-bearing: a general frame may wait at
+the certificate gate for 30 seconds, while the `certificateResponse` that releases it must remain
+dispatchable through the independent control lane. Certificate-gated general messages authenticate,
+then wait inside their session worker. After validation they atomically enter the replay set exactly once
+and are delivered. Later general frames on that session wait in arrival order, while every other session
+continues independently. This makes both
 `deferred_general_messages` and `pending_initial_responses` unnecessary; both stores and their expiry,
 overflow, flush, and reap machinery are deleted. Session gate state remains pending-or-validated only.
 
 The receive task owns only a weak reference to peer state. Its shutdown sender is held by application-facing
-`Peer` handles, outside `PeerInner`; internal dispatch handles deliberately do not carry it. The receive task
-therefore exits when the final application `Peer` handle is dropped even while a dispatch remains in flight.
+`Peer` handles, outside `PeerInner`; internal control handles and general workers deliberately do not carry
+it. General workers select on the same shutdown channel and otherwise exit when session cleanup drops their
+queue sender. The receive task and workers therefore exit when the final application `Peer` handle is dropped
+even while dispatch remains in flight.
 Receive-channel closure, dispatch failures, and admission failures are per-frame asynchronous errors. The
 bounded error observer uses non-blocking delivery so an absent or slow observer cannot become transport
 backpressure; errors beyond its capacity may be dropped. `AuthFetch` additionally consumes an internal
@@ -152,7 +164,7 @@ divergence needs only the comment.
 | Divergence | Layer | Rationale | Guard |
 |---|---|---|---|
 | Public middleware verification rejects a pending certificate gate immediately | 1 | TS `processGeneralMessage` waits, but Rust's direct HTTP middleware verification may not involve this peer's transport receiver. Waiting lets unsigned input occupy a handler for 30 seconds | Immediate-future forged-signature regression; site comment |
-| Dispatch admission drops frames when its lane is saturated | 1 | Remote-controlled task creation must be bounded. Rust admits at most 64 general globally, 8 per session, and 16 control dispatches; later frames are dropped and surfaced locally through `Peer::on_error` so receive remains available to protocol-release frames and one gated session cannot starve another | Instrumented multi-session test measures 64 simultaneous general dispatches and observes frame 65 rejected; cross-session gated-fairness regression; separate control lane regression |
+| General worker queue overflow drops the newest frame | 1 | Remote-controlled buffering must be bounded. Rust queues at most 64 waiting general frames per session; frame 65 behind an in-flight frame is dropped and surfaced locally through `Peer::on_error`, without blocking receive or another session | Queue-fill regression pins the newest frame's request ID, cross-session progress, and the 64 accepted deliveries |
 | Case-insensitive duplicate authenticated request headers are rejected | 1 | TS retains both normalized entries in original object insertion order. Rust's public input is a `HashMap`, which cannot reproduce that order; rejecting the ambiguous preimage is deterministic and safer than randomly signing either order | Live `@bsv/sdk@2.4.1` probe records both insertion orders; Rust duplicate rejection and locale-order regressions |
 | Unparseable certifier or certificate type is skipped, not fatal | 1 | TS treats both as opaque strings; Rust's strongly typed wallet cannot forward malformed values, and erroring fails handshakes TS completes | Site comments and malformed-value regressions |
 | Typed certificate identifiers are normalized before comparison | 1 | TS compares original strings exactly. Rust parses `PublicKey` values (case normalization and uncompressed→compressed conversion) and base64 certificate types into 32-byte values before comparing, so the original spelling cannot be recovered without raw-string shadow state | Sites in certificate validation; equivalence regressions; raise upstream |
@@ -160,7 +172,7 @@ divergence needs only the comment.
 | Certificate validation uses the session's advertised request snapshot | 1 | TS reads mutable peer state for `initialResponse` and an attacker-controlled inbound field for `certificateResponse`. Either permits TOCTOU/relabeling. Rust validates the request it actually put on the wire | Session-snapshot regression tests; raise upstream |
 | Embedded certificate response precedes the first general frame (#23) | 1 | TS releases handshake waiters before answering the peer's embedded certificate request, so a client can send `general` first. Rust deliberately completes the embedded proof before releasing the initiating call: receivers see certificates first and never need to defer the first general frame | Live @bsv/sdk 2.4.1 probe observes `initialRequest, general, certificateResponse`; Rust wire-record regression observes `initialRequest, certificateResponse, general`; site comment |
 | Certificate-request callbacks are fire-and-forget | 1 | TS awaits each callback; Rust's synchronous callback API spawns async work. A peer can observe `initialResponse` / `certificateResponse` wire order changes, the mirror of the preceding row | Handler-mode ordering regression; callback API comment |
-| Sessions expire after 15 minutes idle | 1 | TS retains sessions indefinitely. Rust bounds session and replay-set memory and requires a new handshake after expiry | TTL/re-handshake regressions; `session_manager.rs` comment |
+| Sessions expire after 15 minutes idle and are capped at 1024 | 1 | TS retains sessions indefinitely. Rust bounds session, worker, queue, and replay-set memory; expiry or LRU eviction requires a new handshake. At the cap Rust evicts rather than refusing the incoming handshake, so abandoned sessions cannot deny admission | TTL/re-handshake regressions; deterministic LRU-cap handshake regression; `session_manager.rs` and `peer.rs` comments |
 | Per-message replay protection and mandatory nonce | 1 | TS accepts a missing per-message nonce and has no replay set. Rust rejects missing/replayed nonces after signature verification | Missing-nonce and replay regressions |
 | Handshake has a 30-second deadline | 1 | TS waits indefinitely; Rust abandons an unanswered handshake after 30 seconds | Paused-time handshake regression |
 | Unsolicited/duplicate `initialResponse` is dropped | 1 | TS dispatch throws; Rust routes only a response correlated to a live nonce-keyed handshake waiter and otherwise ignores it so one frame cannot contaminate another session | Concurrent nested-handshake correlation regression |

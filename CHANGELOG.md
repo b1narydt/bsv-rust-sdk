@@ -29,14 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   certifier set to `list_certificates` instead of querying every certifier.
 - **`Peer` owns a background receive task; callers no longer pump transport
   progress.** `initialResponse` frames route to nonce-keyed handshake waiters;
-  other frames dispatch concurrently in separate bounded lanes (64 general,
-  16 control). Certificate-gated general frames wait in their independent
-  dispatch tasks while the receiver continues accepting the response that
-  releases them. The deferred-message queue and pending-initial-response store,
-  including their expiry/overflow/flush machinery, are removed. Direct
-  dispatch still returns its own error; background receive/dispatch errors are
-  exposed through the new bounded, best-effort `Peer::on_error()` receiver and
-  never become sticky session state. No logging dependency was added.
+  general frames run in arrival order through one lazy worker per session, and
+  control frames retain a separate 16-slot lane. Each general-worker queue is
+  capped at 64 waiting frames with non-blocking newest-drop overflow, and live
+  sessions are capped at 1024 with expired-first/LRU eviction so abandoned
+  sessions cannot refuse a new handshake. Certificate-gated general frames wait
+  only inside their own session worker while the receiver continues accepting
+  the control response that releases them. The deferred-message queue and
+  pending-initial-response store, including their expiry/overflow/flush
+  machinery, are removed. Direct dispatch still returns its own error;
+  background receive/dispatch errors are exposed through the bounded,
+  best-effort `Peer::on_error()` receiver and never become sticky session state.
+  No logging dependency was added.
 - **Empty certificate responses match each @bsv/sdk 2.4.1 producer site.** A
   standalone `certificateRequest` receives signed `[]`; an embedded request in
   `initialRequest` retains `certificates: []`; the post-handshake and AuthFetch

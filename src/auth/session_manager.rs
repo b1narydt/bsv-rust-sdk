@@ -59,6 +59,9 @@ pub enum MarkSeen {
 struct SessionMeta {
     /// Wall-clock ms of the last successful activity on this session.
     last_used_ms: u64,
+    /// Monotonic local activity order for deterministic LRU eviction when
+    /// several sessions are touched in the same wall-clock millisecond.
+    last_used_order: u64,
     /// Membership set of message nonces for O(1) replay detection.
     seen: HashSet<String>,
     /// Insertion order, so the oldest nonce can be FIFO-evicted at the cap.
@@ -86,6 +89,8 @@ pub struct SessionManager {
     idle_ttl_ms: u64,
     /// Per-session remembered-nonce cap (see [`DEFAULT_SEEN_NONCE_CAP`]).
     seen_nonce_cap: usize,
+    /// Monotonic activity counter. Internal only; it never reaches the wire.
+    activity_sequence: u64,
 }
 
 impl SessionManager {
@@ -104,6 +109,7 @@ impl SessionManager {
             session_meta: HashMap::new(),
             idle_ttl_ms,
             seen_nonce_cap,
+            activity_sequence: 0,
         }
     }
 
@@ -127,6 +133,56 @@ impl SessionManager {
             .entry(identity)
             .or_default()
             .insert(nonce);
+    }
+
+    /// Add and touch a session while enforcing a hard live-session limit.
+    ///
+    /// At capacity, the least-recently-used existing session is evicted before
+    /// the incoming session is inserted, so abandoned sessions can never make
+    /// a legitimate new handshake fail admission. Returns evicted nonces for
+    /// cleanup of nonce-keyed state owned by `Peer`.
+    pub fn add_session_capped(
+        &mut self,
+        session: PeerSession,
+        now_ms: u64,
+        max_sessions: usize,
+    ) -> Vec<String> {
+        assert!(max_sessions > 0, "session cap must be non-zero");
+        let incoming_nonce = session.session_nonce.clone();
+        let mut evicted = Vec::new();
+        while !self.nonce_to_session.contains_key(&incoming_nonce)
+            && self.nonce_to_session.len() >= max_sessions
+        {
+            let Some(lru_nonce) = self.least_recently_used_nonce() else {
+                break;
+            };
+            if self.remove_session(&lru_nonce).is_some() {
+                evicted.push(lru_nonce);
+            }
+        }
+        self.add_session(session);
+        self.touch(&incoming_nonce, now_ms);
+        evicted
+    }
+
+    fn least_recently_used_nonce(&self) -> Option<String> {
+        self.nonce_to_session
+            .keys()
+            .min_by_key(|nonce| {
+                (
+                    self.session_meta
+                        .get(*nonce)
+                        .map(|meta| meta.last_used_order)
+                        .unwrap_or(0),
+                    nonce.as_str(),
+                )
+            })
+            .cloned()
+    }
+
+    /// Number of live sessions, for bounds tests and diagnostics.
+    pub fn session_count(&self) -> usize {
+        self.nonce_to_session.len()
     }
 
     /// Get a session by nonce (immutable reference).
@@ -265,14 +321,19 @@ impl SessionManager {
         if !self.nonce_to_session.contains_key(session_nonce) {
             return;
         }
-        self.session_meta
+        self.activity_sequence = self.activity_sequence.saturating_add(1);
+        let last_used_order = self.activity_sequence;
+        let meta = self
+            .session_meta
             .entry(session_nonce.to_string())
             .or_insert_with(|| SessionMeta {
                 last_used_ms: now_ms,
+                last_used_order,
                 seen: HashSet::new(),
                 order: VecDeque::new(),
-            })
-            .last_used_ms = now_ms;
+            });
+        meta.last_used_ms = now_ms;
+        meta.last_used_order = last_used_order;
     }
 
     /// True if the session has recorded activity AND has been idle longer than
@@ -321,15 +382,19 @@ impl SessionManager {
             return MarkSeen::SessionGone;
         }
         let cap = self.seen_nonce_cap;
+        self.activity_sequence = self.activity_sequence.saturating_add(1);
+        let last_used_order = self.activity_sequence;
         let meta = self
             .session_meta
             .entry(session_nonce.to_string())
             .or_insert_with(|| SessionMeta {
                 last_used_ms: now_ms,
+                last_used_order,
                 seen: HashSet::new(),
                 order: VecDeque::new(),
             });
         meta.last_used_ms = now_ms;
+        meta.last_used_order = last_used_order;
 
         if !meta.seen.insert(message_nonce.to_string()) {
             return MarkSeen::Replay;
