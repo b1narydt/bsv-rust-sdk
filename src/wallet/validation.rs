@@ -125,15 +125,31 @@ fn validate_protocol_id(protocol: &crate::wallet::types::Protocol) -> Result<(),
 /// protocols (rust-mpc#300: `listOutputs {basket: "atlas-conformance"}`
 /// answered 400 where the reference answers 200).
 ///
-/// The ONE local reservation kept is `default`: the toolbox's own change
-/// basket, which an action must not claim deposits into. It is a
-/// toolbox-integrity rule, not BRC-100 grammar, and it is documented as such.
+/// The `default` reservation is kept, but only where it does work: see
+/// [`validate_output_basket`]. Naming that basket in a *read* is ordinary and
+/// the reference does it — rejecting it here was the same defect as the
+/// `atlas-conformance` case above, one site over.
 fn validate_basket_name(s: &str) -> Result<(), WalletError> {
     let normalized = normalize_identifier(s);
-    validate_string_length(&normalized, "basket", 1, 300)?;
+    validate_string_length(&normalized, "basket", 1, 300)
+}
+
+/// Basket name in a position that CLAIMS the basket — a `createAction` output
+/// depositing into it. Adds the one local reservation: `default` is the
+/// toolbox's own change basket, and an action must not deposit into storage the
+/// wallet manages itself.
+///
+/// Deliberately NOT applied to reads. The reference validator has no `default`
+/// rule at any site, and the reference toolbox's own `balanceAndUtxos` is
+/// `listOutputs(basket: 'default')` — so rejecting it made the single most
+/// ordinary balance query inexpressible from Rust while every other wallet
+/// answered it. The reservation exists to stop a deposit, not to make the
+/// basket unreadable; this is where the deposit happens.
+fn validate_output_basket(s: &str) -> Result<(), WalletError> {
+    validate_basket_name(s)?;
     // Toolbox integrity (NOT reference grammar): "default" is the wallet's own
     // change basket; claiming it names storage the wallet manages itself.
-    if normalized == "default" {
+    if normalize_identifier(s) == "default" {
         return Err(invalid("basket", "not 'default'"));
     }
     Ok(())
@@ -203,7 +219,7 @@ pub fn validate_create_action_args(args: &CreateActionArgs) -> Result<(), Wallet
             validate_tag(tag)?;
         }
         if let Some(ref basket) = output.basket {
-            validate_basket(basket)?;
+            validate_output_basket(basket)?;
         }
     }
 
@@ -245,9 +261,10 @@ pub fn validate_abort_action_args(args: &AbortActionArgs) -> Result<(), WalletEr
 
 /// Validate ListActionsArgs.
 pub fn validate_list_actions_args(args: &ListActionsArgs) -> Result<(), WalletError> {
-    if args.labels.is_empty() {
-        return Err(invalid("labels", "non-empty"));
-    }
+    // An empty label list is a meaningful query — "no label constraint" — not a
+    // malformed one. The reference maps `(args.labels ?? [])` with no non-empty
+    // rule and BRC-100 imposes none; requiring one made "list every action"
+    // inexpressible from Rust.
     for label in &args.labels {
         validate_label(label)?;
     }
@@ -617,10 +634,18 @@ mod tests {
         // The bounds the reference DOES state still hold…
         assert!(validate_basket_name("").is_err(), "1..=300 bytes");
         assert!(validate_basket_name(&"x".repeat(301)).is_err());
-        // …and the one local toolbox-integrity reservation: the wallet's own
-        // change basket is not claimable, however it is spelled on the wire.
-        assert!(validate_basket_name("default").is_err());
-        assert!(validate_basket_name("  Default ").is_err());
+        // …and "default" is a READABLE name. The reference toolbox's own
+        // balanceAndUtxos is listOutputs(basket: 'default'); rejecting it here
+        // made the most ordinary balance query inexpressible from Rust.
+        assert!(validate_basket_name("default").is_ok());
+        assert!(validate_basket_name("  Default ").is_ok());
+        // The reservation survives where it does work — an output CLAIMING the
+        // wallet's own change basket — however it is spelled on the wire.
+        assert!(validate_output_basket("default").is_err());
+        assert!(validate_output_basket("  Default ").is_err());
+        // …and a claim on any other basket is still fine, so the reservation
+        // did not degrade into rejecting every output basket.
+        validate_output_basket("payments").expect("ordinary output basket");
     }
 
     fn test_pubkey() -> crate::primitives::public_key::PublicKey {
@@ -822,7 +847,9 @@ mod tests {
     }
 
     #[test]
-    fn test_list_actions_empty_labels() {
+    /// An empty label list is "no label constraint", the way the reference
+    /// reads it — not a malformed query.
+    fn test_list_actions_empty_labels_is_an_unconstrained_query() {
         let args = ListActionsArgs {
             labels: vec![],
             label_query_mode: None,
@@ -836,7 +863,7 @@ mod tests {
             offset: None,
             seek_permission: BooleanDefaultTrue(None),
         };
-        assert!(validate_list_actions_args(&args).is_err());
+        validate_list_actions_args(&args).expect("empty labels means no constraint");
     }
 
     #[test]
