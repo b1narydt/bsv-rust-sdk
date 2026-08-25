@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use serde_json::json;
 
 use bsv::remittance::types::{
@@ -234,11 +236,11 @@ fn test_identity_certificate_type_field() {
         cert_type: "someType".into(),
         certifier: "cert1".into(),
         subject: "sub1".into(),
-        fields: HashMap::new(),
+        fields: IndexMap::new(),
         signature: "sig".into(),
         serial_number: "sn1".into(),
         revocation_outpoint: "out1".into(),
-        keyring_for_verifier: HashMap::new(),
+        keyring_for_verifier: IndexMap::new(),
     };
     let val: serde_json::Value = serde_json::to_value(&cert).unwrap();
     assert_eq!(
@@ -258,14 +260,14 @@ fn test_identity_response_roundtrip() {
             certifier: "c1".into(),
             subject: "s1".into(),
             fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".into(), "Alice".into());
                 m
             },
             signature: "sig1".into(),
             serial_number: "sn1".into(),
             revocation_outpoint: "op1".into(),
-            keyring_for_verifier: HashMap::new(),
+            keyring_for_verifier: IndexMap::new(),
         }],
     };
     let json_str = serde_json::to_string(&resp).unwrap();

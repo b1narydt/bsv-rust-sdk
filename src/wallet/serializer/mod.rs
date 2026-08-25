@@ -4,8 +4,9 @@
 //! wallet/serializer package, using Bitcoin-style varints and specific
 //! sentinel values for optional fields.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
+
+use indexmap::IndexMap;
 
 use crate::primitives::public_key::PublicKey;
 use crate::wallet::error::WalletError;
@@ -592,25 +593,23 @@ pub fn read_string_slice(reader: &mut impl Read) -> Result<Option<Vec<String>>, 
 // String map helpers
 // ---------------------------------------------------------------------------
 
-/// Write a sorted string map (key-value pairs).
+/// Write a string map in insertion order, matching JavaScript object enumeration.
 pub fn write_string_map(
     writer: &mut impl Write,
-    map: &HashMap<String, String>,
+    map: &IndexMap<String, String>,
 ) -> Result<(), WalletError> {
-    let mut keys: Vec<&String> = map.keys().collect();
-    keys.sort();
-    write_varint(writer, keys.len() as u64)?;
-    for key in keys {
+    write_varint(writer, map.len() as u64)?;
+    for (key, value) in map {
         write_string(writer, key)?;
-        write_string(writer, &map[key])?;
+        write_string(writer, value)?;
     }
     Ok(())
 }
 
 /// Read a string map.
-pub fn read_string_map(reader: &mut impl Read) -> Result<HashMap<String, String>, WalletError> {
+pub fn read_string_map(reader: &mut impl Read) -> Result<IndexMap<String, String>, WalletError> {
     let count = read_varint(reader)?;
-    let mut map = HashMap::with_capacity(count as usize);
+    let mut map = IndexMap::with_capacity(count as usize);
     for _ in 0..count {
         let key = read_string(reader)?;
         let value = read_string(reader)?;

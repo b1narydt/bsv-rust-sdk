@@ -56,14 +56,12 @@ pub fn serialize_prove_certificate_args(
         } else {
             write_bytes(w, &[])?;
         }
-        // Fields (sorted, length-prefixed key and value)
+        // Fields (JavaScript object insertion order)
         let fields = args.certificate.fields.clone().unwrap_or_default();
-        let mut keys: Vec<&String> = fields.keys().collect();
-        keys.sort();
-        write_varint(w, keys.len() as u64)?;
-        for key in keys {
+        write_varint(w, fields.len() as u64)?;
+        for (key, value) in &fields {
             write_bytes(w, key.as_bytes())?;
-            write_bytes(w, fields[key].as_bytes())?;
+            write_bytes(w, value.as_bytes())?;
         }
         // Fields to reveal
         write_varint(w, args.fields_to_reveal.len() as u64)?;

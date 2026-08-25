@@ -9,13 +9,13 @@ pub fn serialize_discover_by_attributes_args(
     args: &DiscoverByAttributesArgs,
 ) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
-        // Attributes (sorted map, length-prefixed keys and values)
-        let mut keys: Vec<&String> = args.attributes.keys().collect();
-        keys.sort();
-        write_varint(w, keys.len() as u64)?;
-        for key in keys {
+        // Attributes (JavaScript object insertion order). TS writes UTF-16
+        // String.length with UTF-8 bytes for non-ASCII text, producing a
+        // self-inconsistent frame; write_bytes deliberately uses UTF-8 length.
+        write_varint(w, args.attributes.len() as u64)?;
+        for (key, value) in &args.attributes {
             write_bytes(w, key.as_bytes())?;
-            write_bytes(w, args.attributes[key].as_bytes())?;
+            write_bytes(w, value.as_bytes())?;
         }
         // Limit, offset, seek permission
         write_optional_uint32(w, args.limit)?;
@@ -30,7 +30,7 @@ pub fn deserialize_discover_by_attributes_args(
     let mut r = std::io::Cursor::new(data);
     // Attributes
     let attr_len = read_varint(&mut r)?;
-    let mut attributes = std::collections::HashMap::with_capacity(attr_len as usize);
+    let mut attributes = indexmap::IndexMap::with_capacity(attr_len as usize);
     for _ in 0..attr_len {
         let key = String::from_utf8(read_bytes(&mut r)?)
             .map_err(|e| WalletError::Internal(e.to_string()))?;

@@ -6,7 +6,7 @@ use super::*;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
 use crate::wallet::types::BooleanDefaultFalse;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 pub fn serialize_list_certificates_args(
     args: &ListCertificatesArgs,
@@ -82,27 +82,19 @@ pub fn serialize_list_certificates_result(
             // Certificate as length-prefixed bytes
             let cert_bytes = serialize_certificate(&cert_result.certificate)?;
             write_bytes(w, &cert_bytes)?;
-            // Keyring (flag byte + sorted map with base64 values).
-            // Preserve the three-state distinction introduced by `Option<HashMap>`:
-            //   None         -> flag=0                (absent)
-            //   Some(empty)  -> flag=1, varint=0      (present but empty)
-            //   Some(map)    -> flag=1, varint=len, sorted entries
-            // Folding `Some(empty)` into flag=0 would silently strip the
-            // "present but empty" marker on binary round-trip and diverge from
-            // the Go SDK encoding (go-sdk/wallet/serializer/list_certificates.go).
+            // TS deliberately folds Some(empty) into the same flag=0 encoding
+            // as None, so this wire format cannot retain that Rust distinction.
             match &cert_result.keyring {
-                Some(keyring) => {
+                Some(keyring) if !keyring.is_empty() => {
                     write_byte(w, 1)?;
-                    let mut keys: Vec<&String> = keyring.keys().collect();
-                    keys.sort();
-                    write_varint(w, keys.len() as u64)?;
-                    for key in keys {
+                    write_varint(w, keyring.len() as u64)?;
+                    for (key, value) in keyring {
                         write_string(w, key)?;
-                        let value_bytes = base64_decode(&keyring[key])?;
+                        let value_bytes = base64_decode(value)?;
                         write_bytes(w, &value_bytes)?;
                     }
                 }
-                None => {
+                _ => {
                     write_byte(w, 0)?;
                 }
             }
@@ -131,7 +123,7 @@ pub fn deserialize_list_certificates_result(
         let keyring_flag = read_byte(&mut r)?;
         let keyring = if keyring_flag == 1 {
             let keyring_len = read_varint(&mut r)?;
-            let mut map = HashMap::with_capacity(keyring_len as usize);
+            let mut map = IndexMap::with_capacity(keyring_len as usize);
             for _ in 0..keyring_len {
                 let key = read_string(&mut r)?;
                 let value_bytes = read_bytes(&mut r)?;

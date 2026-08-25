@@ -1,0 +1,13 @@
+{
+  "json": {
+    "attributes": {
+      "zeta": "last",
+      "Alpha": "first",
+      "middle": "center"
+    },
+    "limit": 5,
+    "offset": 0,
+    "seekPermission": false
+  },
+  "wire": "160003047a657461046c61737405416c706861056669727374066d6964646c650663656e746572050000"
+}

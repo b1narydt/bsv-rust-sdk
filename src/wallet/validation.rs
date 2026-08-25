@@ -561,6 +561,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    use indexmap::IndexMap;
+
     use crate::primitives::private_key::PrivateKey;
     use crate::wallet::types::{
         BooleanDefaultFalse, BooleanDefaultTrue, Counterparty, CounterpartyType, Protocol,
@@ -1344,13 +1346,13 @@ mod tests {
             cert_type: CertificateType([0u8; 32]),
             certifier: test_pubkey(),
             acquisition_protocol: AcquisitionProtocol::Direct,
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             serial_number: Some(SerialNumber([0u8; 32])),
             revocation_outpoint: Some("abc.0".to_string()),
             signature: Some(vec![1, 2, 3]),
             certifier_url: None,
             keyring_revealer: Some(KeyringRevealer::Certifier),
-            keyring_for_subject: Some(HashMap::new()),
+            keyring_for_subject: Some(IndexMap::new()),
             privileged: false,
             privileged_reason: None,
         };
@@ -1363,13 +1365,13 @@ mod tests {
             cert_type: CertificateType([0u8; 32]),
             certifier: test_pubkey(),
             acquisition_protocol: AcquisitionProtocol::Direct,
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             serial_number: None,
             revocation_outpoint: Some("abc.0".to_string()),
             signature: Some(vec![1, 2, 3]),
             certifier_url: None,
             keyring_revealer: Some(KeyringRevealer::Certifier),
-            keyring_for_subject: Some(HashMap::new()),
+            keyring_for_subject: Some(IndexMap::new()),
             privileged: false,
             privileged_reason: None,
         };
@@ -1382,7 +1384,7 @@ mod tests {
             cert_type: CertificateType([0u8; 32]),
             certifier: test_pubkey(),
             acquisition_protocol: AcquisitionProtocol::Issuance,
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             serial_number: None,
             revocation_outpoint: None,
             signature: None,
@@ -1401,7 +1403,7 @@ mod tests {
             cert_type: CertificateType([0u8; 32]),
             certifier: test_pubkey(),
             acquisition_protocol: AcquisitionProtocol::Issuance,
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             serial_number: None,
             revocation_outpoint: None,
             signature: None,
@@ -1520,7 +1522,7 @@ mod tests {
         let mut attrs = HashMap::new();
         attrs.insert("name".to_string(), "Alice".to_string());
         let args = DiscoverByAttributesArgs {
-            attributes: attrs,
+            attributes: attrs.into_iter().collect(),
             limit: None,
             offset: None,
             seek_permission: None,
@@ -1531,7 +1533,7 @@ mod tests {
     #[test]
     fn test_discover_by_attributes_empty() {
         let args = DiscoverByAttributesArgs {
-            attributes: HashMap::new(),
+            attributes: IndexMap::new(),
             limit: None,
             offset: None,
             seek_permission: None,

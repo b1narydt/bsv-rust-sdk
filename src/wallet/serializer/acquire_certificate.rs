@@ -3,7 +3,7 @@
 use super::*;
 use crate::wallet::error::WalletError;
 use crate::wallet::interfaces::*;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 const ACQUISITION_PROTOCOL_DIRECT: u8 = 1;
 const ACQUISITION_PROTOCOL_ISSUANCE: u8 = 2;
@@ -17,7 +17,7 @@ pub fn serialize_acquire_certificate_args(
         write_raw_bytes(w, args.cert_type.bytes())?;
         // Certifier (33 bytes)
         write_public_key(w, &args.certifier)?;
-        // Fields (sorted map)
+        // Fields (JavaScript object insertion order)
         write_string_map(w, &args.fields)?;
         // Privileged params
         write_privileged_params(
@@ -56,15 +56,14 @@ pub fn serialize_acquire_certificate_args(
                     KeyringRevealer::PubKey(pk) => write_public_key(w, pk)?,
                 }
                 // Keyring for subject
-                let keyring = args.keyring_for_subject.clone().unwrap_or_default();
-                let mut keys: Vec<&String> = keyring.keys().collect();
-                keys.sort();
-                write_varint(w, keys.len() as u64)?;
-                for key in keys {
-                    write_bytes(w, key.as_bytes())?;
-                    // Values are base64-encoded in Go SDK
-                    let value_bytes = base64_decode(&keyring[key])?;
-                    write_bytes(w, &value_bytes)?;
+                let keyring_len = args.keyring_for_subject.as_ref().map_or(0, IndexMap::len);
+                write_varint(w, keyring_len as u64)?;
+                if let Some(keyring) = &args.keyring_for_subject {
+                    for (key, value) in keyring {
+                        write_bytes(w, key.as_bytes())?;
+                        let value_bytes = base64_decode(value)?;
+                        write_bytes(w, &value_bytes)?;
+                    }
                 }
             }
             AcquisitionProtocol::Issuance => {
@@ -131,7 +130,7 @@ pub fn deserialize_acquire_certificate_args(
         // Keyring for subject
         let kr_count = read_varint(&mut r)?;
         let keyring_for_subject = if kr_count > 0 {
-            let mut map = HashMap::with_capacity(kr_count as usize);
+            let mut map = IndexMap::with_capacity(kr_count as usize);
             for _ in 0..kr_count {
                 let key = String::from_utf8(read_bytes(&mut r)?)
                     .map_err(|e| WalletError::Internal(e.to_string()))?;

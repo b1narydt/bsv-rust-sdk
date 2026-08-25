@@ -782,7 +782,7 @@ pub struct PartialCertificate {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub fields: Option<HashMap<String, String>>,
+    pub fields: Option<IndexMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::option_bytes_as_hex"))]
     #[cfg_attr(feature = "serde", serde(default))]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -797,7 +797,7 @@ impl From<Certificate> for PartialCertificate {
             subject: Some(c.subject),
             certifier: Some(c.certifier),
             revocation_outpoint: c.revocation_outpoint,
-            fields: c.fields.map(|fields| fields.into_iter().collect()),
+            fields: c.fields,
             signature: c.signature,
         }
     }
@@ -1948,9 +1948,9 @@ pub struct AcquireCertificateArgs {
     pub acquisition_protocol: AcquisitionProtocol,
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "HashMap::is_empty", default)
+        serde(skip_serializing_if = "IndexMap::is_empty", default)
     )]
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -1981,7 +1981,7 @@ pub struct AcquireCertificateArgs {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub keyring_for_subject: Option<HashMap<String, String>>,
+    pub keyring_for_subject: Option<IndexMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub privileged: bool,
     #[cfg_attr(
@@ -2043,7 +2043,7 @@ pub struct CertificateResult {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub keyring: Option<HashMap<String, String>>,
+    pub keyring: Option<IndexMap<String, String>>,
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "Option::is_none", default)
@@ -2180,7 +2180,7 @@ pub struct DiscoverByIdentityKeyArgs {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DiscoverByAttributesArgs {
-    pub attributes: HashMap<String, String>,
+    pub attributes: IndexMap<String, String>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")

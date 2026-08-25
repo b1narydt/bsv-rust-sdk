@@ -1,0 +1,16 @@
+{
+  "json": {
+    "spends": {
+      "2": {
+        "unlockingScript": "52",
+        "sequenceNumber": 2
+      },
+      "10": {
+        "unlockingScript": "51",
+        "sequenceNumber": 10
+      }
+    },
+    "reference": "dGVzdA=="
+  },
+  "wire": "020002020152020a01510a047465737400"
+}

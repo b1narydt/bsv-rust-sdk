@@ -1,0 +1,15 @@
+{
+  "json": {
+    "type": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB0ZXN0LXR5cGU=",
+    "certifier": "0294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a1",
+    "acquisitionProtocol": "issuance",
+    "fields": {
+      "zeta": "last",
+      "Alpha": "first",
+      "middle": "center"
+    },
+    "certifierUrl": "https://certifier.example.com",
+    "privileged": false
+  },
+  "wire": "11000000000000000000000000000000000000000000000000746573742d747970650294c479f762f6baa97fbcd4393564c1d7bd8336ebd15928135bbcf575cd1a71a103047a657461046c61737405416c706861056669727374066d6964646c650663656e74657200ff021d68747470733a2f2f6365727469666965722e6578616d706c652e636f6d"
+}

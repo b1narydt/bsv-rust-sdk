@@ -1,7 +1,7 @@
 //! Test vector validation for wallet wire protocol serializers.
 //!
-//! Reads 62 JSON test vectors from testdata/wallet/ and validates that
-//! Rust serializers produce byte-identical output to the Go SDK.
+//! Validates the original 62 Go-generated vectors plus focused vectors emitted
+//! by the normative TypeScript SDK for observable JavaScript key ordering.
 
 use std::collections::HashMap;
 use std::fs;
@@ -169,6 +169,50 @@ macro_rules! test_result_vector {
     };
 }
 
+/// TS-generated order vectors additionally prove decode -> encode preserves the
+/// original frame, so an ordered map cannot be discarded on the read side.
+macro_rules! test_ordered_args_vector {
+    ($name:ident, $filename:expr, $call_byte:expr, $serialize_fn:expr, $deserialize_fn:expr, $build_obj:expr) => {
+        #[test]
+        fn $name() {
+            let (_, wire) = read_vector($filename);
+            let (call, params) = strip_request_frame(&wire);
+            assert_eq!(call, $call_byte, "Call byte mismatch");
+
+            let obj = $build_obj;
+            let framed =
+                wrap_request_frame($call_byte, &$serialize_fn(&obj).expect("Serialize failed"));
+            assert_eq!(framed, wire, "Serialized wire mismatch for {}", $filename);
+
+            let decoded = $deserialize_fn(&params).expect("Deserialize failed");
+            let reframed = wrap_request_frame(
+                $call_byte,
+                &$serialize_fn(&decoded).expect("Re-serialize failed"),
+            );
+            assert_eq!(reframed, wire, "Round-trip wire mismatch for {}", $filename);
+        }
+    };
+}
+
+macro_rules! test_ordered_result_vector {
+    ($name:ident, $filename:expr, $serialize_fn:expr, $deserialize_fn:expr, $build_obj:expr) => {
+        #[test]
+        fn $name() {
+            let (_, wire) = read_vector($filename);
+            let params = strip_result_frame(&wire);
+
+            let obj = $build_obj;
+            let framed = wrap_result_frame(&$serialize_fn(&obj).expect("Serialize failed"));
+            assert_eq!(framed, wire, "Serialized wire mismatch for {}", $filename);
+
+            let decoded = $deserialize_fn(&params).expect("Deserialize failed");
+            let reframed =
+                wrap_result_frame(&$serialize_fn(&decoded).expect("Re-serialize failed"));
+            assert_eq!(reframed, wire, "Round-trip wire mismatch for {}", $filename);
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Common test data
 // ---------------------------------------------------------------------------
@@ -227,6 +271,36 @@ test_args_vector!(
             SignActionSpend {
                 unlocking_script: hex_decode(LOCK_SCRIPT_HEX).unwrap(),
                 sequence_number: None,
+            },
+        );
+        SignActionArgs {
+            reference: base64_std_decode("dGVzdA=="),
+            spends,
+            options: None,
+        }
+    }
+);
+
+test_args_vector!(
+    test_sign_action_numeric_spend_order_args,
+    "signAction-numeric-spend-order-args",
+    CALL_SIGN_ACTION,
+    sign_action::serialize_sign_action_args,
+    sign_action::deserialize_sign_action_args,
+    {
+        let mut spends = HashMap::new();
+        spends.insert(
+            10,
+            SignActionSpend {
+                unlocking_script: vec![0x51],
+                sequence_number: Some(10),
+            },
+        );
+        spends.insert(
+            2,
+            SignActionSpend {
+                unlocking_script: vec![0x52],
+                sequence_number: Some(2),
             },
         );
         SignActionArgs {
@@ -830,10 +904,10 @@ test_args_vector!(
     acquire_certificate::serialize_acquire_certificate_args,
     acquire_certificate::deserialize_acquire_certificate_args,
     {
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), "Alice".to_string());
+        let mut fields = IndexMap::new();
         fields.insert("email".to_string(), "alice@example.com".to_string());
-        let mut keyring = HashMap::new();
+        fields.insert("name".to_string(), "Alice".to_string());
+        let mut keyring = IndexMap::new();
         keyring.insert("field1".to_string(), "key1".to_string());
         keyring.insert("field2".to_string(), "key2".to_string());
         AcquireCertificateArgs {
@@ -860,9 +934,9 @@ test_args_vector!(
     acquire_certificate::serialize_acquire_certificate_args,
     acquire_certificate::deserialize_acquire_certificate_args,
     {
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), "Alice".to_string());
+        let mut fields = IndexMap::new();
         fields.insert("email".to_string(), "alice@example.com".to_string());
+        fields.insert("name".to_string(), "Alice".to_string());
         AcquireCertificateArgs {
             cert_type: type_from_base64(TYPE_B64),
             certifier: pk_from_hex(COUNTERPARTY_HEX),
@@ -880,6 +954,65 @@ test_args_vector!(
     }
 );
 
+test_ordered_args_vector!(
+    test_acquire_certificate_fields_wire_order_args,
+    "acquireCertificate-fields-wire-order-args",
+    CALL_ACQUIRE_CERTIFICATE,
+    acquire_certificate::serialize_acquire_certificate_args,
+    acquire_certificate::deserialize_acquire_certificate_args,
+    {
+        let fields = IndexMap::from([
+            ("zeta".to_string(), "last".to_string()),
+            ("Alpha".to_string(), "first".to_string()),
+            ("middle".to_string(), "center".to_string()),
+        ]);
+        AcquireCertificateArgs {
+            cert_type: type_from_base64(TYPE_B64),
+            certifier: pk_from_hex(COUNTERPARTY_HEX),
+            acquisition_protocol: AcquisitionProtocol::Issuance,
+            fields,
+            serial_number: None,
+            revocation_outpoint: None,
+            signature: None,
+            certifier_url: Some("https://certifier.example.com".to_string()),
+            keyring_revealer: None,
+            keyring_for_subject: None,
+            privileged: false,
+            privileged_reason: None,
+        }
+    }
+);
+
+test_ordered_args_vector!(
+    test_acquire_certificate_keyring_wire_order_args,
+    "acquireCertificate-keyring-wire-order-args",
+    CALL_ACQUIRE_CERTIFICATE,
+    acquire_certificate::serialize_acquire_certificate_args,
+    acquire_certificate::deserialize_acquire_certificate_args,
+    {
+        let fields = IndexMap::from([("only".to_string(), "field".to_string())]);
+        let keyring = IndexMap::from([
+            ("zeta".to_string(), "eg==".to_string()),
+            ("Alpha".to_string(), "YQ==".to_string()),
+            ("middle".to_string(), "bQ==".to_string()),
+        ]);
+        AcquireCertificateArgs {
+            cert_type: type_from_base64(TYPE_B64),
+            certifier: pk_from_hex(COUNTERPARTY_HEX),
+            acquisition_protocol: AcquisitionProtocol::Direct,
+            fields,
+            serial_number: Some(serial_from_base64(SERIAL_B64)),
+            revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+            signature: Some(sig_from_hex(SIG_HEX)),
+            certifier_url: None,
+            keyring_revealer: Some(KeyringRevealer::Certifier),
+            keyring_for_subject: Some(keyring),
+            privileged: false,
+            privileged_reason: None,
+        }
+    }
+);
+
 // AcquireCertificate result is a Certificate
 test_result_vector!(
     test_acquire_certificate_simple_result,
@@ -887,7 +1020,7 @@ test_result_vector!(
     certificate_ser::serialize_certificate,
     certificate_ser::deserialize_certificate,
     {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "Alice".to_string());
         fields.insert("email".to_string(), "alice@example.com".to_string());
         Certificate {
@@ -954,6 +1087,36 @@ test_result_vector!(
     }
 );
 
+test_ordered_result_vector!(
+    test_list_certificates_keyring_wire_order_result,
+    "listCertificates-keyring-wire-order-result",
+    list_certificates::serialize_list_certificates_result,
+    list_certificates::deserialize_list_certificates_result,
+    {
+        let keyring = IndexMap::from([
+            ("zeta".to_string(), "eg==".to_string()),
+            ("Alpha".to_string(), "YQ==".to_string()),
+            ("middle".to_string(), "bQ==".to_string()),
+        ]);
+        ListCertificatesResult {
+            total_certificates: 1,
+            certificates: vec![CertificateResult {
+                certificate: Certificate {
+                    cert_type: type_from_base64(TYPE_B64),
+                    serial_number: serial_from_base64(SERIAL_B64),
+                    subject: pk_from_hex(PUB_KEY_HEX),
+                    certifier: pk_from_hex(COUNTERPARTY_HEX),
+                    revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+                    fields: None,
+                    signature: Some(sig_from_hex(SIG_HEX)),
+                },
+                keyring: Some(keyring),
+                verifier: None,
+            }],
+        }
+    }
+);
+
 #[test]
 fn test_list_certificates_legacy_verifier_bytes_decode_like_typescript() {
     let (_, wire) = read_vector("listCertificates-full-result");
@@ -978,7 +1141,7 @@ test_args_vector!(
     prove_certificate::serialize_prove_certificate_args,
     prove_certificate::deserialize_prove_certificate_args,
     {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("email".to_string(), "alice@example.com".to_string());
         fields.insert("name".to_string(), "Alice".to_string());
         ProveCertificateArgs {
@@ -996,6 +1159,36 @@ test_args_vector!(
             verifier: pk_from_hex(VERIFIER_HEX),
             privileged: BooleanDefaultFalse(Some(false)),
             privileged_reason: Some("prove-reason".to_string()),
+        }
+    }
+);
+
+test_ordered_args_vector!(
+    test_prove_certificate_fields_wire_order_args,
+    "proveCertificate-fields-wire-order-args",
+    CALL_PROVE_CERTIFICATE,
+    prove_certificate::serialize_prove_certificate_args,
+    prove_certificate::deserialize_prove_certificate_args,
+    {
+        let fields = IndexMap::from([
+            ("zeta".to_string(), "last".to_string()),
+            ("Alpha".to_string(), "first".to_string()),
+            ("middle".to_string(), "center".to_string()),
+        ]);
+        ProveCertificateArgs {
+            certificate: PartialCertificate {
+                cert_type: Some(type_from_base64(TYPE_B64)),
+                serial_number: Some(serial_from_base64(SERIAL_B64)),
+                subject: Some(pk_from_hex(PUB_KEY_HEX)),
+                certifier: Some(pk_from_hex(COUNTERPARTY_HEX)),
+                revocation_outpoint: Some(OUTPOINT_STR.to_string()),
+                fields: Some(fields),
+                signature: Some(sig_from_hex(SIG_HEX)),
+            },
+            fields_to_reveal: vec!["zeta".to_string()],
+            verifier: pk_from_hex(VERIFIER_HEX),
+            privileged: BooleanDefaultFalse(Some(false)),
+            privileged_reason: None,
         }
     }
 );
@@ -1111,7 +1304,7 @@ test_args_vector!(
     discover_by_attributes::serialize_discover_by_attributes_args,
     discover_by_attributes::deserialize_discover_by_attributes_args,
     {
-        let mut attributes = HashMap::new();
+        let mut attributes = IndexMap::new();
         attributes.insert("email".to_string(), "alice@example.com".to_string());
         attributes.insert("role".to_string(), "admin".to_string());
         DiscoverByAttributesArgs {
@@ -1120,6 +1313,24 @@ test_args_vector!(
             offset: Some(0),
             seek_permission: Some(false),
         }
+    }
+);
+
+test_ordered_args_vector!(
+    test_discover_by_attributes_wire_order_args,
+    "discoverByAttributes-wire-order-args",
+    CALL_DISCOVER_BY_ATTRIBUTES,
+    discover_by_attributes::serialize_discover_by_attributes_args,
+    discover_by_attributes::deserialize_discover_by_attributes_args,
+    DiscoverByAttributesArgs {
+        attributes: IndexMap::from([
+            ("zeta".to_string(), "last".to_string()),
+            ("Alpha".to_string(), "first".to_string()),
+            ("middle".to_string(), "center".to_string()),
+        ]),
+        limit: Some(5),
+        offset: Some(0),
+        seek_permission: Some(false),
     }
 );
 
@@ -1377,19 +1588,13 @@ test_result_vector!(
 // Regression: keyring Some(empty) binary round-trip (H1)
 // ---------------------------------------------------------------------------
 //
-// `CertificateResult.keyring` is `Option<HashMap<String, String>>`, so three
-// states must survive the wire format:
+// TypeScript deliberately has only two wire states for keyrings:
 //   None         -> absent
-//   Some(empty)  -> present but empty
+//   Some(empty)  -> absent (the distinction from None is lost)
 //   Some(map)    -> present with entries
-//
-// Before the fix, the serializer folded `Some(empty)` into the same flag-byte
-// as `None` (`write_byte(0)`), silently stripping the "present but empty"
-// marker on binary round-trip. This test exercises all three states and would
-// fail on the `Some(empty)` case before the fix.
 #[test]
 fn test_list_certificates_keyring_three_state_roundtrip() {
-    fn make_cert(keyring: Option<HashMap<String, String>>) -> ListCertificatesResult {
+    fn make_cert(keyring: Option<IndexMap<String, String>>) -> ListCertificatesResult {
         ListCertificatesResult {
             total_certificates: 1,
             certificates: vec![CertificateResult {
@@ -1417,28 +1622,21 @@ fn test_list_certificates_keyring_three_state_roundtrip() {
         "None keyring must round-trip as None"
     );
 
-    // (B) Some(empty) -> flag byte 1, varint 0, deserializes to Some(empty).
-    // This is the regression case: the pre-fix serializer wrote flag=0 here,
-    // causing deserialize to return None and silently collapsing the type.
-    let empty_input = make_cert(Some(HashMap::new()));
+    // (B) Some(empty) -> flag byte 0 and deserializes to None, matching TS.
+    let empty_input = make_cert(Some(IndexMap::new()));
     let empty_bytes = list_certificates::serialize_list_certificates_result(&empty_input).unwrap();
     let empty_out = list_certificates::deserialize_list_certificates_result(&empty_bytes).unwrap();
-    let empty_roundtripped = empty_out.certificates[0]
-        .keyring
-        .as_ref()
-        .expect("Some(empty) keyring must round-trip as Some(_), not None");
     assert!(
-        empty_roundtripped.is_empty(),
-        "round-tripped empty keyring must still be empty"
+        empty_out.certificates[0].keyring.is_none(),
+        "TS folds Some(empty) into the absent wire state"
     );
-    // Binary distinction: None vs Some(empty) must produce different bytes.
-    assert_ne!(
+    assert_eq!(
         none_bytes, empty_bytes,
-        "None and Some(empty) keyring must serialize to distinct byte sequences"
+        "None and Some(empty) keyring must serialize identically"
     );
 
     // (C) Some(populated) -> flag byte 1, full map, round-trips intact.
-    let mut populated = HashMap::new();
+    let mut populated = IndexMap::new();
     populated.insert("field1".to_string(), "a2V5MQ==".to_string());
     populated.insert("field2".to_string(), "a2V5Mg==".to_string());
     let populated_input = make_cert(Some(populated.clone()));

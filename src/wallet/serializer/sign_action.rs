@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 pub fn serialize_sign_action_args(args: &SignActionArgs) -> Result<Vec<u8>, WalletError> {
     serialize_to_vec(|w| {
-        // Spends map (sorted by key)
+        // JavaScript OrdinaryOwnPropertyKeys enumerates integer-index object
+        // keys in ascending numeric order, regardless of insertion order.
         write_varint(w, args.spends.len() as u64)?;
         let mut keys: Vec<u32> = args.spends.keys().copied().collect();
         keys.sort();

@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 /// Unique identifier for a remittance thread.
 pub type ThreadId = String;
 
@@ -274,11 +276,11 @@ pub struct RemittanceCertificate {
     pub cert_type: String,
     pub certifier: String,
     pub subject: String,
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     pub signature: String,
     pub serial_number: String,
     pub revocation_outpoint: String,
-    pub keyring_for_verifier: HashMap<String, String>,
+    pub keyring_for_verifier: IndexMap<String, String>,
 }
 
 /// A response containing identity certificates.
