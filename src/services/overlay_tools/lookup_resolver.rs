@@ -4,7 +4,9 @@
 //! given lookup service via SLAP tracker queries, caches results with TTL,
 //! and tracks host reputation for intelligent ranking.
 
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -20,6 +22,13 @@ use crate::services::ServicesError;
 const MAX_TRACKER_WAIT_TIME_MS: u64 = 5000;
 /// Default request timeout (ms).
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
+/// Maximum number of overlay hosts queried at once.
+///
+/// Lookup is network-bound, so a fixed socket/request cap keeps fan-out and
+/// remote load predictable across machines; CPU parallelism is not relevant.
+/// Eight lets a broad federation finish in one wave without an excessive
+/// per-query connection burst.
+const MAX_CONCURRENT_HOST_QUERIES: usize = 8;
 
 /// Cached host list entry with expiration.
 #[derive(Debug, Clone)]
@@ -133,43 +142,11 @@ impl LookupResolver {
             )));
         }
 
-        // Query hosts concurrently and collect results.
-        let mut outputs_map: HashMap<String, LookupOutputEntry> = HashMap::new();
-        let mut any_success = false;
-
-        for host in &available_hosts {
-            match self
-                .lookup_host_with_tracking(host, question, timeout)
-                .await
-            {
-                Ok(LookupAnswer::OutputList { outputs }) => {
-                    any_success = true;
-                    for output in outputs {
-                        let key = format!("{}.{}", hex_encode(&output.beef), output.output_index);
-                        outputs_map.entry(key).or_insert(output);
-                    }
-                }
-                Ok(LookupAnswer::FreeformResult { result }) => {
-                    // Return freeform immediately.
-                    return Ok(LookupAnswer::FreeformResult { result });
-                }
-                Err(_) => {
-                    // Host failed; tracked by lookup_host_with_tracking.
-                    continue;
-                }
-            }
-        }
-
-        if !any_success && outputs_map.is_empty() {
-            return Err(ServicesError::Overlay(format!(
-                "All hosts failed for lookup service: {}",
-                question.service
-            )));
-        }
-
-        Ok(LookupAnswer::OutputList {
-            outputs: outputs_map.into_values().collect(),
-        })
+        let host_queries: Vec<_> = available_hosts
+            .iter()
+            .map(|host| self.lookup_host_with_tracking(host, question, timeout))
+            .collect();
+        collect_lookup_answers(&question.service, host_queries).await
     }
 
     /// Resolve competent hosts for a service.
@@ -429,6 +406,59 @@ impl LookupResolver {
     }
 }
 
+/// Collect host answers while preserving best-effort aggregation semantics.
+async fn collect_lookup_answers<I, F>(
+    service: &str,
+    host_queries: I,
+) -> Result<LookupAnswer, ServicesError>
+where
+    I: IntoIterator<Item = F>,
+    F: Future<Output = Result<LookupAnswer, ServicesError>>,
+{
+    let mut outputs_map: HashMap<String, LookupOutputEntry> = HashMap::new();
+    let mut any_success = false;
+    let mut remaining = host_queries.into_iter();
+    let mut in_flight = FuturesUnordered::new();
+
+    for _ in 0..MAX_CONCURRENT_HOST_QUERIES {
+        let Some(host_query) = remaining.next() else {
+            break;
+        };
+        in_flight.push(host_query);
+    }
+
+    while let Some(answer) = in_flight.next().await {
+        match answer {
+            Ok(LookupAnswer::OutputList { outputs }) => {
+                any_success = true;
+                for output in outputs {
+                    let key = format!("{}.{}", hex_encode(&output.beef), output.output_index);
+                    outputs_map.entry(key).or_insert(output);
+                }
+            }
+            Ok(LookupAnswer::FreeformResult { result }) => {
+                // Return freeform immediately.
+                return Ok(LookupAnswer::FreeformResult { result });
+            }
+            Err(_) => {}
+        }
+
+        if let Some(host_query) = remaining.next() {
+            in_flight.push(host_query);
+        }
+    }
+
+    if !any_success && outputs_map.is_empty() {
+        return Err(ServicesError::Overlay(format!(
+            "All hosts failed for lookup service: {service}"
+        )));
+    }
+
+    Ok(LookupAnswer::OutputList {
+        outputs: outputs_map.into_values().collect(),
+    })
+}
+
 /// Read a varint from a byte slice at the given position.
 fn read_varint(data: &[u8], pos: &mut usize) -> Result<usize, ServicesError> {
     if *pos >= data.len() {
@@ -500,6 +530,78 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const TEST_SERVICE: &str = "ls_concurrent_test";
+    const HOST_DELAY: Duration = Duration::from_millis(100);
+    type SyntheticQuery =
+        Pin<Box<dyn Future<Output = Result<LookupAnswer, ServicesError>> + Send + 'static>>;
+
+    #[derive(Clone, Default)]
+    struct InFlightProbe {
+        current: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl InFlightProbe {
+        fn enter(&self) -> InFlightGuard {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(current, Ordering::SeqCst);
+            InFlightGuard {
+                current: Arc::clone(&self.current),
+            }
+        }
+    }
+
+    struct InFlightGuard {
+        current: Arc<AtomicUsize>,
+    }
+
+    impl Drop for InFlightGuard {
+        fn drop(&mut self) {
+            self.current.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn output(beef: &[u8], output_index: u32) -> LookupOutputEntry {
+        LookupOutputEntry {
+            beef: beef.to_vec(),
+            output_index,
+            context: None,
+        }
+    }
+
+    fn output_answer(outputs: Vec<LookupOutputEntry>) -> Result<LookupAnswer, ServicesError> {
+        Ok(LookupAnswer::OutputList { outputs })
+    }
+
+    fn synthetic_queries(
+        results: Vec<Result<LookupAnswer, ServicesError>>,
+        probe: &InFlightProbe,
+    ) -> Vec<SyntheticQuery> {
+        results
+            .into_iter()
+            .map(|result| {
+                let probe = probe.clone();
+                Box::pin(async move {
+                    let _guard = probe.enter();
+                    tokio::time::sleep(HOST_DELAY).await;
+                    result
+                }) as SyntheticQuery
+            })
+            .collect()
+    }
+
+    fn expect_outputs(answer: LookupAnswer) -> Vec<LookupOutputEntry> {
+        match answer {
+            LookupAnswer::OutputList { outputs } => outputs,
+            LookupAnswer::FreeformResult { .. } => panic!("expected output-list"),
+        }
+    }
 
     #[test]
     fn test_read_varint_single_byte() {
@@ -556,5 +658,114 @@ mod tests {
             let hosts = resolver.resolve_hosts(service).await.unwrap();
             assert_eq!(hosts, trackers, "{service} must resolve to the trackers");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overlay_host_queries_complete_in_one_concurrent_wave() {
+        let probe = InFlightProbe::default();
+        let queries = synthetic_queries(
+            (0..3)
+                .map(|index| output_answer(vec![output(&[index], 0)]))
+                .collect(),
+            &probe,
+        );
+        let started = tokio::time::Instant::now();
+
+        let outputs = expect_outputs(collect_lookup_answers(TEST_SERVICE, queries).await.unwrap());
+
+        assert_eq!(started.elapsed(), HOST_DELAY);
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overlay_host_query_fanout_never_exceeds_the_cap() {
+        let host_count = MAX_CONCURRENT_HOST_QUERIES + 2;
+        let probe = InFlightProbe::default();
+        let queries = synthetic_queries(
+            (0..host_count)
+                .map(|index| output_answer(vec![output(&[index as u8], 0)]))
+                .collect(),
+            &probe,
+        );
+        let started = tokio::time::Instant::now();
+
+        let outputs = expect_outputs(collect_lookup_answers(TEST_SERVICE, queries).await.unwrap());
+
+        let peak = probe.peak.load(Ordering::SeqCst);
+        assert!(peak <= MAX_CONCURRENT_HOST_QUERIES);
+        assert_eq!(peak, MAX_CONCURRENT_HOST_QUERIES);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), host_count);
+        assert_eq!(outputs.len(), host_count);
+        assert_eq!(started.elapsed(), HOST_DELAY * 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_host_failure_keeps_successful_outputs() {
+        let host_count = MAX_CONCURRENT_HOST_QUERIES + 2;
+        let probe = InFlightProbe::default();
+        let mut results: Vec<_> = (0..MAX_CONCURRENT_HOST_QUERIES)
+            .map(|_| Err(ServicesError::Http("synthetic failure".to_string())))
+            .collect();
+        results.extend([
+            output_answer(vec![output(&[1], 0)]),
+            output_answer(vec![output(&[2], 1)]),
+        ]);
+        let queries = synthetic_queries(results, &probe);
+        let started = tokio::time::Instant::now();
+
+        let outputs = expect_outputs(collect_lookup_answers(TEST_SERVICE, queries).await.unwrap());
+
+        assert_eq!(started.elapsed(), HOST_DELAY * 2);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), host_count);
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs.iter().any(|entry| entry.beef == [1]));
+        assert!(outputs.iter().any(|entry| entry.beef == [2]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_host_failure_preserves_existing_error() {
+        let host_count = MAX_CONCURRENT_HOST_QUERIES + 2;
+        let probe = InFlightProbe::default();
+        let queries = synthetic_queries(
+            (0..host_count)
+                .map(|_| Err(ServicesError::Http("synthetic failure".to_string())))
+                .collect(),
+            &probe,
+        );
+        let started = tokio::time::Instant::now();
+
+        let error = collect_lookup_answers(TEST_SERVICE, queries)
+            .await
+            .unwrap_err();
+
+        assert_eq!(started.elapsed(), HOST_DELAY * 2);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), host_count);
+        assert!(matches!(
+            error,
+            ServicesError::Overlay(message)
+                if message == format!("All hosts failed for lookup service: {TEST_SERVICE}")
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn duplicate_outputs_from_concurrent_hosts_are_merged_once() {
+        let duplicate = output(&[0xaa, 0xbb], 7);
+        let probe = InFlightProbe::default();
+        let queries = synthetic_queries(
+            vec![
+                output_answer(vec![duplicate.clone()]),
+                output_answer(vec![duplicate]),
+            ],
+            &probe,
+        );
+        let started = tokio::time::Instant::now();
+
+        let outputs = expect_outputs(collect_lookup_answers(TEST_SERVICE, queries).await.unwrap());
+
+        assert_eq!(started.elapsed(), HOST_DELAY);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].beef, [0xaa, 0xbb]);
+        assert_eq!(outputs[0].output_index, 7);
     }
 }
