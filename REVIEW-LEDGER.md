@@ -11,6 +11,24 @@ Status key: **FIXED** (landed + verified) · **IN ROUND** (in the current fix ro
 
 ---
 
+## Per-session low-severity follow-ups at `9d758f6`
+
+| ID | Finding | Status |
+|---|---|---|
+| O1 / O2 | Reaped workers silently discarded buffered general frames, including a narrow exit window where `try_send` could accept a frame before receiver drop | **FIXED** — a missing-session worker closes its receiver before exit and reports every already-accepted queued frame through the existing contextual background-error channel. The bounded two-frame regression timed out waiting for the second error before the fix and passed afterward with both request IDs, `General` type, and `SessionNotFound` errors |
+| O3 | Queue routing falls back from session nonce to identity key | **CONFIRMED NORMATIVE / RETAINED** — `@bsv/sdk` 2.4.1 `SessionManager.getSession` accepts both identifiers; no routing fallback was removed |
+| O4 | Stored identities were canonical but public lookup arguments and general-message delivery were not | **FIXED** — exact nonce lookup remains first, identity fallback and `sessions_for_identity` canonicalize parseable public keys, and `on_general_message` delivers canonical DER hex. The uppercase round-trip regression returned zero sessions before the fix and passed both lookup APIs plus canonical delivery afterward |
+| O5 | Session-cap disclosure emphasizes abandoned sessions more than live-session eviction | **NO CHANGE** — documentation already discloses expiry/LRU re-handshake and the review found the global LRU axis correct; this code-focused follow-up did not add redundant prose |
+| O6 | No regression proved that LRU eviction tears down peer-owned worker/waiter state | **FIXED** — the cap test now seeds the deterministic LRU nonce with a parked worker, handshake waiter, and certificate waiter, then proves removal, waiter wakeup, and task exit. Removing the incoming-handshake `.extend` made the test fail on the retained handshake waiter; restoring it passed |
+| O7 | `uses_general_worker` test pins the predicate rather than exhaustively matching the enum at compile time | **NO CHANGE** — informational only; behavioral routing tests already pin the call site and future message types default to the safer control lane |
+
+Verification: `cargo fmt --all -- --check` and
+`cargo clippy --all-targets --all-features -- -D warnings` passed. Two consecutive literal
+`cargo test --all-features` runs each passed 1,510 tests with 0 failures and 3 ignored tests; the 12
+real-TypeScript auth interop tests passed in both runs. No cross-language vector or fixture changed.
+
+---
+
 ## Fifth adversarial review of `2127ee1`
 
 | ID | Finding | Status |

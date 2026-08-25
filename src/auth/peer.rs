@@ -652,6 +652,15 @@ impl<W: WalletInterface + 'static> Peer<W> {
                     .await
                     .has_session(&session_key);
                 if !session_exists {
+                    receiver.close();
+                    while let Ok(discarded) = receiver.try_recv() {
+                        peer_handle.report_background_dispatch_error(
+                            &discarded,
+                            AuthError::SessionNotFound(format!(
+                                "Session not found for nonce: {session_key}"
+                            )),
+                        );
+                    }
                     break;
                 }
             }
@@ -1136,20 +1145,26 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// session nonce), if one exists. Takes a brief read lock and clones the
     /// session out before returning — never holds the lock across an await.
     pub async fn session_by_identifier(&self, identifier: &str) -> Option<PeerSession> {
-        self.session_manager
-            .read()
-            .await
-            .get_session_by_identifier(identifier)
+        let canonical_identity = parse_public_key(identifier)
+            .map(|key| key.to_der_hex())
+            .unwrap_or_else(|_| identifier.to_string());
+        let manager = self.session_manager.read().await;
+        manager
+            .get_session(identifier)
+            .or_else(|| manager.get_session_by_identifier(&canonical_identity))
             .cloned()
     }
 
     /// Clone all sessions tracked for a given peer identity key. Takes a brief
     /// read lock and clones the sessions out before returning.
     pub async fn sessions_for_identity(&self, identity_key: &str) -> Vec<PeerSession> {
+        let canonical_identity = parse_public_key(identity_key)
+            .map(|key| key.to_der_hex())
+            .unwrap_or_else(|_| identity_key.to_string());
         self.session_manager
             .read()
             .await
-            .get_sessions_for_identity(identity_key)
+            .get_sessions_for_identity(&canonical_identity)
             .into_iter()
             .cloned()
             .collect()
@@ -2411,7 +2426,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
     }
 
     fn deliver_general_message(&self, msg: AuthMessage) -> Result<(), AuthError> {
-        let identity_key = msg.identity_key;
+        let identity_key = parse_public_key(&msg.identity_key)?.to_der_hex();
         let payload = msg.payload.unwrap_or_default();
 
         // Registered Layer-1 divergence: this bounded observer channel uses
@@ -2982,13 +2997,18 @@ mod tests {
             receiver.sessions_for_identity(&sender_identity).await.len(),
             1
         );
-        assert!(
+        assert_eq!(
             receiver
                 .sessions_for_identity(&uppercase_sender_identity)
                 .await
-                .is_empty(),
-            "the identity index contains only the canonical spelling"
+                .len(),
+            1,
+            "identity lookup canonicalizes its argument"
         );
+        assert!(receiver
+            .session_by_identifier(&uppercase_sender_identity)
+            .await
+            .is_some());
 
         let general = signed_general_message(
             &sender_wallet,
@@ -2999,10 +3019,9 @@ mod tests {
         )
         .await;
         bounded(sender_transport.send(general)).await.unwrap();
-        assert_eq!(
-            bounded(messages.recv()).await.unwrap().1,
-            b"uppercase general identity"
-        );
+        let (delivered_identity, payload) = bounded(messages.recv()).await.unwrap();
+        assert_eq!(delivered_identity, sender_identity);
+        assert_eq!(payload, b"uppercase general identity");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3500,7 +3519,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_session_cap_evicts_abandoned_lru_and_admits_new_handshake() {
+    async fn test_session_cap_evicts_lru_and_cleans_peer_owned_state() {
         assert_eq!(MAX_SESSIONS, 1024);
         let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
         let requester_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
@@ -3530,6 +3549,41 @@ mod tests {
             assert_eq!(sessions.session_count(), MAX_SESSIONS);
         }
 
+        let evicted_nonce = "abandoned-0000".to_string();
+        let (handshake_tx, _handshake_rx) = oneshot::channel();
+        receiver.handshake_waiters.lock().unwrap().insert(
+            evicted_nonce.clone(),
+            HandshakeWaiter {
+                id: 7,
+                sender: handshake_tx,
+            },
+        );
+        let (validation_tx, validation_rx) = watch::channel(false);
+        receiver
+            .certificate_validation_waiters
+            .lock()
+            .unwrap()
+            .insert(
+                evicted_nonce.clone(),
+                Arc::new(CertificateWaiterSignal {
+                    sender: validation_tx,
+                    active_waiters: AtomicUsize::new(0),
+                }),
+            );
+        let (worker_tx, worker_rx) = mpsc::channel(MAX_QUEUED_GENERAL_PER_SESSION);
+        let worker_id = receiver
+            .general_dispatch_worker_id
+            .fetch_add(1, Ordering::Relaxed);
+        receiver.general_dispatch_workers.lock().unwrap().insert(
+            evicted_nonce.clone(),
+            GeneralDispatchWorker {
+                id: worker_id,
+                sender: worker_tx,
+            },
+        );
+        receiver.spawn_general_worker(evicted_nonce.clone(), worker_id, worker_rx);
+        assert_eq!(receiver.active_general_workers.load(Ordering::SeqCst), 1);
+
         let request = AuthMessage {
             version: AUTH_VERSION.to_string(),
             message_type: MessageType::InitialRequest,
@@ -3558,7 +3612,93 @@ mod tests {
         assert!(sessions.get_session("abandoned-0000").is_none());
         assert!(sessions.get_session(&admitted_nonce).is_some());
         drop(sessions);
+        assert!(!receiver
+            .handshake_waiters
+            .lock()
+            .unwrap()
+            .contains_key(&evicted_nonce));
+        assert!(!receiver
+            .certificate_validation_waiters
+            .lock()
+            .unwrap()
+            .contains_key(&evicted_nonce));
+        assert!(*validation_rx.borrow(), "eviction must wake active waiters");
+        assert!(!receiver
+            .general_dispatch_workers
+            .lock()
+            .unwrap()
+            .contains_key(&evicted_nonce));
+        bounded(async {
+            while receiver.active_general_workers.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         drop(requester_transport);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_reaped_general_worker_reports_every_discarded_queued_frame() {
+        let receiver_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let sender_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let sender_identity = wallet_identity(&sender_wallet).await;
+        let (_sender_transport, receiver_transport) = create_mock_transport_pair();
+        let receiver = Peer::new(receiver_wallet, receiver_transport);
+        let mut errors = receiver.on_error().expect("background error receiver");
+        let reaped_nonce = create_nonce(&receiver.wallet).await.unwrap();
+        let queued_message = |request_id_byte| AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::General,
+            identity_key: sender_identity.clone(),
+            nonce: Some(format!("queued-{request_id_byte}")),
+            your_nonce: Some(reaped_nonce.clone()),
+            initial_nonce: None,
+            certificates: None,
+            requested_certificates: None,
+            payload: Some(vec![request_id_byte; 32]),
+            signature: Some(Vec::new()),
+        };
+
+        let (worker_tx, worker_rx) = mpsc::channel(MAX_QUEUED_GENERAL_PER_SESSION);
+        worker_tx.try_send(queued_message(1)).unwrap();
+        worker_tx.try_send(queued_message(2)).unwrap();
+        let worker_id = receiver
+            .general_dispatch_worker_id
+            .fetch_add(1, Ordering::Relaxed);
+        receiver.general_dispatch_workers.lock().unwrap().insert(
+            reaped_nonce.clone(),
+            GeneralDispatchWorker {
+                id: worker_id,
+                sender: worker_tx,
+            },
+        );
+        bounded(receiver.cleanup_reaped_sessions(std::slice::from_ref(&reaped_nonce))).await;
+        receiver.spawn_general_worker(reaped_nonce, worker_id, worker_rx);
+
+        let observed = bounded(async {
+            let first = errors.recv().await.expect("first frame error");
+            let second = errors.recv().await.expect("discarded queued frame error");
+            [first, second]
+        })
+        .await;
+        let mut request_ids = observed
+            .iter()
+            .map(|error| error.request_id.expect("request ID context"))
+            .collect::<Vec<_>>();
+        request_ids.sort();
+        assert_eq!(request_ids, vec![[1; 32], [2; 32]]);
+        assert!(observed
+            .iter()
+            .all(|error| error.message_type == Some(MessageType::General)));
+        assert!(observed
+            .iter()
+            .all(|error| matches!(&error.error, AuthError::SessionNotFound(_))));
+        bounded(async {
+            while receiver.active_general_workers.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
