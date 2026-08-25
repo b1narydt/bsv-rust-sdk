@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`LookupResolver` now queries overlay hosts concurrently with a fixed
+  eight-request window.** Host failures remain best-effort, successful output
+  lists are merged and deduplicated by `(beef, output_index)`, and total failure
+  retains the existing error. This changes multi-host latency from the sum of
+  host delays to bounded concurrent waves while preventing discovery-controlled
+  host lists from creating unbounded network fan-out. (#48)
 - **Breaking wire correction:** authentication messages now carry
   `VerifiableCertificate` values end-to-end, including the verifier keyring in
   `JSON.stringify(certificates)` parity with @bsv/sdk 2.4.1. Previously Rust
