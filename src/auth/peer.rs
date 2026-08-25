@@ -68,6 +68,10 @@ const MAX_SESSIONS: usize = 1024;
 const MAX_QUEUED_GENERAL_PER_SESSION: usize = 64;
 const MAX_IN_FLIGHT_CONTROL_DISPATCHES: usize = 16;
 const BACKGROUND_ERROR_CHANNEL_CAPACITY: usize = 128;
+/// Capacity of the `on_general_message` observer. Delivery into it is
+/// non-blocking, so a payload past this bound is dropped — and reported, see
+/// `deliver_general_message`.
+const GENERAL_MESSAGE_CHANNEL_CAPACITY: usize = 1024;
 
 struct GeneralDispatchWorker {
     id: u64,
@@ -402,7 +406,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // lower-traffic certificate-request observer), comfortably above one
         // session worker's 64-frame queue while allowing bursts from many
         // independent sessions under the client dispatcher.
-        let (general_tx, general_rx) = mpsc::channel(1024);
+        let (general_tx, general_rx) = mpsc::channel(GENERAL_MESSAGE_CHANNEL_CAPACITY);
         let (cert_req_tx, cert_req_rx) = mpsc::channel(32);
 
         let transport_rx = transport.subscribe();
@@ -1414,6 +1418,27 @@ impl<W: WalletInterface + 'static> Peer<W> {
         self.initiate_handshake(&identity_key).await
     }
 
+    /// The peer identity key this session authenticated, looked up by the
+    /// session nonce we issued (`yourNonce` on inbound frames).
+    ///
+    /// Returns `None` when no live session holds that nonce. Never initiates a
+    /// handshake and never blocks on one — this is a pure read.
+    ///
+    /// Exists so a caller can bind an inbound frame to the identity the
+    /// *session* authenticated rather than to the `identityKey` the frame
+    /// carries. `process_certificate_response` verifies against the frame's own
+    /// `identityKey` (byte-exact TS parity — see the note there), so a receiver
+    /// that wants the stronger session binding needs this to apply it itself,
+    /// without reconstructing a per-frame completion signal.
+    pub async fn session_peer_identity_for(&self, session_nonce: &str) -> Option<String> {
+        self.session_manager
+            .read()
+            .await
+            .get_active_session(session_nonce, now_ms())
+            .map(|session| session.peer_identity_key.clone())
+            .filter(|identity_key| !identity_key.is_empty())
+    }
+
     /// Initiate a BRC-103 handshake with the given peer.
     ///
     /// Creates a nonce, registers a response waiter, sends an initialRequest,
@@ -1983,6 +2008,23 @@ impl<W: WalletInterface + 'static> Peer<W> {
             ))
         })?;
         let key_id = format!("{} {}", msg_nonce, session.session_nonce);
+        // DELIBERATE, VERIFIED TS PARITY — do not "fix" this to
+        // `session.peer_identity_key`.
+        //
+        // TS 2.4.1 is asymmetric here and we mirror it exactly:
+        //   processCertificateRequest  -> counterparty: peerSession.peerIdentityKey
+        //   processCertificateResponse -> counterparty: message.identityKey
+        //
+        // So this path authenticates the signature against the identity the
+        // *frame* claims, not the identity the session established. A response
+        // bearing a different identityKey than the session authenticated will
+        // verify here if it is correctly self-signed. That is upstream
+        // behaviour, reported as ts-stack #494.
+        //
+        // We conform rather than diverge: a silent Rust-only divergence is
+        // worse than a shared upstream bug, because no same-language test can
+        // detect it and cross-SDK exchange would break. Receivers that need the
+        // stronger binding apply it themselves via `session_peer_identity_for`.
         let peer_pubkey = parse_public_key(&msg.identity_key)?;
 
         let verify_result = self
@@ -2432,7 +2474,24 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // Registered Layer-1 divergence: this bounded observer channel uses
         // non-blocking delivery. At capacity a payload can be dropped after its
         // nonce entered the replay set; the charter records this API behavior.
-        let _ = self.general_message_tx.try_send((identity_key, payload));
+        //
+        // A drop is reported, not silent. Returning `Ok(())` with nothing
+        // delivered leaves a caller that awaits this observer with no event and
+        // no error — an unsignalled hang. The frame is still gone (the replay
+        // nonce is committed, so it cannot be resent), but the receiver learns
+        // that it happened.
+        if let Err(mpsc::error::TrySendError::Full((identity_key, _))) =
+            self.general_message_tx.try_send((identity_key, payload))
+        {
+            self.report_background_error_with_context(
+                Some(MessageType::General),
+                None,
+                AuthError::TransportError(format!(
+                    "general message observer at capacity; dropped delivered payload from \
+                     {identity_key}"
+                )),
+            );
+        }
         Ok(())
     }
 
@@ -5939,6 +5998,98 @@ mod tests {
             bounded(messages.recv()).await.unwrap().1,
             b"arrived before initialResponse"
         );
+    }
+
+    /// `session_peer_identity_for` resolves the identity a session
+    /// authenticated, keyed by the session nonce we issued. Receivers use this
+    /// to bind an inbound frame to the session's identity without
+    /// reconstructing a per-frame completion signal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_session_peer_identity_for_resolves_authenticated_identity_by_nonce() {
+        let wallet_a = TestWallet::new(PrivateKey::from_random().unwrap());
+        let wallet_b = TestWallet::new(PrivateKey::from_random().unwrap());
+        let identity_a = wallet_identity(&wallet_a).await;
+        let identity_b = wallet_identity(&wallet_b).await;
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Arc::new(Peer::new(wallet_a, transport_a));
+        let mut server_rx = transport_b.subscribe();
+
+        let handshake = {
+            let peer_a = peer_a.clone();
+            let identity_b = identity_b.clone();
+            tokio::spawn(async move { peer_a.get_authenticated_session(&identity_b).await })
+        };
+        let initial_request = bounded(server_rx.recv()).await.expect("initialRequest");
+        let session_nonce = initial_request.initial_nonce.clone().unwrap();
+        let initial_response = signed_initial_response(
+            &wallet_b,
+            identity_b.clone(),
+            &identity_a,
+            session_nonce.clone(),
+            None,
+        )
+        .await;
+        bounded(transport_b.send(initial_response)).await.unwrap();
+        let session = bounded(handshake).await.unwrap().unwrap();
+        assert!(session.is_authenticated);
+
+        // The nonce we issued resolves to the identity the peer authenticated.
+        assert_eq!(
+            peer_a.session_peer_identity_for(&session_nonce).await,
+            Some(identity_b),
+        );
+        // An unknown nonce resolves to nothing — never a fabricated identity,
+        // and never a handshake.
+        assert_eq!(
+            peer_a
+                .session_peer_identity_for("not-a-session-nonce")
+                .await,
+            None,
+        );
+    }
+
+    /// A payload dropped because the general observer is at capacity is
+    /// *reported*, not silent. Returning `Ok(())` with nothing delivered would
+    /// leave a caller awaiting that observer with no event and no error — an
+    /// unsignalled hang.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_general_observer_overflow_reports_the_dropped_payload() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let identity = wallet_identity(&wallet).await;
+        let (transport, _peer_transport) = create_mock_transport_pair();
+        let peer = Peer::new(wallet, transport);
+        let _general_rx = peer.on_general_message().unwrap();
+        let mut errors = peer.on_error().unwrap();
+
+        let delivered = |payload: &[u8]| AuthMessage {
+            version: AUTH_VERSION.to_string(),
+            message_type: MessageType::General,
+            identity_key: identity.clone(),
+            nonce: None,
+            initial_nonce: None,
+            your_nonce: None,
+            certificates: None,
+            requested_certificates: None,
+            payload: Some(payload.to_vec()),
+            signature: None,
+        };
+
+        // Fill the observer to its capacity. Nothing is dropped yet, so nothing
+        // may be reported — a test that only checked the overflow case would
+        // still pass if the code reported on every delivery.
+        for _ in 0..GENERAL_MESSAGE_CHANNEL_CAPACITY {
+            peer.deliver_general_message(delivered(b"fits")).unwrap();
+        }
+        assert!(
+            errors.try_recv().is_err(),
+            "deliveries that fit must not be reported as drops"
+        );
+
+        // One past capacity: the payload is gone (its replay nonce is already
+        // committed, so it cannot be resent) but the receiver is told.
+        peer.deliver_general_message(delivered(b"dropped")).unwrap();
+        let reported = bounded(errors.recv()).await.expect("drop must be reported");
+        assert_eq!(reported.message_type, Some(MessageType::General));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
