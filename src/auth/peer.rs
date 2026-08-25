@@ -481,7 +481,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
                     continue;
                 }
 
-                if message.message_type == MessageType::General {
+                if Self::uses_general_worker(&message.message_type) {
                     match peer_handle
                         .resolve_general_worker_session_key(&message)
                         .await
@@ -527,6 +527,10 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 });
             }
         });
+    }
+
+    fn uses_general_worker(message_type: &MessageType) -> bool {
+        matches!(message_type, MessageType::General)
     }
 
     /// Resolve only the live session key needed for queue routing. Nonce
@@ -2482,6 +2486,24 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), future)
             .await
             .expect("peer test operation timed out")
+    }
+
+    #[test]
+    fn test_only_general_frames_use_session_worker() {
+        assert!(Peer::<TestWallet>::uses_general_worker(
+            &MessageType::General
+        ));
+        for control in [
+            MessageType::InitialRequest,
+            MessageType::InitialResponse,
+            MessageType::CertificateRequest,
+            MessageType::CertificateResponse,
+        ] {
+            assert!(
+                !Peer::<TestWallet>::uses_general_worker(&control),
+                "{control:?} must bypass the per-session general worker"
+            );
+        }
     }
 
     /// Compile-time guarantee: `Peer<W>` (and thus `Arc<Peer<W>>`) is
