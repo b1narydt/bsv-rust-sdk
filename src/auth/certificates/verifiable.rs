@@ -25,6 +25,9 @@ pub struct VerifiableCertificate {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub certificate: Certificate,
     /// Maps field names to base64-encoded encrypted symmetric keys for the verifier.
+    /// BRC-52 permits an empty or omitted keyring when no fields are revealed.
+    /// Authentication accepts it only for an exact zero-field request.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub keyring: IndexMap<String, String>,
     /// Optional decrypted fields explicitly supplied by a caller.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]

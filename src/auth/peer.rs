@@ -2610,6 +2610,8 @@ mod tests {
 
     struct TestWallet {
         inner: ProtoWallet,
+        decrypt_calls: AtomicUsize,
+        proved_with: StdMutex<Vec<ProveCertificateArgs>>,
         verify_hmac_calls: AtomicUsize,
         verify_probe: Option<Arc<VerifyProbe>>,
         certificates_to_list: Vec<CertificateResult>,
@@ -2634,6 +2636,8 @@ mod tests {
         fn new(pk: PrivateKey) -> Self {
             TestWallet {
                 inner: ProtoWallet::new(pk),
+                decrypt_calls: AtomicUsize::new(0),
+                proved_with: StdMutex::new(Vec::new()),
                 verify_hmac_calls: AtomicUsize::new(0),
                 verify_probe: None,
                 certificates_to_list: Vec::new(),
@@ -2643,6 +2647,8 @@ mod tests {
         fn with_verify_probe(pk: PrivateKey, verify_probe: Arc<VerifyProbe>) -> Self {
             TestWallet {
                 inner: ProtoWallet::new(pk),
+                decrypt_calls: AtomicUsize::new(0),
+                proved_with: StdMutex::new(Vec::new()),
                 verify_hmac_calls: AtomicUsize::new(0),
                 verify_probe: Some(verify_probe),
                 certificates_to_list: Vec::new(),
@@ -2652,6 +2658,8 @@ mod tests {
         fn with_certificate(pk: PrivateKey, certificate: Certificate) -> Self {
             TestWallet {
                 inner: ProtoWallet::new(pk),
+                decrypt_calls: AtomicUsize::new(0),
+                proved_with: StdMutex::new(Vec::new()),
                 verify_hmac_calls: AtomicUsize::new(0),
                 verify_probe: None,
                 certificates_to_list: vec![CertificateResult {
@@ -2781,6 +2789,7 @@ mod tests {
             args: DecryptArgs,
             _originator: Option<&str>,
         ) -> Result<DecryptResult, WalletError> {
+            self.decrypt_calls.fetch_add(1, Ordering::SeqCst);
             let plaintext = self.inner.decrypt_sync(
                 &args.ciphertext,
                 &args.protocol_id,
@@ -2889,9 +2898,11 @@ mod tests {
         }
         async fn prove_certificate(
             &self,
-            _args: ProveCertificateArgs,
+            args: ProveCertificateArgs,
             _originator: Option<&str>,
         ) -> Result<ProveCertificateResult, WalletError> {
+            crate::wallet::validation::validate_prove_certificate_args(&args)?;
+            self.proved_with.lock().unwrap().push(args);
             Ok(ProveCertificateResult {
                 keyring_for_verifier: indexmap::IndexMap::new(),
                 certificate: None,
@@ -7585,5 +7596,223 @@ mod tests {
             matches!(result, Err(AuthError::CertificateValidation(_))),
             "the sender must not replace the request snapshot carried by the session: {result:?}"
         );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_only_two_peers_preserve_prove_nonces_and_replay_checks() {
+        // Real issuer signatures, BRC-42 wallet crypto and Peer state machines;
+        // only certificate storage/prove permission decisions and transport are doubles.
+        let issuer = TestWallet::new(PrivateKey::from_random().unwrap());
+        let key_a = PrivateKey::from_random().unwrap();
+        let key_b = PrivateKey::from_random().unwrap();
+        let mut certificates = Vec::new();
+        for key in [&key_a, &key_b] {
+            certificates.push(
+                MasterCertificate::issue_certificate_for_subject(
+                    &CertificateType([90; 32]),
+                    &key.to_public_key(),
+                    indexmap::IndexMap::from([("name".into(), "Private value".into())]),
+                    &issuer,
+                    default_get_revocation_outpoint,
+                    None,
+                )
+                .await
+                .unwrap()
+                .certificate,
+            );
+        }
+        let mut requested = RequestedCertificateSet::default();
+        requested
+            .certifiers
+            .push(certificates[0].certifier.to_der_hex());
+        requested.insert(
+            cert_codec::base64_encode(&certificates[0].cert_type.0),
+            Vec::new(),
+        );
+        let (transport_a, transport_b) = create_mock_transport_pair();
+        let peer_a = Peer::new(
+            TestWallet::with_certificate(key_a, certificates[0].clone()),
+            transport_a.clone(),
+        );
+        let peer_b = Peer::new(
+            TestWallet::with_certificate(key_b, certificates[1].clone()),
+            transport_b.clone(),
+        );
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let identity_b = wallet_identity(&peer_b.wallet).await;
+        peer_a.set_certificates_to_request(requested.clone());
+        peer_b.set_certificates_to_request(requested.clone());
+        let mut received_b = peer_b.on_general_message().unwrap();
+        bounded(peer_a.send_message(&identity_b, b"metadata admitted".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(
+            bounded(received_b.recv()).await.unwrap(),
+            (identity_a.clone(), b"metadata admitted".to_vec())
+        );
+        for (peer, other, own_certificate) in [
+            (&peer_a, &identity_b, &certificates[0]),
+            (&peer_b, &identity_a, &certificates[1]),
+        ] {
+            let session = peer.session_by_identifier(other).await.unwrap();
+            assert!(session.is_authenticated && session.certificates_validated);
+            assert!(session.certificates_required);
+            assert_eq!(peer.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
+            let calls = peer.wallet.proved_with.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].verifier.to_der_hex(), *other);
+            assert_eq!(
+                calls[0].certificate.cert_type.as_ref(),
+                Some(&own_certificate.cert_type)
+            );
+            assert!(calls[0].fields_to_reveal.is_empty());
+        }
+        let initial_response = transport_b
+            .sent_messages
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|msg| msg.message_type == MessageType::InitialResponse)
+            .unwrap()
+            .clone();
+        assert!(initial_response.certificates.as_ref().unwrap()[0]
+            .keyring
+            .is_empty());
+        let response = transport_a
+            .sent_messages
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|msg| msg.message_type == MessageType::CertificateResponse)
+            .unwrap()
+            .clone();
+        assert!(response.certificates.as_ref().unwrap()[0]
+            .keyring
+            .is_empty());
+        assert!(matches!(
+            peer_b.dispatch_message(response.clone()).await,
+            Err(AuthError::ReplayDetected(_))
+        ));
+        let mut bad_nonce = response.clone();
+        bad_nonce.your_nonce = Some(create_nonce(&peer_a.wallet).await.unwrap());
+        assert!(matches!(
+            peer_b.dispatch_message(bad_nonce).await,
+            Err(AuthError::InvalidNonce(_))
+        ));
+        let mut changed_nonce = response;
+        changed_nonce.nonce = Some(base64_encode(&crate::primitives::random::random_bytes(32)));
+        assert!(matches!(
+            peer_b.dispatch_message(changed_nonce).await,
+            Err(AuthError::InvalidSignature(_))
+        ));
+
+        // A signed certificateResponse cannot supply its own zero-field request
+        // for an unadvertised type: validation uses the stored session snapshot.
+        let unrequested = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([91; 32]),
+            &certificates[0].subject,
+            indexmap::IndexMap::new(),
+            &issuer,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap()
+        .certificate;
+        let mut relabel = requested;
+        relabel.insert(
+            cert_codec::base64_encode(&unrequested.cert_type.0),
+            Vec::new(),
+        );
+        let receiver_nonce = peer_b
+            .session_by_identifier(&identity_a)
+            .await
+            .unwrap()
+            .session_nonce;
+        let relabeled_response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            receiver_nonce,
+            Some(vec![VerifiableCertificate::new(
+                unrequested,
+                indexmap::IndexMap::new(),
+            )]),
+            Some(relabel),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            peer_b.dispatch_message(relabeled_response).await,
+            Err(AuthError::CertificateValidation(_))
+        ));
+        assert_eq!(peer_b.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_only_cannot_downgrade_retained_nonempty_requests() {
+        let (holder, verifier, verifier_identity) = authenticated_pair().await;
+        let holder_identity = wallet_identity(&holder.wallet).await;
+        let mut cert = issue_verifiable_certificate(
+            &holder.wallet,
+            &parse_public_key(&verifier_identity).unwrap(),
+            CertificateType([92; 32]),
+        )
+        .await;
+        let retained = requested_for_certificate(&cert);
+        let mut claimed = retained.clone();
+        claimed.insert(cert_codec::base64_encode(&cert.cert_type.0), Vec::new());
+        cert.keyring.clear();
+        let session_nonce = verifier
+            .session_by_identifier(&holder_identity)
+            .await
+            .unwrap()
+            .session_nonce;
+        {
+            let mut sessions = verifier.session_manager.write().await;
+            let session = sessions.get_session_mut(&session_nonce).unwrap();
+            session.requested_certificates = Some(retained.clone());
+            session.certificates_required = true;
+            session.certificates_validated = false;
+        }
+        // Changing the mutable default cannot downgrade an existing session either.
+        verifier.set_certificates_to_request(claimed.clone());
+        let response = signed_certificate_response(
+            &holder.wallet,
+            holder_identity.clone(),
+            &verifier_identity,
+            session_nonce.clone(),
+            Some(vec![cert.clone()]),
+            Some(claimed.clone()),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            verifier.dispatch_message(response).await,
+            Err(AuthError::CertificateValidation(_))
+        ));
+        assert!(
+            !verifier
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+
+        let pending_nonce = create_nonce(&verifier.wallet).await.unwrap();
+        add_pending_handshake_session(&verifier, &pending_nonce, &holder_identity, Some(retained))
+            .await;
+        let mut initial = signed_initial_response(
+            &holder.wallet,
+            holder_identity,
+            &verifier_identity,
+            pending_nonce.clone(),
+            Some(vec![cert]),
+        )
+        .await;
+        initial.requested_certificates = Some(claimed);
+        assert!(matches!(
+            verifier.complete_handshake(&pending_nonce, initial).await,
+            Err(AuthError::CertificateValidation(_))
+        ));
+        assert_eq!(verifier.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -486,11 +486,8 @@ pub fn validate_list_certificates_args(args: &ListCertificatesArgs) -> Result<()
     Ok(())
 }
 
-/// Validate ProveCertificateArgs.
+/// Validate ProveCertificateArgs, including metadata-only proofs with no revealed fields.
 pub fn validate_prove_certificate_args(args: &ProveCertificateArgs) -> Result<(), WalletError> {
-    if args.fields_to_reveal.is_empty() {
-        return Err(invalid("fields_to_reveal", "non-empty"));
-    }
     for field in &args.fields_to_reveal {
         validate_string_length(field, "fields_to_reveal entry", 1, 50)?;
     }
@@ -1471,7 +1468,7 @@ mod tests {
 
     #[test]
     fn test_prove_certificate_empty_fields() {
-        let args = ProveCertificateArgs {
+        let mut args = ProveCertificateArgs {
             certificate: Certificate {
                 cert_type: CertificateType([0u8; 32]),
                 serial_number: SerialNumber([0u8; 32]),
@@ -1487,7 +1484,16 @@ mod tests {
             privileged: BooleanDefaultFalse(None),
             privileged_reason: None,
         };
+        assert!(validate_prove_certificate_args(&args).is_ok());
+        args.fields_to_reveal = vec![String::new()];
         assert!(validate_prove_certificate_args(&args).is_err());
+        args.fields_to_reveal = vec!["x".repeat(51)];
+        assert!(validate_prove_certificate_args(&args).is_err());
+        args.fields_to_reveal.clear();
+        args.privileged = BooleanDefaultFalse(Some(true));
+        assert!(validate_prove_certificate_args(&args).is_err());
+        args.privileged_reason = Some("Read certificate metadata".to_string());
+        assert!(validate_prove_certificate_args(&args).is_ok());
     }
 
     // ---- RelinquishCertificateArgs ----

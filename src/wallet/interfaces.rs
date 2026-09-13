@@ -2066,6 +2066,7 @@ pub struct ListCertificatesResult {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ProveCertificateArgs {
     pub certificate: PartialCertificate,
+    /// Field names to reveal; an empty list requests a metadata-only proof.
     pub fields_to_reveal: Vec<String>,
     #[cfg_attr(feature = "serde", serde(with = "serde_helpers::public_key_hex"))]
     pub verifier: PublicKey,

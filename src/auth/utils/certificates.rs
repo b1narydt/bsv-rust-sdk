@@ -30,7 +30,14 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 /// 2. Verifies the certificate signature using AuthCertificate::verify
 /// 3. If a RequestedCertificateSet is provided, checks that the certifier
 ///    and certificate type are in the requested set
-/// 4. Decrypts the selectively revealed fields with the verifier wallet
+/// 4. For an exact requested type with an empty field list, requires an empty
+///    keyring and validates the signed core without decrypting any fields.
+///    Otherwise decrypts the selectively revealed fields with the verifier wallet.
+///
+/// The request must come from the verifier's retained session state, never a
+/// request supplied by the certificate sender. An empty keyring without that
+/// exact zero-field request remains invalid. Signed encrypted fields do not
+/// establish their hidden plaintext values to the verifier.
 ///
 /// Returns Ok(true) if all certificates pass validation, Ok(false) if any fail.
 /// Returns Err on infrastructure errors and field-decryption failures.
@@ -134,8 +141,11 @@ async fn validate_certificate<W: WalletInterface + ?Sized>(
         }
 
         let cert_type_b64 = base64_encode(&cert.certificate.cert_type.0);
-        if !req.contains_key(&cert_type_b64) {
+        let Some(fields) = req.get(&cert_type_b64) else {
             return Ok(false);
+        };
+        if fields.is_empty() {
+            return Ok(cert.keyring.is_empty());
         }
     }
 
@@ -151,7 +161,8 @@ async fn validate_certificate<W: WalletInterface + ?Sized>(
 ///
 /// Queries the wallet for certificates matching the requested types,
 /// then creates VerifiableCertificates with selectively revealed fields
-/// using wallet.prove_certificate for each match.
+/// using wallet.prove_certificate for each match, including empty field lists.
+/// The wallet still decides permission for the exact verifier/type/fields tuple.
 ///
 /// Translated from TS getVerifiableCertificates and Go GetVerifiableCertificates.
 pub async fn get_verifiable_certificates<W: WalletInterface + ?Sized>(
@@ -630,6 +641,122 @@ mod tests {
         assert!(valid, "properly signed certificate should validate");
     }
 
+    async fn metadata_only_fixture() -> (
+        VerifiableCertificate,
+        RequestedCertificateSet,
+        TestWallet,
+        Arc<DecryptProbe>,
+    ) {
+        let issuer = TestWallet::new(PrivateKey::from_random().unwrap());
+        let subject = PrivateKey::from_random().unwrap().to_public_key();
+        let master = MasterCertificate::issue_certificate_for_subject(
+            &CertificateType([29; 32]),
+            &subject,
+            IndexMap::from([("name".to_string(), "Private value".to_string())]),
+            &issuer,
+            default_get_revocation_outpoint,
+            None,
+        )
+        .await
+        .unwrap();
+        let certificate = VerifiableCertificate::new(master.certificate, IndexMap::new());
+        let mut requested = RequestedCertificateSet::default();
+        requested
+            .certifiers
+            .push(certificate.certifier.to_der_hex());
+        requested.insert(base64_encode(&certificate.cert_type.0), Vec::new());
+        let probe = Arc::new(DecryptProbe::default());
+        let verifier =
+            TestWallet::with_decrypt_probe(PrivateKey::from_random().unwrap(), probe.clone());
+        (certificate, requested, verifier, probe)
+    }
+
+    #[tokio::test]
+    async fn metadata_only_signed_core_validates_without_decrypt() {
+        let (certificate, requested, verifier, probe) = metadata_only_fixture().await;
+        assert!(!certificate.fields.as_ref().unwrap().is_empty());
+        assert!(validate_certificates(
+            &verifier,
+            std::slice::from_ref(&certificate),
+            &certificate.subject,
+            Some(&requested)
+        )
+        .await
+        .unwrap());
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+        // Asking to decrypt directly still requires a keyring.
+        assert!(certificate.decrypt_fields(&verifier).await.is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[tokio::test]
+    async fn metadata_only_omitted_keyring_validates_without_decrypt() {
+        let (certificate, requested, verifier, probe) = metadata_only_fixture().await;
+        let mut wire = serde_json::to_value(&certificate).unwrap();
+        wire.as_object_mut().unwrap().remove("keyring");
+        let decoded: VerifiableCertificate = serde_json::from_value(wire).unwrap();
+        assert!(decoded.keyring.is_empty());
+        assert!(validate_certificates(
+            &verifier,
+            std::slice::from_ref(&decoded),
+            &decoded.subject,
+            Some(&requested)
+        )
+        .await
+        .unwrap());
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn metadata_only_rejects_invalid_core_and_request() {
+        let (certificate, requested, verifier, probe) = metadata_only_fixture().await;
+        let subject = certificate.subject.clone();
+        let stranger = PrivateKey::from_random().unwrap().to_public_key();
+        let mut wrong_issuer = requested.clone();
+        wrong_issuer.certifiers = vec![stranger.to_der_hex()];
+        let mut wrong_type = RequestedCertificateSet::default();
+        wrong_type.certifiers = requested.certifiers.clone();
+        wrong_type.insert(base64_encode(&[30; 32]), Vec::new());
+        let mut nonempty_request = requested.clone();
+        nonempty_request.insert(base64_encode(&certificate.cert_type.0), vec!["name".into()]);
+        let mut extra_key = certificate.clone();
+        extra_key.keyring.insert("name".into(), "AA==".into());
+        let mut missing_signature = certificate.clone();
+        missing_signature.certificate.signature = None;
+        let mut forged_core = certificate.clone();
+        forged_core.certificate.serial_number = SerialNumber([42; 32]);
+        for (label, cert, sender, request) in [
+            ("wrong subject", &certificate, &stranger, Some(&requested)),
+            ("wrong issuer", &certificate, &subject, Some(&wrong_issuer)),
+            (
+                "unrequested type",
+                &certificate,
+                &subject,
+                Some(&wrong_type),
+            ),
+            (
+                "missing signature",
+                &missing_signature,
+                &subject,
+                Some(&requested),
+            ),
+            ("forged core", &forged_core, &subject, Some(&requested)),
+            ("extra key", &extra_key, &subject, Some(&requested)),
+            (
+                "nonempty request",
+                &certificate,
+                &subject,
+                Some(&nonempty_request),
+            ),
+            ("no request", &certificate, &subject, None),
+        ] {
+            let result =
+                validate_certificates(&verifier, std::slice::from_ref(cert), sender, request).await;
+            assert!(!matches!(result, Ok(true)), "{label} unexpectedly passed");
+        }
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn test_validate_certificates_rejects_undecryptable_keyring() {
         let certifier_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
@@ -960,15 +1087,21 @@ mod tests {
         requested.certifiers.push(cert.certifier.to_der_hex());
         requested.insert(base64_encode(&cert.cert_type.0), Vec::new());
 
-        let result = get_verifiable_certificates(
-            &wallet,
-            &requested,
-            &PrivateKey::from_random().unwrap().to_public_key(),
-        )
-        .await
-        .unwrap();
+        let verifier = PrivateKey::from_random().unwrap().to_public_key();
+        let result = get_verifiable_certificates(&wallet, &requested, &verifier)
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
+        assert!(result[0].keyring.is_empty());
+        let calls = wallet.proved_with.lock().unwrap();
+        assert_eq!(calls[0].verifier, verifier);
+        assert_eq!(
+            calls[0].certificate.cert_type.as_ref(),
+            Some(&cert.cert_type)
+        );
+        assert!(crate::wallet::validation::validate_prove_certificate_args(&calls[0]).is_ok());
+        drop(calls);
         assert_eq!(wallet.proved_with.lock().unwrap().len(), 1);
         assert!(wallet.proved_with.lock().unwrap()[0]
             .fields_to_reveal
@@ -1075,13 +1208,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_validate_certificates_is_bounded_and_concurrent() {
+    async fn test_validate_certificates_uses_feature_appropriate_concurrency() {
         let parallelism = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1);
-        if parallelism == 1 {
-            return;
-        }
+        let concurrency = if cfg!(feature = "network") {
+            parallelism
+        } else {
+            1
+        };
         let certificate_count = parallelism + 2;
         let delay = Duration::from_millis(100);
         let (wallet, probe, certificates, subject) =
@@ -1095,31 +1230,37 @@ mod tests {
         );
 
         let elapsed = started.elapsed();
-        let expected_waves = certificate_count.div_ceil(parallelism) as u32;
+        let expected_waves = certificate_count.div_ceil(concurrency) as u32;
         assert_eq!(
             elapsed,
             delay * expected_waves,
-            "validation should take one delay per bounded concurrency wave"
+            "validation should take one delay per feature-appropriate worker wave"
         );
-        assert_eq!(probe.peak.load(Ordering::SeqCst), parallelism);
+        assert_eq!(probe.peak.load(Ordering::SeqCst), concurrency);
         assert_eq!(probe.calls.load(Ordering::SeqCst), certificate_count);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_validate_certificates_cancels_siblings_on_first_error() {
+    async fn test_validate_certificates_stops_on_first_observed_error() {
         let parallelism = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1);
-        if parallelism == 1 {
-            return;
-        }
+        let concurrency = if cfg!(feature = "network") {
+            parallelism
+        } else {
+            1
+        };
+        let certificate_count = parallelism.max(2);
+        let delay = Duration::from_secs(1);
         let (wallet, probe, mut certificates, subject) =
-            concurrent_validation_fixture(parallelism, Duration::from_secs(1)).await;
+            concurrent_validation_fixture(certificate_count, delay).await;
         certificates
             .last_mut()
             .unwrap()
             .keyring
             .insert("name".to_string(), "!".to_string());
+        // Neither path may start this trailing certificate after observing the error.
+        certificates.push(certificates[0].clone());
         let started = tokio::time::Instant::now();
 
         let result = validate_certificates(&wallet, &certificates, &subject, None).await;
@@ -1127,10 +1268,10 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             started.elapsed(),
-            Duration::ZERO,
-            "the first completed error must drop in-flight sibling futures"
+            delay * ((certificate_count - 1) / concurrency) as u32,
+            "only completed waves before the first observed error may consume time"
         );
-        assert_eq!(probe.calls.load(Ordering::SeqCst), parallelism - 1);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), certificate_count - 1);
         assert_eq!(probe.active.load(Ordering::SeqCst), 0);
     }
 

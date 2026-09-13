@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Certificate authentication accepts a signed core with an empty verifier keyring
+  only when the verifier's exact requested type maps to an empty field list.
+  It retains subject, issuer, type and core-signature checks, rejects unexpected
+  keyring entries for that request, and performs no field decryption. Other
+  requests retain the existing decryption path.
+- BRC-52 certificate deserialization defaults an omitted keyring to empty.
+  `decrypt_fields` still requires a nonempty keyring; this does not change the
+  JSON signature preimage rules for authentication messages.
+- Wallet prove-argument validation accepts an empty field list while preserving
+  validation of supplied names and privileged reasons. Certificate retrieval
+  still invokes the wallet's prove method for the exact verifier/type/fields.
+
+- Certificate-validation timing tests now assert the sequential path without the
+  `network` feature and bounded concurrency with it, including stopping before
+  a trailing certificate after an error. Single-worker builds are tested too.
+
 ## [0.8.0] - 2026-08-23
 
 ### Fixed
