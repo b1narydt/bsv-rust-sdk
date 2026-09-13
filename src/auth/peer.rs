@@ -1427,9 +1427,12 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// Exists so a caller can bind an inbound frame to the identity the
     /// *session* authenticated rather than to the `identityKey` the frame
     /// carries. `process_certificate_response` verifies against the frame's own
-    /// `identityKey` (byte-exact TS parity — see the note there), so a receiver
-    /// that wants the stronger session binding needs this to apply it itself,
-    /// without reconstructing a per-frame completion signal.
+    /// `identityKey` for signature compatibility. Responses containing a
+    /// certificate whose type was locally requested with zero fields additionally
+    /// require authenticated-session identity binding before acceptance.
+    /// Legacy nonempty-proof responses keep
+    /// TS's frame-identity behavior (#494), so receivers still need this accessor
+    /// to enforce session binding for those responses.
     pub async fn session_peer_identity_for(&self, session_nonce: &str) -> Option<String> {
         self.session_manager
             .read()
@@ -1955,8 +1958,10 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// 1. Verify `yourNonce` was created by us.
     /// 2. Look up the active session for that nonce.
     /// 3. Verify the signature over `JSON.stringify(certificates)`.
-    /// 4. Apply the per-message replay gate.
-    /// 5. Validate non-empty certificate sets before notifying consumers.
+    /// 4. If any actual certificate type has a retained zero-field request,
+    ///    require the verified frame identity to match an authenticated session.
+    /// 5. Apply the per-message replay gate.
+    /// 6. Validate non-empty certificate sets before notifying consumers.
     async fn process_certificate_response(&self, msg: AuthMessage) -> Result<(), AuthError> {
         let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
             AuthError::InvalidMessage("missing yourNonce in certificateResponse".to_string())
@@ -2021,10 +2026,11 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // verify here if it is correctly self-signed. That is upstream
         // behaviour, reported as ts-stack #494.
         //
-        // We conform rather than diverge: a silent Rust-only divergence is
-        // worse than a shared upstream bug, because no same-language test can
-        // detect it and cross-SDK exchange would break. Receivers that need the
-        // stronger binding apply it themselves via `session_peer_identity_for`.
+        // Preserve this signature counterparty and wire preimage. The newly
+        // supported metadata-only path additionally binds the verified identity
+        // to an authenticated session below, before replay marking or acceptance.
+        // Legacy nonempty-proof responses still require the consumer's stronger
+        // binding via `session_peer_identity_for`; this is not a general #494 fix.
         let peer_pubkey = parse_public_key(&msg.identity_key)?;
 
         let verify_result = self
@@ -2057,6 +2063,36 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 "Unable to verify certificate response signature for peer: {}",
                 msg.identity_key
             )));
+        }
+
+        // Zero-field proofs have no verifier-specific keyring. Before they can
+        // authorize this nonce-selected session (or change its replay cache),
+        // bind the verified frame identity to the authenticated session peer.
+        // Inspect every actual type in mixed batches using only our retained
+        // request; neither an empty keyring nor the sender's request is authority.
+        let includes_metadata_proof =
+            session
+                .requested_certificates
+                .as_ref()
+                .is_some_and(|requested| {
+                    certificates.iter().any(|certificate| {
+                        requested
+                            .get(&base64_encode(&certificate.cert_type.0))
+                            .is_some_and(Vec::is_empty)
+                    })
+                });
+        if includes_metadata_proof {
+            if !session.is_authenticated {
+                return Err(AuthError::NotAuthenticated(
+                    "metadata certificate response requires an authenticated session".to_string(),
+                ));
+            }
+            if parse_public_key(&session.peer_identity_key)? != peer_pubkey {
+                return Err(AuthError::CertificateValidation(
+                    "metadata certificate response identity does not match authenticated session"
+                        .to_string(),
+                ));
+            }
         }
 
         // Anti-replay gate (after signature verification, before validation and
@@ -7814,5 +7850,178 @@ mod tests {
             Err(AuthError::CertificateValidation(_))
         ));
         assert_eq!(verifier.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
+    }
+    async fn metadata_session_binding_case(
+        metadata: bool,
+        mixed: bool,
+        matching: bool,
+        authenticated: bool,
+    ) {
+        let (holder, verifier, verifier_identity) = authenticated_pair().await;
+        let holder_identity = wallet_identity(&holder.wallet).await;
+        let attacker = TestWallet::new(PrivateKey::from_random().unwrap());
+        let sender = if matching { &holder.wallet } else { &attacker };
+        let sender_identity = wallet_identity(sender).await;
+        let verifier_key = parse_public_key(&verifier_identity).unwrap();
+        let mut certificate =
+            issue_verifiable_certificate(sender, &verifier_key, CertificateType([93; 32])).await;
+        let mut requested = requested_for_certificate(&certificate);
+        if metadata {
+            certificate.keyring.clear();
+            requested.insert(
+                cert_codec::base64_encode(&certificate.cert_type.0),
+                Vec::new(),
+            );
+        }
+        let mut certificates = vec![certificate];
+        if mixed {
+            let disclosed =
+                issue_verifiable_certificate(sender, &verifier_key, CertificateType([94; 32]))
+                    .await;
+            requested.certifiers.push(disclosed.certifier.to_der_hex());
+            requested.insert(
+                cert_codec::base64_encode(&disclosed.cert_type.0),
+                vec!["name".into()],
+            );
+            // Place the metadata proof last so a first-certificate-only guard fails.
+            certificates.insert(0, disclosed);
+        }
+        let nonce = verifier
+            .session_by_identifier(&holder_identity)
+            .await
+            .unwrap()
+            .session_nonce;
+        {
+            let mut sessions = verifier.session_manager.write().await;
+            let session = sessions.get_session_mut(&nonce).unwrap();
+            session.requested_certificates = Some(requested);
+            session.certificates_required = true;
+            session.certificates_validated = false;
+            session.is_authenticated = authenticated;
+        }
+        let before_seen = verifier
+            .session_manager
+            .read()
+            .await
+            .seen_nonce_count(&nonce);
+        let events = record_certificate_events(&verifier);
+        let response = signed_certificate_response(
+            sender,
+            sender_identity.to_uppercase(),
+            &verifier_identity,
+            nonce.clone(),
+            Some(certificates),
+            None,
+            None,
+        )
+        .await;
+        let result = bounded(verifier.dispatch_message(response)).await;
+        let after = verifier.session_by_identifier(&nonce).await.unwrap();
+        if metadata && (!matching || !authenticated) {
+            assert!(
+                result.is_err(),
+                "metadata response accepted: result={result:?}, validated={}, listeners={}",
+                after.certificates_validated,
+                events.lock().unwrap().len()
+            );
+            assert!(!after.certificates_validated);
+            assert_eq!(after.is_authenticated, authenticated);
+            assert_eq!(after.peer_identity_key, holder_identity);
+            assert!(events.lock().unwrap().is_empty());
+            assert_eq!(
+                verifier
+                    .session_manager
+                    .read()
+                    .await
+                    .seen_nonce_count(&nonce),
+                before_seen,
+                "rejected identity must not poison the selected session's replay cache"
+            );
+            assert_eq!(verifier.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
+        } else {
+            result.unwrap();
+            assert!(after.certificates_validated);
+            assert_eq!(events.lock().unwrap().len(), 1);
+            assert_eq!(
+                verifier.wallet.decrypt_calls.load(Ordering::SeqCst),
+                usize::from(!metadata) + usize::from(mixed)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_rejects_other_signed_identity() {
+        metadata_session_binding_case(true, false, false, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_rejects_mixed_proofs_for_other_identity() {
+        metadata_session_binding_case(true, true, false, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_rejects_pending_session() {
+        metadata_session_binding_case(true, false, true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_accepts_canonical_matching_identity_and_mixed_proofs() {
+        metadata_session_binding_case(true, false, true, true).await;
+        metadata_session_binding_case(true, true, true, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_preserves_legacy_nonempty_frame_identity_parity() {
+        // Known #494 legacy behavior remains a consumer binding requirement;
+        // this test limits the new runtime check to metadata-only acceptance.
+        metadata_session_binding_case(false, false, false, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_session_binding_initial_expected_identity_and_discovery() {
+        let (expected_peer, verifier, verifier_identity) = authenticated_pair().await;
+        let expected_identity = wallet_identity(&expected_peer.wallet).await;
+        let attacker = TestWallet::new(PrivateKey::from_random().unwrap());
+        let attacker_identity = wallet_identity(&attacker).await;
+        let mut certificate = issue_verifiable_certificate(
+            &attacker,
+            &parse_public_key(&verifier_identity).unwrap(),
+            CertificateType([95; 32]),
+        )
+        .await;
+        certificate.keyring.clear();
+        let mut requested = requested_for_certificate(&certificate);
+        requested.insert(
+            cert_codec::base64_encode(&certificate.cert_type.0),
+            Vec::new(),
+        );
+        let events = record_certificate_events(&verifier);
+        for expected in [&expected_identity[..], ""] {
+            let nonce = create_nonce(&verifier.wallet).await.unwrap();
+            add_pending_handshake_session(&verifier, &nonce, expected, Some(requested.clone()))
+                .await;
+            let response = signed_initial_response(
+                &attacker,
+                attacker_identity.to_uppercase(),
+                &verifier_identity,
+                nonce.clone(),
+                Some(vec![certificate.clone()]),
+            )
+            .await;
+            let result = bounded(verifier.complete_handshake(&nonce, response)).await;
+            let after = verifier.session_by_identifier(&nonce).await.unwrap();
+            if expected.is_empty() {
+                result.unwrap();
+                assert!(after.is_authenticated && after.certificates_validated);
+                assert_eq!(after.peer_identity_key, attacker_identity);
+                assert_eq!(events.lock().unwrap().len(), 1);
+            } else {
+                assert!(matches!(result, Err(AuthError::InvalidMessage(_))));
+                assert!(!after.is_authenticated && !after.certificates_validated);
+                assert_eq!(after.peer_identity_key, expected_identity);
+                assert!(events.lock().unwrap().is_empty());
+            }
+            assert_eq!(verifier.wallet.decrypt_calls.load(Ordering::SeqCst), 0);
+        }
     }
 }

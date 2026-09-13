@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It retains subject, issuer, type and core-signature checks, rejects unexpected
   keyring entries for that request, and performs no field decryption. Other
   requests retain the existing decryption path.
+- Certificate responses containing a locally requested metadata-only proof now
+  require the verified frame identity to match the authenticated session peer,
+  before replay marking, certificate completion or listeners. This includes
+  mixed proof batches and refuses pending sessions. Existing signature wire
+  semantics and the legacy nonempty-proof frame-identity behavior are unchanged;
+  consumers still need session binding for those legacy responses (#494).
 - BRC-52 certificate deserialization defaults an omitted keyring to empty.
   `decrypt_fields` still requires a nonempty keyring; this does not change the
   JSON signature preimage rules for authentication messages.
