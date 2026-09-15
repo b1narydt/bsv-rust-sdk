@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.1] - 2026-09-15
 
 ### Fixed
 
@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation of supplied names and privileged reasons. Certificate retrieval
   still invokes the wallet's prove method for the exact verifier/type/fields.
 
+- Session-cap enforcement now uses the public live-session count, keeping the
+  production capacity check and diagnostic API on the same path.
 - Certificate-validation timing tests now assert the sequential path without the
   `network` feature and bounded concurrency with it, including stopping before
   a trailing certificate after an error. Single-worker builds are tested too.

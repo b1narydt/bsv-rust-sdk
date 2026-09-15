@@ -151,7 +151,7 @@ impl SessionManager {
         let incoming_nonce = session.session_nonce.clone();
         let mut evicted = Vec::new();
         while !self.nonce_to_session.contains_key(&incoming_nonce)
-            && self.nonce_to_session.len() >= max_sessions
+            && self.session_count() >= max_sessions
         {
             let Some(lru_nonce) = self.least_recently_used_nonce() else {
                 break;
