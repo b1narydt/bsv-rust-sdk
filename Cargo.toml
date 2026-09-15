@@ -10,6 +10,8 @@ readme = "README.md"
 documentation = "https://docs.rs/bsv-sdk"
 keywords = ["bsv", "bitcoin", "blockchain", "sdk", "cryptography"]
 categories = ["cryptography", "authentication"]
+# Developer-local reference symlink is not part of the distributable crate.
+exclude = ["/.ref"]
 
 [lib]
 name = "bsv"

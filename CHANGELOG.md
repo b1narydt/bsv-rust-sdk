@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation of supplied names and privileged reasons. Certificate retrieval
   still invokes the wallet's prove method for the exact verifier/type/fields.
 
+- Crate packaging excludes the developer-local `.ref` symlink, allowing release
+  archives to be produced from a fresh clone without that private reference path.
 - Session-cap enforcement now uses the public live-session count, keeping the
   production capacity check and diagnostic API on the same path.
 - Certificate-validation timing tests now assert the sequential path without the
