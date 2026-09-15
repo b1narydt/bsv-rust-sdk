@@ -1431,7 +1431,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// certificate whose type was locally requested with zero fields additionally
     /// require authenticated-session identity binding before acceptance.
     /// Legacy nonempty-proof responses keep
-    /// TS's frame-identity behavior (#494), so receivers still need this accessor
+    /// TS's frame-identity behavior, so receivers still need this accessor
     /// to enforce session binding for those responses.
     pub async fn session_peer_identity_for(&self, session_nonce: &str) -> Option<String> {
         self.session_manager
@@ -2024,13 +2024,13 @@ impl<W: WalletInterface + 'static> Peer<W> {
         // *frame* claims, not the identity the session established. A response
         // bearing a different identityKey than the session authenticated will
         // verify here if it is correctly self-signed. That is upstream
-        // behaviour, reported as ts-stack #494.
+        // behaviour; no verified issue tracker is recorded for this legacy seam.
         //
         // Preserve this signature counterparty and wire preimage. The newly
         // supported metadata-only path additionally binds the verified identity
         // to an authenticated session below, before replay marking or acceptance.
         // Legacy nonempty-proof responses still require the consumer's stronger
-        // binding via `session_peer_identity_for`; this is not a general #494 fix.
+        // binding via `session_peer_identity_for`; that legacy seam remains unchanged.
         let peer_pubkey = parse_public_key(&msg.identity_key)?;
 
         let verify_result = self
@@ -7972,7 +7972,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn metadata_session_binding_preserves_legacy_nonempty_frame_identity_parity() {
-        // Known #494 legacy behavior remains a consumer binding requirement;
+        // Legacy frame-identity behavior remains a consumer binding requirement;
         // this test limits the new runtime check to metadata-only acceptance.
         metadata_session_binding_case(false, false, false, true).await;
     }

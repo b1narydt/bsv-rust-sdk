@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before replay marking, certificate completion or listeners. This includes
   mixed proof batches and refuses pending sessions. Existing signature wire
   semantics and the legacy nonempty-proof frame-identity behavior are unchanged;
-  consumers still need session binding for those legacy responses (#494).
+  consumers still need session binding for those legacy responses. This remains
+  a disclosed legacy seam without a verified issue tracker.
 - BRC-52 certificate deserialization defaults an omitted keyring to empty.
   `decrypt_fields` still requires a nonempty keyring; this does not change the
   JSON signature preimage rules for authentication messages.
