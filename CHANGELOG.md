@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`Brc29RemittanceModule::accept_settlement` terminates when the wallet declines.**
+  An `internalize_action` result of `accepted: false` previously produced an
+  `Accept` receipt, so callers treated an unstored payment as settled. It now
+  returns `Terminate { code: "brc29.internalize_failed" }`, matching @bsv/sdk 2.7.0
+  (ts-stack #534). (`src/remittance/modules/brc29.rs`)
+
 ## [0.8.0] - 2026-08-23
 
 ### Fixed

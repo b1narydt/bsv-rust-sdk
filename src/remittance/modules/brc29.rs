@@ -427,6 +427,16 @@ impl RemittanceModule for Brc29RemittanceModule {
             .await;
 
         match internalize_result {
+            // A wallet may decline without erroring. That is not a settlement, and
+            // callers treat `Accept` as "durably stored", so terminate here rather
+            // than hand back a receipt whose only content is `accepted: false`.
+            Ok(result) if !result.accepted => Ok(AcceptSettlementResult::Terminate {
+                termination: Termination {
+                    code: "brc29.internalize_failed".to_string(),
+                    message: "Wallet did not accept the BRC-29 settlement.".to_string(),
+                    details: None,
+                },
+            }),
             Ok(result) => Ok(AcceptSettlementResult::Accept {
                 receipt_data: Some(Brc29ReceiptData {
                     internalize_result: Some(

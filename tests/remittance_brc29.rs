@@ -243,6 +243,8 @@ struct CapturingMockWallet {
     pub create_action_no_tx: bool,
     /// If true, internalize_action returns an error.
     pub internalize_action_error: bool,
+    /// If true, internalize_action returns Ok with `accepted: false`.
+    pub internalize_action_declines: bool,
 }
 
 impl CapturingMockWallet {
@@ -254,6 +256,7 @@ impl CapturingMockWallet {
             get_public_key_error: false,
             create_action_no_tx: false,
             internalize_action_error: false,
+            internalize_action_declines: false,
         }
     }
 }
@@ -316,7 +319,9 @@ impl WalletInterface for CapturingMockWallet {
             ));
         }
         self.internalize_action_calls.lock().unwrap().push(a);
-        Ok(InternalizeActionResult { accepted: true })
+        Ok(InternalizeActionResult {
+            accepted: !self.internalize_action_declines,
+        })
     }
 
     async fn sign_action(
@@ -1478,6 +1483,31 @@ async fn test_accept_settlement_returns_terminate_when_internalize_errors() {
             assert_eq!(termination.code, "brc29.internalize_failed");
         }
         other => panic!("expected Terminate, got {:?}", other),
+    }
+}
+
+/// A wallet may decline an internalize without erroring (`accepted: false`).
+/// That is not a settlement: the module must terminate, never hand back an
+/// `Accept` receipt that upstream code would treat as durably stored.
+#[tokio::test]
+async fn test_accept_settlement_returns_terminate_when_wallet_declines() {
+    let wallet = Arc::new(CapturingMockWallet {
+        internalize_action_declines: true,
+        ..CapturingMockWallet::new()
+    });
+    let (module, ctx) = make_capturing_module(wallet.clone());
+    let artifact = make_valid_artifact();
+
+    let result = module
+        .accept_settlement("thread-001", None, &artifact, TEST_PUBKEY_HEX, &ctx)
+        .await
+        .unwrap();
+
+    match result {
+        bsv::remittance::remittance_module::AcceptSettlementResult::Terminate { termination } => {
+            assert_eq!(termination.code, "brc29.internalize_failed");
+        }
+        other => panic!("expected Terminate for accepted:false, got {:?}", other),
     }
 }
 
