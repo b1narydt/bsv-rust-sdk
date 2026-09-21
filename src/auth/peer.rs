@@ -113,7 +113,7 @@ pub enum CertificateRefusalKind {
 pub struct VerifiedCertificateRefusal {
     session_nonce: String,
     peer_identity_key: String,
-    request_nonce: String,
+    http_request_id: [u8; 32],
     kind: CertificateRefusalKind,
 }
 
@@ -1273,6 +1273,103 @@ impl<W: WalletInterface + 'static> Peer<W> {
         }
     }
 
+    async fn authorize_and_finish_certificate_exchange(
+        &self,
+        session: &mut PeerSession,
+        certificates: &[VerifiableCertificate],
+        authorizer: Option<Arc<CertificateAuthorizer>>,
+    ) -> Result<(), AuthError> {
+        let Some(authorizer) = authorizer else {
+            // Preserve the historical structural-validation behavior when no
+            // application policy hook is configured.
+            return self.finish_certificate_exchange(session).await;
+        };
+
+        let attempt = Arc::new(CertificateAuthorizationAttempt {
+            kind: StdMutex::new(CertificateRefusalKind::Pending),
+        });
+        {
+            let mut attempts = self
+                .certificate_authorizations
+                .lock()
+                .expect("certificate authorizations lock poisoned");
+            if let Some(existing) = attempts.get(&session.session_nonce) {
+                let kind = existing
+                    .kind
+                    .lock()
+                    .expect("certificate authorization attempt lock poisoned")
+                    .clone();
+                return Err(AuthError::CertificateValidation(format!(
+                    "certificate authorization already decided or in progress for session {}: {:?}",
+                    session.session_nonce, kind
+                )));
+            }
+            attempts.insert(session.session_nonce.clone(), attempt.clone());
+        }
+
+        let context = CertificateAuthorizationContext {
+            session_nonce: session.session_nonce.clone(),
+            peer_identity_key: session.peer_identity_key.clone(),
+            certificates: certificates.to_vec(),
+            requested_certificates: session.requested_certificates.clone(),
+        };
+        let decision =
+            tokio::time::timeout(CERTIFICATE_AUTHORIZATION_TIMEOUT, authorizer(context)).await;
+
+        let still_current = self
+            .certificate_authorizations
+            .lock()
+            .expect("certificate authorizations lock poisoned")
+            .get(&session.session_nonce)
+            .is_some_and(|current| Arc::ptr_eq(current, &attempt));
+        if !still_current {
+            return Err(AuthError::SessionNotFound(format!(
+                "session evicted during certificate authorization for nonce: {}",
+                session.session_nonce
+            )));
+        }
+
+        match decision {
+            Ok(CertificateAuthorizationDecision::Accept) => {
+                self.finish_certificate_exchange(session).await?;
+                let mut attempts = self
+                    .certificate_authorizations
+                    .lock()
+                    .expect("certificate authorizations lock poisoned");
+                if attempts
+                    .get(&session.session_nonce)
+                    .is_some_and(|current| Arc::ptr_eq(current, &attempt))
+                {
+                    attempts.remove(&session.session_nonce);
+                }
+                Ok(())
+            }
+            Ok(CertificateAuthorizationDecision::Reject(reason)) => {
+                *attempt
+                    .kind
+                    .lock()
+                    .expect("certificate authorization attempt lock poisoned") =
+                    CertificateRefusalKind::Rejected(reason.clone());
+                Err(AuthError::CertificateValidation(format!(
+                    "certificate authorization rejected for session {}: {}",
+                    session.session_nonce, reason
+                )))
+            }
+            Err(_) => {
+                *attempt
+                    .kind
+                    .lock()
+                    .expect("certificate authorization attempt lock poisoned") =
+                    CertificateRefusalKind::TimedOut;
+                Err(AuthError::Timeout(format!(
+                    "certificate authorization timed out after {}ms for session {}",
+                    CERTIFICATE_AUTHORIZATION_TIMEOUT.as_millis(),
+                    session.session_nonce
+                )))
+            }
+        }
+    }
+
     /// Clone the "best" session for an identifier (peer identity key or
     /// session nonce), if one exists. Takes a brief read lock and clones the
     /// session out before returning — never holds the lock across an await.
@@ -1819,10 +1916,13 @@ impl<W: WalletInterface + 'static> Peer<W> {
                         return Err(AuthError::CertificateValidation(reason));
                     }
 
-                    // TS commits validation and resolves general-message waiters
-                    // before awaiting certificate listeners. Deferred messages
-                    // are also released here, after validation is committed.
-                    self.finish_certificate_exchange(&mut session).await?;
+                    let authorizer = self
+                        .certificate_authorizer
+                        .read()
+                        .expect("certificate authorizer lock poisoned")
+                        .clone();
+                    self.authorize_and_finish_certificate_exchange(&mut session, certs, authorizer)
+                        .await?;
 
                     self.fire_certificates_received_listeners(&response.identity_key, certs)
                         .await?;
@@ -2262,6 +2362,12 @@ impl<W: WalletInterface + 'static> Peer<W> {
         let certs = msg
             .certificates
             .expect("checked before signature verification");
+        if !certs.is_empty() && session.certificates_required && session.certificates_validated {
+            return Err(AuthError::CertificateValidation(format!(
+                "certificate authorization already completed for session {}",
+                session.session_nonce
+            )));
+        }
         if !certs.is_empty() {
             // Validate against the exact request this session advertised. The
             // mutable Peer default may have changed since the handshake, and an
@@ -2292,7 +2398,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 .read()
                 .expect("certificate authorizer lock poisoned")
                 .clone();
-            if let Some(authorizer) = authorizer {
+            if authorizer.is_some() {
                 // A policy decision is authority, so unlike the legacy
                 // observer-only path it must be bound to the identity that the
                 // handshake authenticated, not merely the self-signed frame.
@@ -2302,95 +2408,9 @@ impl<W: WalletInterface + 'static> Peer<W> {
                             .to_string(),
                     ));
                 }
-
-                let attempt = Arc::new(CertificateAuthorizationAttempt {
-                    kind: StdMutex::new(CertificateRefusalKind::Pending),
-                });
-                {
-                    let mut attempts = self
-                        .certificate_authorizations
-                        .lock()
-                        .expect("certificate authorizations lock poisoned");
-                    if let Some(existing) = attempts.get(&session.session_nonce) {
-                        let kind = existing
-                            .kind
-                            .lock()
-                            .expect("certificate authorization attempt lock poisoned")
-                            .clone();
-                        return Err(AuthError::CertificateValidation(format!(
-                            "certificate authorization already decided or in progress for session {}: {:?}",
-                            session.session_nonce, kind
-                        )));
-                    }
-                    attempts.insert(session.session_nonce.clone(), attempt.clone());
-                }
-
-                let context = CertificateAuthorizationContext {
-                    session_nonce: session.session_nonce.clone(),
-                    peer_identity_key: session.peer_identity_key.clone(),
-                    certificates: certs.clone(),
-                    requested_certificates: session.requested_certificates.clone(),
-                };
-                let decision =
-                    tokio::time::timeout(CERTIFICATE_AUTHORIZATION_TIMEOUT, authorizer(context))
-                        .await;
-
-                let still_current = self
-                    .certificate_authorizations
-                    .lock()
-                    .expect("certificate authorizations lock poisoned")
-                    .get(&session.session_nonce)
-                    .is_some_and(|current| Arc::ptr_eq(current, &attempt));
-                if !still_current {
-                    return Err(AuthError::SessionNotFound(format!(
-                        "session evicted during certificate authorization for nonce: {}",
-                        session.session_nonce
-                    )));
-                }
-
-                match decision {
-                    Ok(CertificateAuthorizationDecision::Accept) => {
-                        self.finish_certificate_exchange(&mut session).await?;
-                        let mut attempts = self
-                            .certificate_authorizations
-                            .lock()
-                            .expect("certificate authorizations lock poisoned");
-                        if attempts
-                            .get(&session.session_nonce)
-                            .is_some_and(|current| Arc::ptr_eq(current, &attempt))
-                        {
-                            attempts.remove(&session.session_nonce);
-                        }
-                    }
-                    Ok(CertificateAuthorizationDecision::Reject(reason)) => {
-                        *attempt
-                            .kind
-                            .lock()
-                            .expect("certificate authorization attempt lock poisoned") =
-                            CertificateRefusalKind::Rejected(reason.clone());
-                        return Err(AuthError::CertificateValidation(format!(
-                            "certificate authorization rejected for session {}: {}",
-                            session.session_nonce, reason
-                        )));
-                    }
-                    Err(_) => {
-                        *attempt
-                            .kind
-                            .lock()
-                            .expect("certificate authorization attempt lock poisoned") =
-                            CertificateRefusalKind::TimedOut;
-                        return Err(AuthError::Timeout(format!(
-                            "certificate authorization timed out after {}ms for session {}",
-                            CERTIFICATE_AUTHORIZATION_TIMEOUT.as_millis(),
-                            session.session_nonce
-                        )));
-                    }
-                }
-            } else {
-                // Preserve the historical structural-validation behavior when
-                // no application policy hook is configured.
-                self.finish_certificate_exchange(&mut session).await?;
             }
+            self.authorize_and_finish_certificate_exchange(&mut session, &certs, authorizer)
+                .await?;
         }
 
         // TS notifies listeners unconditionally, including `[]`, and awaits
@@ -2660,7 +2680,16 @@ impl<W: WalletInterface + 'static> Peer<W> {
         let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
             AuthError::InvalidMessage("missing yourNonce in general message".to_string())
         })?;
-        let request_nonce = msg.nonce.clone().unwrap_or_default();
+        let http_request_id: [u8; 32] = msg
+            .payload
+            .as_deref()
+            .filter(|payload| payload.len() >= 32)
+            .map(|payload| payload[..32].try_into().expect("32-byte slice"))
+            .ok_or_else(|| {
+                AuthError::InvalidMessage(
+                    "HTTP general message payload is missing its 32-byte request ID".to_string(),
+                )
+            })?;
         let (session, peer_pubkey) = self.resolve_general_message_session(&msg).await?;
         if !session.is_authenticated {
             return Err(AuthError::NotAuthenticated(format!(
@@ -2700,7 +2729,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
                 VerifiedCertificateRefusal {
                     session_nonce: current.session_nonce.clone(),
                     peer_identity_key: current.peer_identity_key.clone(),
-                    request_nonce,
+                    http_request_id,
                     kind: self.certificate_refusal_kind(&current.session_nonce),
                 },
             ));
@@ -2713,8 +2742,8 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// authenticated HTTP request.
     ///
     /// The opaque capability is consumed, bound to one exact live session and
-    /// request nonce, and rejected if the gate state changed. The serialized
-    /// BRC-104 response payload must begin with that decoded request nonce, so a
+    /// BRC-104 request ID, and rejected if the gate state changed. The serialized
+    /// BRC-104 response payload must begin with that same request ID, so a
     /// capability cannot be redirected to a different request. Normal response
     /// signing remains certificate-gated via [`Peer::create_general_message`].
     pub async fn sign_certificate_refusal(
@@ -2722,12 +2751,9 @@ impl<W: WalletInterface + 'static> Peer<W> {
         refusal: VerifiedCertificateRefusal,
         serialized_refusal_payload: Vec<u8>,
     ) -> Result<AuthMessage, AuthError> {
-        let request_nonce = base64_decode(&refusal.request_nonce)?;
-        if request_nonce.is_empty()
-            || !serialized_refusal_payload.starts_with(request_nonce.as_slice())
-        {
+        if !serialized_refusal_payload.starts_with(&refusal.http_request_id) {
             return Err(AuthError::InvalidMessage(
-                "certificate refusal payload is not bound to the verified request nonce"
+                "certificate refusal payload is not bound to the verified HTTP request ID"
                     .to_string(),
             ));
         }
@@ -6068,6 +6094,474 @@ mod tests {
         (peer_a, Arc::new(peer_b), identity_b)
     }
 
+    async fn pending_certificate_response_fixture(
+        cert_type: u8,
+    ) -> (
+        Peer<TestWallet>,
+        Arc<Peer<TestWallet>>,
+        String,
+        String,
+        VerifiableCertificate,
+        AuthMessage,
+    ) {
+        let (peer_a, peer_b, identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
+            .await
+            .expect("authenticated receiver session")
+            .session_nonce;
+        let certificate = issue_verifiable_certificate(
+            &peer_a.wallet,
+            &parse_public_key(&identity_b).unwrap(),
+            CertificateType([cert_type; 32]),
+        )
+        .await;
+        let requested = requested_for_certificate(&certificate);
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            let session = sessions
+                .get_session_mut(&session_nonce)
+                .expect("receiver session");
+            session.requested_certificates = Some(requested);
+            session.certificates_required = true;
+            session.certificates_validated = false;
+        }
+        let response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            session_nonce.clone(),
+            Some(vec![certificate.clone()]),
+            None,
+            None,
+        )
+        .await;
+        (
+            peer_a,
+            peer_b,
+            identity_b,
+            session_nonce,
+            certificate,
+            response,
+        )
+    }
+
+    fn http_request_payload(request_id_byte: u8, body: &[u8]) -> Vec<u8> {
+        let mut payload = vec![request_id_byte; 32];
+        payload.extend_from_slice(body);
+        payload
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn certificate_authorizer_blocks_authority_until_accept() {
+        let (_peer_a, peer_b, _identity_b, session_nonce, _certificate, response) =
+            pending_certificate_response_fixture(101).await;
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Semaphore::new(0));
+        let authorizer_release = release.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |context| {
+            let entered_tx = entered_tx.clone();
+            let release = authorizer_release.clone();
+            Box::pin(async move {
+                entered_tx.send(context).unwrap();
+                release.acquire().await.unwrap().forget();
+                CertificateAuthorizationDecision::Accept
+            })
+        }));
+
+        let dispatch = {
+            let peer_b = peer_b.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(response).await })
+        };
+        let context = bounded(entered_rx.recv())
+            .await
+            .expect("authorizer invoked");
+        assert_eq!(context.session_nonce, session_nonce);
+        assert_eq!(context.certificates.len(), 1);
+        let blocked = peer_b
+            .session_by_identifier(&session_nonce)
+            .await
+            .expect("blocked session remains live");
+        assert!(!blocked.certificates_validated);
+        assert!(
+            !dispatch.is_finished(),
+            "proof processing must await policy"
+        );
+
+        release.add_permits(1);
+        bounded(dispatch)
+            .await
+            .expect("dispatch task")
+            .expect("accepted proof");
+        assert!(
+            peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedded_initial_response_certificates_require_authorizer_acceptance() {
+        let requester_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let responder_wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let requester_identity = wallet_identity(&requester_wallet).await;
+        let responder_identity = wallet_identity(&responder_wallet).await;
+        let certificate = issue_verifiable_certificate(
+            &responder_wallet,
+            &parse_public_key(&requester_identity).unwrap(),
+            CertificateType([107; 32]),
+        )
+        .await;
+        let requested = requested_for_certificate(&certificate);
+        let (requester_transport, responder_transport) = create_mock_transport_pair();
+        let mut responder_rx = responder_transport.subscribe();
+        let requester = Arc::new(Peer::new(requester_wallet, requester_transport));
+        requester.set_certificates_to_request(requested);
+        requester.set_certificate_authorizer(Arc::new(|context| {
+            assert_eq!(context.certificates.len(), 1);
+            Box::pin(async {
+                CertificateAuthorizationDecision::Reject(
+                    "embedded proof rejected by policy".to_string(),
+                )
+            })
+        }));
+
+        let handshake = {
+            let requester = requester.clone();
+            let responder_identity = responder_identity.clone();
+            tokio::spawn(async move {
+                requester
+                    .get_authenticated_session(&responder_identity)
+                    .await
+            })
+        };
+        let request = bounded(responder_rx.recv()).await.expect("initialRequest");
+        let session_nonce = request.initial_nonce.clone().unwrap();
+        let response = signed_initial_response(
+            &responder_wallet,
+            responder_identity,
+            &requester_identity,
+            session_nonce.clone(),
+            Some(vec![certificate]),
+        )
+        .await;
+        responder_transport.send(response).await.unwrap();
+
+        let result = bounded(handshake).await.expect("handshake task");
+        assert!(
+            matches!(&result, Err(AuthError::CertificateValidation(message)) if message.contains("embedded proof rejected by policy")),
+            "embedded proof bypassed the authorizer: {result:?}"
+        );
+        let session = requester
+            .session_by_identifier(&session_nonce)
+            .await
+            .expect("rejected handshake session remains inspectable");
+        assert!(session.is_authenticated);
+        assert!(!session.certificates_validated);
+        assert_eq!(
+            requester.certificate_refusal_kind(&session_nonce),
+            CertificateRefusalKind::Rejected("embedded proof rejected by policy".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejected_certificate_authorization_is_terminal_for_the_session() {
+        let (peer_a, peer_b, identity_b, session_nonce, certificate, response) =
+            pending_certificate_response_fixture(102).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authorizer_calls = calls.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |_| {
+            authorizer_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                CertificateAuthorizationDecision::Reject("revoked at first sight".to_string())
+            })
+        }));
+
+        let result = bounded(peer_b.dispatch_message(response)).await;
+        assert!(
+            matches!(&result, Err(AuthError::CertificateValidation(message)) if message.contains("revoked at first sight")),
+            "unexpected rejection: {result:?}"
+        );
+        assert!(
+            !peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let late = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            session_nonce.clone(),
+            Some(vec![certificate]),
+            None,
+            None,
+        )
+        .await;
+        let late_result = bounded(peer_b.dispatch_message(late)).await;
+        assert!(matches!(
+            late_result,
+            Err(AuthError::CertificateValidation(_))
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a terminal rejection must not invoke policy again"
+        );
+        assert_eq!(
+            peer_b.certificate_refusal_kind(&session_nonce),
+            CertificateRefusalKind::Rejected("revoked at first sight".to_string())
+        );
+
+        let blocked_request = peer_a
+            .create_general_message(
+                &identity_b,
+                http_request_payload(201, b"request after rejection"),
+            )
+            .await
+            .expect("sender's side of the session remains usable");
+        let refusal = match peer_b
+            .verify_general_message_for_http(blocked_request)
+            .await
+            .expect("an authentic rejected request has a narrow refusal outcome")
+        {
+            GeneralMessageVerification::CertificateRefusal(refusal) => refusal,
+            GeneralMessageVerification::Authorized => {
+                panic!("rejected certificate session reached application authority")
+            }
+        };
+        assert_eq!(
+            refusal.kind(),
+            &CertificateRefusalKind::Rejected("revoked at first sight".to_string())
+        );
+        let mut deterministic_refusal = vec![201; 32];
+        deterministic_refusal.extend_from_slice(b"403 ERR_CERTIFICATE_REJECTED");
+        peer_b
+            .sign_certificate_refusal(refusal, deterministic_refusal)
+            .await
+            .expect("the verified rejected request can receive one signed refusal");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn certificate_authorizer_timeout_is_terminal_and_fail_closed() {
+        let (_peer_a, peer_b, _identity_b, session_nonce, _certificate, response) =
+            pending_certificate_response_fixture(103).await;
+        peer_b.set_certificate_authorizer(Arc::new(|_| Box::pin(std::future::pending())));
+
+        let result = tokio::time::timeout(
+            CERTIFICATE_AUTHORIZATION_TIMEOUT + Duration::from_secs(1),
+            peer_b.dispatch_message(response),
+        )
+        .await
+        .expect("SDK authorizer deadline must beat the outer test deadline");
+        assert!(matches!(result, Err(AuthError::Timeout(_))));
+        assert!(
+            !peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+        assert_eq!(
+            peer_b.certificate_refusal_kind(&session_nonce),
+            CertificateRefusalKind::TimedOut
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn racing_certificate_proofs_invoke_one_authorizer_and_one_terminal_decision() {
+        let (peer_a, peer_b, identity_b, session_nonce, certificate, first_response) =
+            pending_certificate_response_fixture(104).await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let second_response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            session_nonce.clone(),
+            Some(vec![certificate]),
+            None,
+            None,
+        )
+        .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authorizer_calls = calls.clone();
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Semaphore::new(0));
+        let authorizer_release = release.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |_| {
+            authorizer_calls.fetch_add(1, Ordering::SeqCst);
+            let entered_tx = entered_tx.clone();
+            let release = authorizer_release.clone();
+            Box::pin(async move {
+                entered_tx.send(()).unwrap();
+                release.acquire().await.unwrap().forget();
+                CertificateAuthorizationDecision::Accept
+            })
+        }));
+
+        let first = {
+            let peer_b = peer_b.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(first_response).await })
+        };
+        bounded(entered_rx.recv()).await.expect("first policy call");
+        let second = bounded(peer_b.dispatch_message(second_response)).await;
+        assert!(matches!(second, Err(AuthError::CertificateValidation(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+
+        release.add_permits(1);
+        bounded(first)
+            .await
+            .expect("first dispatch task")
+            .expect("first terminal decision wins");
+        assert!(
+            peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn eviction_while_authorizer_awaits_cannot_recreate_authority() {
+        let (_peer_a, peer_b, _identity_b, session_nonce, _certificate, response) =
+            pending_certificate_response_fixture(105).await;
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Semaphore::new(0));
+        let authorizer_release = release.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |_| {
+            let entered_tx = entered_tx.clone();
+            let release = authorizer_release.clone();
+            Box::pin(async move {
+                entered_tx.send(()).unwrap();
+                release.acquire().await.unwrap().forget();
+                CertificateAuthorizationDecision::Accept
+            })
+        }));
+
+        let dispatch = {
+            let peer_b = peer_b.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(response).await })
+        };
+        bounded(entered_rx.recv())
+            .await
+            .expect("authorizer entered");
+        peer_b
+            .session_manager
+            .write()
+            .await
+            .remove_session(&session_nonce);
+        peer_b
+            .cleanup_reaped_sessions(std::slice::from_ref(&session_nonce))
+            .await;
+        release.add_permits(1);
+
+        let result = bounded(dispatch).await.expect("dispatch task");
+        assert!(matches!(result, Err(AuthError::SessionNotFound(_))));
+        assert!(peer_b.session_by_identifier(&session_nonce).await.is_none());
+        assert!(!peer_b
+            .certificate_authorizations
+            .lock()
+            .unwrap()
+            .contains_key(&session_nonce));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_refusal_signing_requires_an_authentic_fresh_pending_request() {
+        let (peer_a, peer_b, identity_b, session_nonce, _certificate, _response) =
+            pending_certificate_response_fixture(106).await;
+
+        let authentic = peer_a
+            .create_general_message(&identity_b, http_request_payload(202, b"pending request"))
+            .await
+            .unwrap();
+        let refusal = match peer_b
+            .verify_general_message_for_http(authentic.clone())
+            .await
+            .expect("authentic pending request")
+        {
+            GeneralMessageVerification::CertificateRefusal(refusal) => refusal,
+            GeneralMessageVerification::Authorized => {
+                panic!("pending certificate gate authorized a request")
+            }
+        };
+        assert_eq!(refusal.kind(), &CertificateRefusalKind::Pending);
+
+        let replay = peer_b
+            .verify_general_message_for_http(authentic.clone())
+            .await;
+        assert!(matches!(replay, Err(AuthError::ReplayDetected(_))));
+
+        let mut forged = peer_a
+            .create_general_message(&identity_b, http_request_payload(203, b"forged request"))
+            .await
+            .unwrap();
+        forged.payload.as_mut().unwrap()[31] ^= 0x01;
+        let forged = peer_b.verify_general_message_for_http(forged).await;
+        assert!(
+            matches!(forged, Err(AuthError::InvalidSignature(_))),
+            "forged HTTP payload must not mint a refusal capability: {forged:?}"
+        );
+
+        let mut malformed = peer_a
+            .create_general_message(&identity_b, http_request_payload(204, b"malformed request"))
+            .await
+            .unwrap();
+        malformed.nonce = None;
+        let malformed = peer_b.verify_general_message_for_http(malformed).await;
+        assert!(matches!(malformed, Err(AuthError::InvalidMessage(_))));
+
+        assert!(matches!(
+            peer_b
+                .create_general_message(&session_nonce, b"ordinary bypass".to_vec())
+                .await,
+            Err(AuthError::CertificateValidation(_))
+        ));
+        let wrong_payload = peer_b
+            .sign_certificate_refusal(refusal, b"not request-bound".to_vec())
+            .await;
+        assert!(matches!(wrong_payload, Err(AuthError::InvalidMessage(_))));
+
+        let second = peer_a
+            .create_general_message(
+                &identity_b,
+                http_request_payload(205, b"second pending request"),
+            )
+            .await
+            .unwrap();
+        let refusal = match peer_b
+            .verify_general_message_for_http(second)
+            .await
+            .unwrap()
+        {
+            GeneralMessageVerification::CertificateRefusal(refusal) => refusal,
+            GeneralMessageVerification::Authorized => panic!("gate unexpectedly authorized"),
+        };
+        let mut refusal_payload = vec![205; 32];
+        refusal_payload.extend_from_slice(b"408 CERTIFICATE_TIMEOUT");
+        let signed = peer_b
+            .sign_certificate_refusal(refusal, refusal_payload)
+            .await
+            .expect("request-bound refusal signs while normal path remains gated");
+        peer_a
+            .verify_general_message(signed)
+            .await
+            .expect("the narrow refusal is a valid BRC-103 general signature");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_outbound_general_message_is_blocked_until_certificates_validate() {
         let (peer_a, _peer_b, identity_b) = authenticated_pair().await;
@@ -6785,7 +7279,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_evicted_certificate_exchange_still_wakes_waiters() {
+    async fn test_evicted_certificate_exchange_does_not_wake_success_waiters() {
         let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
         let identity_a = wallet_identity(&peer_a.wallet).await;
         let session_nonce = peer_b
@@ -6817,8 +7311,8 @@ mod tests {
         let result = peer_b.finish_certificate_exchange(&mut session).await;
         assert!(matches!(result, Err(AuthError::SessionNotFound(_))));
         assert!(
-            *receiver.borrow(),
-            "session eviction must still wake certificate waiters"
+            !*receiver.borrow(),
+            "an evicted session must not receive a successful validation signal"
         );
     }
 
