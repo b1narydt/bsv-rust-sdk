@@ -59,8 +59,89 @@ pub type CertificateReceivedFuture =
 pub type OnCertificatesReceived =
     dyn Fn(String, Vec<VerifiableCertificate>) -> CertificateReceivedFuture + Send + Sync + 'static;
 
+/// The exact authenticated session and structurally valid proof batch presented
+/// to a blocking certificate authorizer.
+#[derive(Clone, Debug)]
+pub struct CertificateAuthorizationContext {
+    /// Local nonce identifying the authenticated session being authorized.
+    pub session_nonce: String,
+    /// Identity key bound to the authenticated session (never frame-controlled).
+    pub peer_identity_key: String,
+    /// The structurally and cryptographically validated proof batch.
+    pub certificates: Vec<VerifiableCertificate>,
+    /// Immutable certificate request advertised when the session began.
+    pub requested_certificates: Option<RequestedCertificateSet>,
+}
+
+/// Terminal decision returned by a certificate authorizer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CertificateAuthorizationDecision {
+    /// Admit this exact session/proof batch.
+    Accept,
+    /// Refuse this exact session/proof batch with an application-owned reason.
+    Reject(String),
+}
+
+/// Future returned by a blocking certificate authorizer.
+pub type CertificateAuthorizationFuture =
+    Pin<Box<dyn Future<Output = CertificateAuthorizationDecision> + Send + 'static>>;
+
+/// Session-bound async policy hook invoked before certificate authority is committed.
+pub type CertificateAuthorizer = dyn Fn(CertificateAuthorizationContext) -> CertificateAuthorizationFuture
+    + Send
+    + Sync
+    + 'static;
+
+/// Why an otherwise authentic HTTP general request cannot reach its handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CertificateRefusalKind {
+    /// A valid proof batch is still awaiting its external authorization decision,
+    /// or the session has not presented one yet.
+    Pending,
+    /// The configured authorizer refused the proof batch.
+    Rejected(String),
+    /// The configured authorizer did not decide before the SDK deadline.
+    TimedOut,
+}
+
+/// Opaque, one-use capability to sign only the refusal for a general request
+/// that was already session-bound, signature-verified, and replay-marked.
+///
+/// This type is deliberately not `Clone`, and all fields are private. The only
+/// constructor is [`Peer::verify_general_message_for_http`].
+#[derive(Debug)]
+pub struct VerifiedCertificateRefusal {
+    session_nonce: String,
+    peer_identity_key: String,
+    request_nonce: String,
+    kind: CertificateRefusalKind,
+}
+
+impl VerifiedCertificateRefusal {
+    /// Certificate-gate state observed after authenticating the request.
+    pub fn kind(&self) -> &CertificateRefusalKind {
+        &self.kind
+    }
+
+    /// Exact local session nonce to which this capability is bound.
+    pub fn session_nonce(&self) -> &str {
+        &self.session_nonce
+    }
+}
+
+/// HTTP-facing result that keeps authentication errors separate from a valid
+/// request blocked only by certificate authorization.
+#[derive(Debug)]
+pub enum GeneralMessageVerification {
+    /// The request is authentic, fresh, and fully authorized.
+    Authorized,
+    /// The request is authentic and fresh, but its exact session remains gated.
+    CertificateRefusal(VerifiedCertificateRefusal),
+}
+
 const CERTIFICATE_WAIT_TIMEOUT: Duration = Duration::from_millis(30_000);
 const CERTIFICATE_LISTENER_TIMEOUT: Duration = Duration::from_millis(30_000);
+const CERTIFICATE_AUTHORIZATION_TIMEOUT: Duration = Duration::from_millis(30_000);
 // A worker and its bounded queue are allocated lazily per live session. 1024
 // bounds that aggregate memory/task cost while leaving ample room for a busy
 // multiparty peer; admission evicts LRU state instead of rejecting handshakes.
@@ -101,6 +182,10 @@ struct CertificateDeliveryState {
 struct CertificateDeliveryWorkerGuard<'a> {
     deliveries: &'a StdMutex<CertificateDeliveryState>,
     armed: bool,
+}
+
+struct CertificateAuthorizationAttempt {
+    kind: StdMutex<CertificateRefusalKind>,
 }
 
 impl Drop for CertificateDeliveryWorkerGuard<'_> {
@@ -365,6 +450,13 @@ pub struct PeerInner<W: WalletInterface> {
     /// Ordered, lossless certificate delivery. Callbacks are cloned out before
     /// awaiting so registration/removal never holds this mutex across an await.
     on_certificates_received_callbacks: StdMutex<BTreeMap<u64, Arc<OnCertificatesReceived>>>,
+    /// Optional blocking policy hook. Cloned out before awaiting so replacing a
+    /// future session's policy never changes an in-flight decision.
+    certificate_authorizer: StdRwLock<Option<Arc<CertificateAuthorizer>>>,
+    /// One terminal authorization attempt per exact live session. Entries are
+    /// removed with their session; a stale future must still own the same `Arc`
+    /// before it can commit acceptance or refusal.
+    certificate_authorizations: StdMutex<HashMap<String, Arc<CertificateAuthorizationAttempt>>>,
     /// Ordered, unbounded-by-channel certificate callback queue. The transport
     /// itself and session limits bound authenticated peers; this queue avoids
     /// the former 32-entry observer channel dropping valid deliveries while a
@@ -435,6 +527,8 @@ impl<W: WalletInterface + 'static> Peer<W> {
             control_dispatch_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_CONTROL_DISPATCHES)),
             on_certificate_request_received_callbacks: StdMutex::new(BTreeMap::new()),
             on_certificates_received_callbacks: StdMutex::new(BTreeMap::new()),
+            certificate_authorizer: StdRwLock::new(None),
+            certificate_authorizations: StdMutex::new(HashMap::new()),
             certificate_deliveries: StdMutex::new(CertificateDeliveryState::default()),
             certificate_validation_waiters: Arc::new(StdMutex::new(HashMap::new())),
             callback_id_counter: StdMutex::new(0),
@@ -777,6 +871,21 @@ impl<W: WalletInterface + 'static> Peer<W> {
         id
     }
 
+    /// Install a blocking certificate authorizer for subsequently processed
+    /// proof batches.
+    ///
+    /// The hook runs only after the response nonce, session, signature, replay,
+    /// retained request, and certificate structure have passed validation. It
+    /// receives the authenticated session identity rather than trusting the
+    /// frame's identity field. The SDK waits at most 30 seconds. Rejection or
+    /// timeout is terminal for that session and never marks it validated.
+    pub fn set_certificate_authorizer(&self, authorizer: Arc<CertificateAuthorizer>) {
+        *self
+            .certificate_authorizer
+            .write()
+            .expect("certificate authorizer lock poisoned") = Some(authorizer);
+    }
+
     /// Remove a previously registered certificate-received listener.
     pub fn stop_listening_for_certificates_received(&self, callback_id: u64) {
         self.on_certificates_received_callbacks
@@ -1082,6 +1191,21 @@ impl<W: WalletInterface + 'static> Peer<W> {
         session.certificates_required && !session.certificates_validated
     }
 
+    fn certificate_refusal_kind(&self, session_nonce: &str) -> CertificateRefusalKind {
+        self.certificate_authorizations
+            .lock()
+            .expect("certificate authorizations lock poisoned")
+            .get(session_nonce)
+            .map(|attempt| {
+                attempt
+                    .kind
+                    .lock()
+                    .expect("certificate authorization attempt lock poisoned")
+                    .clone()
+            })
+            .unwrap_or(CertificateRefusalKind::Pending)
+    }
+
     fn resolve_certificate_validation(&self, session_nonce: &str) {
         if let Some(sender) = self
             .certificate_validation_waiters
@@ -1117,6 +1241,10 @@ impl<W: WalletInterface + 'static> Peer<W> {
             }
         }
         for session_nonce in session_nonces {
+            self.certificate_authorizations
+                .lock()
+                .expect("certificate authorizations lock poisoned")
+                .remove(session_nonce);
             self.resolve_certificate_validation(session_nonce);
         }
     }
@@ -1134,8 +1262,8 @@ impl<W: WalletInterface + 'static> Peer<W> {
             }
             updated
         };
-        self.resolve_certificate_validation(&session.session_nonce);
         if updated {
+            self.resolve_certificate_validation(&session.session_nonce);
             Ok(())
         } else {
             Err(AuthError::SessionNotFound(format!(
@@ -1185,6 +1313,19 @@ impl<W: WalletInterface + 'static> Peer<W> {
             ));
         }
 
+        self.sign_general_message_from_session(session, payload)
+            .await
+    }
+
+    /// Sign for an already-selected session without applying the certificate
+    /// gate. This stays private: the public bypass below requires an opaque
+    /// refusal capability minted only after request authentication + replay
+    /// marking.
+    async fn sign_general_message_from_session(
+        &self,
+        session: &PeerSession,
+        payload: Vec<u8>,
+    ) -> Result<AuthMessage, AuthError> {
         // TS parity (Peer.ts:163): outbound sends refresh session activity
         // too, so an actively-sending client never idle-expires its own
         // session while the server side stays warm. Brief synchronous write
@@ -2146,10 +2287,110 @@ impl<W: WalletInterface + 'static> Peer<W> {
         }
 
         if !certs.is_empty() {
-            // TS commits validation and resolves waiters before listeners run.
-            // A later listener rejection therefore does not roll validation
-            // back; keep that ordering for exact 2.4.1 parity.
-            self.finish_certificate_exchange(&mut session).await?;
+            let authorizer = self
+                .certificate_authorizer
+                .read()
+                .expect("certificate authorizer lock poisoned")
+                .clone();
+            if let Some(authorizer) = authorizer {
+                // A policy decision is authority, so unlike the legacy
+                // observer-only path it must be bound to the identity that the
+                // handshake authenticated, not merely the self-signed frame.
+                if parse_public_key(&session.peer_identity_key)? != peer_pubkey {
+                    return Err(AuthError::CertificateValidation(
+                        "certificate authorization identity does not match authenticated session"
+                            .to_string(),
+                    ));
+                }
+
+                let attempt = Arc::new(CertificateAuthorizationAttempt {
+                    kind: StdMutex::new(CertificateRefusalKind::Pending),
+                });
+                {
+                    let mut attempts = self
+                        .certificate_authorizations
+                        .lock()
+                        .expect("certificate authorizations lock poisoned");
+                    if let Some(existing) = attempts.get(&session.session_nonce) {
+                        let kind = existing
+                            .kind
+                            .lock()
+                            .expect("certificate authorization attempt lock poisoned")
+                            .clone();
+                        return Err(AuthError::CertificateValidation(format!(
+                            "certificate authorization already decided or in progress for session {}: {:?}",
+                            session.session_nonce, kind
+                        )));
+                    }
+                    attempts.insert(session.session_nonce.clone(), attempt.clone());
+                }
+
+                let context = CertificateAuthorizationContext {
+                    session_nonce: session.session_nonce.clone(),
+                    peer_identity_key: session.peer_identity_key.clone(),
+                    certificates: certs.clone(),
+                    requested_certificates: session.requested_certificates.clone(),
+                };
+                let decision =
+                    tokio::time::timeout(CERTIFICATE_AUTHORIZATION_TIMEOUT, authorizer(context))
+                        .await;
+
+                let still_current = self
+                    .certificate_authorizations
+                    .lock()
+                    .expect("certificate authorizations lock poisoned")
+                    .get(&session.session_nonce)
+                    .is_some_and(|current| Arc::ptr_eq(current, &attempt));
+                if !still_current {
+                    return Err(AuthError::SessionNotFound(format!(
+                        "session evicted during certificate authorization for nonce: {}",
+                        session.session_nonce
+                    )));
+                }
+
+                match decision {
+                    Ok(CertificateAuthorizationDecision::Accept) => {
+                        self.finish_certificate_exchange(&mut session).await?;
+                        let mut attempts = self
+                            .certificate_authorizations
+                            .lock()
+                            .expect("certificate authorizations lock poisoned");
+                        if attempts
+                            .get(&session.session_nonce)
+                            .is_some_and(|current| Arc::ptr_eq(current, &attempt))
+                        {
+                            attempts.remove(&session.session_nonce);
+                        }
+                    }
+                    Ok(CertificateAuthorizationDecision::Reject(reason)) => {
+                        *attempt
+                            .kind
+                            .lock()
+                            .expect("certificate authorization attempt lock poisoned") =
+                            CertificateRefusalKind::Rejected(reason.clone());
+                        return Err(AuthError::CertificateValidation(format!(
+                            "certificate authorization rejected for session {}: {}",
+                            session.session_nonce, reason
+                        )));
+                    }
+                    Err(_) => {
+                        *attempt
+                            .kind
+                            .lock()
+                            .expect("certificate authorization attempt lock poisoned") =
+                            CertificateRefusalKind::TimedOut;
+                        return Err(AuthError::Timeout(format!(
+                            "certificate authorization timed out after {}ms for session {}",
+                            CERTIFICATE_AUTHORIZATION_TIMEOUT.as_millis(),
+                            session.session_nonce
+                        )));
+                    }
+                }
+            } else {
+                // Preserve the historical structural-validation behavior when
+                // no application policy hook is configured.
+                self.finish_certificate_exchange(&mut session).await?;
+            }
         }
 
         // TS notifies listeners unconditionally, including `[]`, and awaits
@@ -2402,6 +2643,127 @@ impl<W: WalletInterface + 'static> Peer<W> {
         }
 
         self.verify_general_message_with_session(msg, &session, &peer_pubkey)
+            .await
+    }
+
+    /// Verify an HTTP general request while distinguishing certificate policy
+    /// refusal from malformed, forged, replayed, or session-mismatched input.
+    ///
+    /// Unlike [`Peer::verify_general_message`], this method completes signature
+    /// verification and atomically replay-marks an authentic request before it
+    /// reports the certificate gate. Only that path can mint the opaque refusal
+    /// capability consumed by [`Peer::sign_certificate_refusal`].
+    pub async fn verify_general_message_for_http(
+        &self,
+        msg: AuthMessage,
+    ) -> Result<GeneralMessageVerification, AuthError> {
+        let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
+            AuthError::InvalidMessage("missing yourNonce in general message".to_string())
+        })?;
+        let request_nonce = msg.nonce.clone().unwrap_or_default();
+        let (session, peer_pubkey) = self.resolve_general_message_session(&msg).await?;
+        if !session.is_authenticated {
+            return Err(AuthError::NotAuthenticated(format!(
+                "session not authenticated for nonce: {}",
+                your_nonce
+            )));
+        }
+
+        self.verify_general_message_signature(&msg, &session, &peer_pubkey)
+            .await?;
+        self.mark_general_message_seen(&msg, &session).await?;
+
+        // Re-read after the replay commit. Authorization may have completed
+        // during signature verification; a stale pre-crypto clone must not
+        // manufacture a refusal capability for an already-authorized session.
+        let current = self
+            .session_manager
+            .read()
+            .await
+            .get_active_session(&session.session_nonce, now_ms())
+            .cloned()
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!(
+                    "session evicted after general request verification for nonce: {}",
+                    session.session_nonce
+                ))
+            })?;
+        if current.peer_identity_key != session.peer_identity_key || !current.is_authenticated {
+            return Err(AuthError::NotAuthenticated(format!(
+                "session changed during general request verification for nonce: {}",
+                session.session_nonce
+            )));
+        }
+
+        if Self::certificate_validation_is_pending(&current) {
+            return Ok(GeneralMessageVerification::CertificateRefusal(
+                VerifiedCertificateRefusal {
+                    session_nonce: current.session_nonce.clone(),
+                    peer_identity_key: current.peer_identity_key.clone(),
+                    request_nonce,
+                    kind: self.certificate_refusal_kind(&current.session_nonce),
+                },
+            ));
+        }
+
+        Ok(GeneralMessageVerification::Authorized)
+    }
+
+    /// Sign the deterministic certificate refusal corresponding to one already
+    /// authenticated HTTP request.
+    ///
+    /// The opaque capability is consumed, bound to one exact live session and
+    /// request nonce, and rejected if the gate state changed. The serialized
+    /// BRC-104 response payload must begin with that decoded request nonce, so a
+    /// capability cannot be redirected to a different request. Normal response
+    /// signing remains certificate-gated via [`Peer::create_general_message`].
+    pub async fn sign_certificate_refusal(
+        &self,
+        refusal: VerifiedCertificateRefusal,
+        serialized_refusal_payload: Vec<u8>,
+    ) -> Result<AuthMessage, AuthError> {
+        let request_nonce = base64_decode(&refusal.request_nonce)?;
+        if request_nonce.is_empty()
+            || !serialized_refusal_payload.starts_with(request_nonce.as_slice())
+        {
+            return Err(AuthError::InvalidMessage(
+                "certificate refusal payload is not bound to the verified request nonce"
+                    .to_string(),
+            ));
+        }
+
+        let session = self
+            .session_manager
+            .read()
+            .await
+            .get_active_session(&refusal.session_nonce, now_ms())
+            .cloned()
+            .ok_or_else(|| {
+                AuthError::SessionNotFound(format!(
+                    "Session not found for certificate refusal nonce: {}",
+                    refusal.session_nonce
+                ))
+            })?;
+        if !session.is_authenticated || session.peer_identity_key != refusal.peer_identity_key {
+            return Err(AuthError::NotAuthenticated(format!(
+                "certificate refusal capability does not match live session {}",
+                refusal.session_nonce
+            )));
+        }
+        if !Self::certificate_validation_is_pending(&session) {
+            return Err(AuthError::CertificateValidation(
+                "certificate refusal cannot be signed after authorization completed".to_string(),
+            ));
+        }
+        let current_kind = self.certificate_refusal_kind(&session.session_nonce);
+        if current_kind != refusal.kind {
+            return Err(AuthError::CertificateValidation(format!(
+                "certificate refusal state changed from {:?} to {:?}",
+                refusal.kind, current_kind
+            )));
+        }
+
+        self.sign_general_message_from_session(&session, serialized_refusal_payload)
             .await
     }
 
