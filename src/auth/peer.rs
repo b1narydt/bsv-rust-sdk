@@ -71,6 +71,101 @@ pub struct CertificateAuthorizationContext {
     pub certificates: Vec<VerifiableCertificate>,
     /// Immutable certificate request advertised when the session began.
     pub requested_certificates: Option<RequestedCertificateSet>,
+    admission_commit: CertificateAdmissionCommitRegistration,
+}
+
+type CertificateAdmissionCommit = Box<dyn FnOnce() -> Result<(), AuthError> + Send + 'static>;
+
+#[derive(Clone)]
+struct CertificateAdmissionCommitRegistration {
+    state: Arc<StdMutex<CertificateAdmissionCommitState>>,
+}
+
+struct CertificateAdmissionCommitState {
+    active: bool,
+    callback: Option<CertificateAdmissionCommit>,
+}
+
+impl Default for CertificateAdmissionCommitRegistration {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(StdMutex::new(CertificateAdmissionCommitState {
+                active: true,
+                callback: None,
+            })),
+        }
+    }
+}
+
+impl std::fmt::Debug for CertificateAdmissionCommitRegistration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self
+            .state
+            .lock()
+            .expect("certificate admission commit lock poisoned");
+        formatter
+            .debug_struct("CertificateAdmissionCommitRegistration")
+            .field("active", &state.active)
+            .field("registered", &state.callback.is_some())
+            .finish()
+    }
+}
+
+impl CertificateAdmissionCommitRegistration {
+    fn close_and_take(&self) -> Option<CertificateAdmissionCommit> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("certificate admission commit lock poisoned");
+        state.active = false;
+        state.callback.take()
+    }
+}
+
+struct CertificateAdmissionCommitCleanup(CertificateAdmissionCommitRegistration);
+
+impl Drop for CertificateAdmissionCommitCleanup {
+    fn drop(&mut self) {
+        // Close registration even if application code retained a cloned
+        // context; callback lifetime is bounded by the SDK attempt, not Arc.
+        drop(self.0.close_and_take());
+    }
+}
+
+impl CertificateAuthorizationContext {
+    /// Register one synchronous consumer commit to run atomically with SDK
+    /// certificate admission.
+    ///
+    /// The callback is retained only while this authorization attempt is live.
+    /// If dispatch is cancelled, rejected, or times out before SDK admission,
+    /// it is dropped without being called, allowing a captured rollback guard
+    /// to remove attempt-owned provisional state. On acceptance, the SDK calls
+    /// it while holding the session write lock immediately before making the
+    /// session certificate-valid, so consumers cannot observe SDK authority
+    /// before their corresponding local authority is committed. The callback
+    /// must finish promptly and must not call back into this [`Peer`].
+    pub fn register_certificate_admission_commit<F>(&self, callback: F) -> Result<(), AuthError>
+    where
+        F: FnOnce() -> Result<(), AuthError> + Send + 'static,
+    {
+        let mut state = self
+            .admission_commit
+            .state
+            .lock()
+            .expect("certificate admission commit lock poisoned");
+        if !state.active {
+            return Err(AuthError::CertificateValidation(
+                "certificate admission commit registration is closed".to_string(),
+            ));
+        }
+        if state.callback.is_some() {
+            return Err(AuthError::CertificateValidation(
+                "certificate admission commit is already registered".to_string(),
+            ));
+        }
+        state.callback = Some(Box::new(callback));
+        Ok(())
+    }
 }
 
 /// Snapshot of the peer's certificate-admission configuration.
@@ -1474,9 +1569,31 @@ impl<W: WalletInterface + 'static> Peer<W> {
         &self,
         session: &mut PeerSession,
     ) -> Result<(), AuthError> {
-        session.certificates_validated = true;
+        self.finish_certificate_exchange_with_commit(session, None)
+            .await
+    }
+
+    async fn finish_certificate_exchange_with_commit(
+        &self,
+        session: &mut PeerSession,
+        admission_commit: Option<CertificateAdmissionCommit>,
+    ) -> Result<(), AuthError> {
         let updated = {
             let mut manager = self.session_manager.write().await;
+            if !manager.has_session(&session.session_nonce) {
+                return Err(AuthError::SessionNotFound(format!(
+                    "session evicted during certificate validation for nonce: {}",
+                    session.session_nonce
+                )));
+            }
+            // This callback is synchronous and runs while the write lock keeps
+            // general verification from observing the session. A failure leaves
+            // the SDK session pending; cancellation while awaiting this lock
+            // drops the callback and any consumer-owned rollback guard.
+            if let Some(commit) = admission_commit {
+                commit()?;
+            }
+            session.certificates_validated = true;
             let updated = manager.update_session(&session.session_nonce, session.clone());
             if updated {
                 manager.touch(&session.session_nonce, now_ms());
@@ -1538,11 +1655,14 @@ impl<W: WalletInterface + 'static> Peer<W> {
             armed: true,
         };
 
+        let admission_commit = CertificateAdmissionCommitRegistration::default();
+        let _admission_commit_cleanup = CertificateAdmissionCommitCleanup(admission_commit.clone());
         let context = CertificateAuthorizationContext {
             session_nonce: session.session_nonce.clone(),
             peer_identity_key: session.peer_identity_key.clone(),
             certificates: certificates.to_vec(),
             requested_certificates: session.requested_certificates.clone(),
+            admission_commit: admission_commit.clone(),
         };
         let decision =
             tokio::time::timeout(CERTIFICATE_AUTHORIZATION_TIMEOUT, authorizer(context)).await;
@@ -1562,7 +1682,11 @@ impl<W: WalletInterface + 'static> Peer<W> {
 
         match decision {
             Ok(CertificateAuthorizationDecision::Accept) => {
-                self.finish_certificate_exchange(session).await?;
+                self.finish_certificate_exchange_with_commit(
+                    session,
+                    admission_commit.close_and_take(),
+                )
+                .await?;
                 registration.remove_if_current();
                 Ok(())
             }
@@ -6829,6 +6953,139 @@ mod tests {
         bounded(peer_b.dispatch_message(retry))
             .await
             .expect("cancelled non-decision must permit one later terminal attempt");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_after_authorizer_accept_rolls_back_commit_and_allows_retry() {
+        struct ProvisionalCommit {
+            state: Arc<StdMutex<Option<(usize, bool)>>>,
+            owner: usize,
+            armed: bool,
+        }
+
+        impl ProvisionalCommit {
+            fn promote(mut self) -> Result<(), AuthError> {
+                let mut state = self.state.lock().unwrap();
+                match state.as_mut() {
+                    Some((owner, committed)) if *owner == self.owner && !*committed => {
+                        *committed = true;
+                        self.armed = false;
+                        Ok(())
+                    }
+                    _ => Err(AuthError::CertificateValidation(
+                        "provisional owner changed before commit".to_string(),
+                    )),
+                }
+            }
+        }
+
+        impl Drop for ProvisionalCommit {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                let mut state = self.state.lock().unwrap();
+                if state
+                    .as_ref()
+                    .is_some_and(|(owner, committed)| *owner == self.owner && !*committed)
+                {
+                    *state = None;
+                }
+            }
+        }
+
+        let (peer_a, peer_b, identity_b, session_nonce, certificate, first_response) =
+            pending_certificate_response_fixture(110).await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = Arc::new(StdMutex::new(None));
+        let release = Arc::new(Semaphore::new(0));
+        let (staged_tx, mut staged_rx) = mpsc::unbounded_channel();
+        let (deciding_tx, mut deciding_rx) = mpsc::unbounded_channel();
+        let (escaped_tx, mut escaped_rx) = mpsc::unbounded_channel();
+        let authorizer_calls = calls.clone();
+        let authorizer_state = state.clone();
+        let authorizer_release = release.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |context| {
+            let owner = authorizer_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let state = authorizer_state.clone();
+            let release = authorizer_release.clone();
+            let staged_tx = staged_tx.clone();
+            let deciding_tx = deciding_tx.clone();
+            let escaped_tx = escaped_tx.clone();
+            Box::pin(async move {
+                {
+                    let mut current = state.lock().unwrap();
+                    assert!(current.is_none(), "retry found stranded provisional state");
+                    *current = Some((owner, false));
+                }
+                let provisional = ProvisionalCommit {
+                    state,
+                    owner,
+                    armed: true,
+                };
+                context
+                    .register_certificate_admission_commit(move || provisional.promote())
+                    .unwrap();
+                if owner == 1 {
+                    escaped_tx.send(context.clone()).unwrap();
+                }
+                staged_tx.send(owner).unwrap();
+                if owner == 1 {
+                    release.acquire().await.unwrap().forget();
+                }
+                deciding_tx.send(owner).unwrap();
+                CertificateAuthorizationDecision::Accept
+            })
+        }));
+
+        let first = {
+            let peer_b = peer_b.clone();
+            tokio::spawn(async move { peer_b.dispatch_message(first_response).await })
+        };
+        assert_eq!(bounded(staged_rx.recv()).await, Some(1));
+
+        // Keep SDK finish waiting after the authorizer has returned Accept.
+        // Aborting in this interval must drop the registered commit callback
+        // and its rollback guard instead of stranding consumer state.
+        let session_write = peer_b.session_manager.write().await;
+        release.add_permits(1);
+        assert_eq!(bounded(deciding_rx.recv()).await, Some(1));
+        tokio::task::yield_now().await;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert_eq!(*state.lock().unwrap(), None);
+        let escaped = bounded(escaped_rx.recv()).await.unwrap();
+        assert!(matches!(
+            escaped.register_certificate_admission_commit(|| Ok(())),
+            Err(AuthError::CertificateValidation(message)) if message.contains("closed")
+        ));
+        drop(session_write);
+
+        let retry = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            session_nonce.clone(),
+            Some(vec![certificate]),
+            None,
+            None,
+        )
+        .await;
+        bounded(peer_b.dispatch_message(retry))
+            .await
+            .expect("post-Accept cancellation must permit a clean terminal retry");
+        assert_eq!(bounded(staged_rx.recv()).await, Some(2));
+        assert_eq!(bounded(deciding_rx.recv()).await, Some(2));
+        assert_eq!(*state.lock().unwrap(), Some((2, true)));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(
             peer_b

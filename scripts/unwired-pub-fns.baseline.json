@@ -38,6 +38,7 @@
     "merge_raw_tx": "pre-existing; reviewed 2026-08-22",
     "on_error": "public background receive/dispatch error observer for external Peer consumers; reviewed 2026-08-24",
     "op_return_data": "pre-existing; reviewed 2026-08-22",
+    "register_certificate_admission_commit": "cross-crate atomic certificate-admission commit hook; production consumer is bsv-auth-axum-middleware exact-session gate rollback/promotion; reviewed 2026-09-22",
     "seal_certificate_admission_configuration_if_unchanged": "cross-crate atomic compare-and-seal API; production consumer is bsv-auth-axum-middleware fallible AuthLayer construction; reviewed 2026-09-22",
     "schnorr_verify_proof": "pre-existing; reviewed 2026-08-22",
     "seen_nonce_count": "pre-existing; reviewed 2026-08-22",
