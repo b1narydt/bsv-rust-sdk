@@ -84,6 +84,11 @@ pub struct CertificateAdmissionConfiguration {
     pub certificates_required: bool,
     /// Whether a blocking application authorizer is installed.
     pub authorizer_configured: bool,
+    /// Monotonic revision incremented whenever the requested certificate set or
+    /// blocking authorizer is configured, including same-shape replacements.
+    pub generation: u64,
+    /// Whether this exact configuration is immutable for the peer lifetime.
+    pub sealed: bool,
 }
 
 /// Terminal decision returned by a certificate authorizer.
@@ -462,6 +467,10 @@ pub struct PeerInner<W: WalletInterface> {
     /// it; it is only ever read under a brief synchronous lock (cloned out
     /// before any await), never held across `.await`.
     certificates_to_request: StdRwLock<Option<RequestedCertificateSet>>,
+    /// Serializes certificate-admission mutation, snapshots, and sealing. Once
+    /// sealed, the request and authorizer locks below are immutable, removing
+    /// check/dispatch races for consumers that retain a shared `Peer`.
+    certificate_admission_state: StdMutex<CertificateAdmissionState>,
 
     // Event channels (sender side -- Peer pushes events here). `mpsc::Sender`
     // is itself `&self`-cloneable/usable, so these need no extra wrapping.
@@ -499,7 +508,8 @@ pub struct PeerInner<W: WalletInterface> {
     /// awaiting so registration/removal never holds this mutex across an await.
     on_certificates_received_callbacks: StdMutex<BTreeMap<u64, Arc<OnCertificatesReceived>>>,
     /// Optional blocking policy hook. Cloned out before awaiting so replacing a
-    /// future session's policy never changes an in-flight decision.
+    /// future session's policy never changes an in-flight decision. Middleware
+    /// seals certificate admission to prohibit all later replacements.
     certificate_authorizer: StdRwLock<Option<Arc<CertificateAuthorizer>>>,
     /// One terminal authorization attempt per exact live session. Entries are
     /// removed with their session; a stale future must still own the same `Arc`
@@ -514,6 +524,12 @@ pub struct PeerInner<W: WalletInterface> {
     /// a waiter subscribing concurrently with validation still observes `true`.
     certificate_validation_waiters: Arc<StdMutex<CertificateWaiterMap>>,
     callback_id_counter: StdMutex<u64>,
+}
+
+#[derive(Default)]
+struct CertificateAdmissionState {
+    generation: u64,
+    sealed: bool,
 }
 
 impl<W: WalletInterface> Clone for Peer<W> {
@@ -560,6 +576,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
             transport,
             session_manager: Arc::new(RwLock::new(SessionManager::new())),
             certificates_to_request: StdRwLock::new(None),
+            certificate_admission_state: StdMutex::new(CertificateAdmissionState::default()),
             general_message_tx: general_tx,
             certificate_request_tx: cert_req_tx,
             general_message_rx: StdMutex::new(Some(general_rx)),
@@ -878,11 +895,38 @@ impl<W: WalletInterface + 'static> Peer<W> {
     }
 
     /// Set certificate types to request from peers during handshake.
+    ///
+    /// # Panics
+    ///
+    /// Panics after [`Peer::seal_certificate_admission_configuration`] has made
+    /// the admission policy immutable. Consumers that need a recoverable error
+    /// should call [`Peer::try_set_certificates_to_request`].
     pub fn set_certificates_to_request(&self, requested: RequestedCertificateSet) {
+        self.try_set_certificates_to_request(requested)
+            .expect("certificate admission configuration is sealed");
+    }
+
+    /// Try to set certificate types to request from peers during handshake.
+    pub fn try_set_certificates_to_request(
+        &self,
+        requested: RequestedCertificateSet,
+    ) -> Result<(), AuthError> {
+        let mut state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        if state.sealed {
+            return Err(AuthError::CertificateAdmissionConfigurationSealed);
+        }
         *self
             .certificates_to_request
             .write()
             .expect("certificates_to_request lock poisoned") = Some(requested);
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("certificate admission generation exhausted");
+        Ok(())
     }
 
     /// Take the general message receiver. Returns None if already taken.
@@ -927,19 +971,103 @@ impl<W: WalletInterface + 'static> Peer<W> {
     /// receives the authenticated session identity rather than trusting the
     /// frame's identity field. The SDK waits at most 30 seconds. Rejection or
     /// timeout is terminal for that session and never marks it validated.
+    ///
+    /// # Panics
+    ///
+    /// Panics after [`Peer::seal_certificate_admission_configuration`] has made
+    /// the admission policy immutable. Consumers that need a recoverable error
+    /// should call [`Peer::try_set_certificate_authorizer`].
     pub fn set_certificate_authorizer(&self, authorizer: Arc<CertificateAuthorizer>) {
+        self.try_set_certificate_authorizer(authorizer)
+            .expect("certificate admission configuration is sealed");
+    }
+
+    /// Try to install a blocking certificate authorizer.
+    pub fn try_set_certificate_authorizer(
+        &self,
+        authorizer: Arc<CertificateAuthorizer>,
+    ) -> Result<(), AuthError> {
+        let mut state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        if state.sealed {
+            return Err(AuthError::CertificateAdmissionConfigurationSealed);
+        }
         *self
             .certificate_authorizer
             .write()
             .expect("certificate authorizer lock poisoned") = Some(authorizer);
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("certificate admission generation exhausted");
+        Ok(())
     }
 
     /// Return a read-only snapshot of certificate-admission configuration.
-    ///
-    /// The snapshot does not freeze later configuration changes. Consumers
-    /// that share a mutable `Peer` across a security boundary should recheck it
-    /// before processing each request.
     pub fn certificate_admission_configuration(&self) -> CertificateAdmissionConfiguration {
+        let state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        self.certificate_admission_configuration_locked(&state)
+    }
+
+    /// Seal the current certificate-admission configuration and return its
+    /// exact generation. Sealing is idempotent and prevents every later request
+    /// or authorizer setter from changing the policy, eliminating TOCTOU gaps
+    /// between a consumer's configuration check and SDK dispatch.
+    pub fn seal_certificate_admission_configuration(&self) -> CertificateAdmissionConfiguration {
+        let mut state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        state.sealed = true;
+        self.certificate_admission_configuration_locked(&state)
+    }
+
+    /// Atomically install and seal the complete certificate-admission policy.
+    ///
+    /// This is intended for adapters that must configure an already shared
+    /// peer without allowing another holder to freeze or replace one half of
+    /// the policy between setter calls.
+    pub fn configure_and_seal_certificate_admission(
+        &self,
+        requested: Option<RequestedCertificateSet>,
+        authorizer: Option<Arc<CertificateAuthorizer>>,
+    ) -> Result<CertificateAdmissionConfiguration, AuthError> {
+        let mut state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        if state.sealed {
+            return Err(AuthError::CertificateAdmissionConfigurationSealed);
+        }
+        *self
+            .certificates_to_request
+            .write()
+            .expect("certificates_to_request lock poisoned") = requested;
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("certificate admission generation exhausted");
+        *self
+            .certificate_authorizer
+            .write()
+            .expect("certificate authorizer lock poisoned") = authorizer;
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("certificate admission generation exhausted");
+        state.sealed = true;
+        Ok(self.certificate_admission_configuration_locked(&state))
+    }
+
+    fn certificate_admission_configuration_locked(
+        &self,
+        state: &CertificateAdmissionState,
+    ) -> CertificateAdmissionConfiguration {
         let certificates_required = self
             .certificates_to_request
             .read()
@@ -954,6 +1082,8 @@ impl<W: WalletInterface + 'static> Peer<W> {
         CertificateAdmissionConfiguration {
             certificates_required,
             authorizer_configured,
+            generation: state.generation,
+            sealed: state.sealed,
         }
     }
 
@@ -6246,18 +6376,23 @@ mod tests {
             CertificateAdmissionConfiguration {
                 certificates_required: false,
                 authorizer_configured: false,
+                generation: 0,
+                sealed: false,
             }
         );
 
-        peer.set_certificates_to_request(RequestedCertificateSet {
+        let requested = RequestedCertificateSet {
             certifiers: vec![wallet_identity(&peer.wallet).await],
             types: indexmap::IndexMap::new(),
-        });
+        };
+        peer.set_certificates_to_request(requested.clone());
         assert_eq!(
             peer.certificate_admission_configuration(),
             CertificateAdmissionConfiguration {
                 certificates_required: true,
                 authorizer_configured: false,
+                generation: 1,
+                sealed: false,
             }
         );
 
@@ -6269,8 +6404,31 @@ mod tests {
             CertificateAdmissionConfiguration {
                 certificates_required: true,
                 authorizer_configured: true,
+                generation: 2,
+                sealed: false,
             }
         );
+
+        // Same-shape replacements still change the exact generation.
+        peer.set_certificates_to_request(requested.clone());
+        peer.set_certificate_authorizer(Arc::new(|_| {
+            Box::pin(async { CertificateAuthorizationDecision::Accept })
+        }));
+        let sealed = peer.seal_certificate_admission_configuration();
+        assert_eq!(sealed.generation, 4);
+        assert!(sealed.sealed);
+
+        assert!(matches!(
+            peer.try_set_certificates_to_request(requested),
+            Err(AuthError::CertificateAdmissionConfigurationSealed)
+        ));
+        assert!(matches!(
+            peer.try_set_certificate_authorizer(Arc::new(|_| {
+                Box::pin(async { CertificateAuthorizationDecision::Accept })
+            })),
+            Err(AuthError::CertificateAdmissionConfigurationSealed)
+        ));
+        assert_eq!(peer.certificate_admission_configuration(), sealed);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

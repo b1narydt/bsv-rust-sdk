@@ -50,6 +50,10 @@ pub enum AuthError {
     #[error("certificate validation error: {0}")]
     CertificateValidation(String),
 
+    /// Certificate admission policy was mutated after a consumer sealed it.
+    #[error("certificate admission configuration is sealed")]
+    CertificateAdmissionConfigurationSealed,
+
     /// Transport-level error.
     #[error("transport error: {0}")]
     TransportError(String),
