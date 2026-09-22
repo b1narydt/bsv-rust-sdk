@@ -25,7 +25,7 @@ pub use clients::{
 };
 #[cfg(feature = "network")]
 pub use peer::{
-    BackgroundError, CertificateAuthorizationContext, CertificateAuthorizationDecision,
-    CertificateAuthorizationFuture, CertificateAuthorizer, CertificateRefusalKind,
-    GeneralMessageVerification, Peer, VerifiedCertificateRefusal,
+    BackgroundError, CertificateAdmissionConfiguration, CertificateAuthorizationContext,
+    CertificateAuthorizationDecision, CertificateAuthorizationFuture, CertificateAuthorizer,
+    CertificateRefusalKind, GeneralMessageVerification, Peer, VerifiedCertificateRefusal,
 };

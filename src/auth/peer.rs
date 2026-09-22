@@ -73,6 +73,19 @@ pub struct CertificateAuthorizationContext {
     pub requested_certificates: Option<RequestedCertificateSet>,
 }
 
+/// Snapshot of the peer's certificate-admission configuration.
+///
+/// HTTP middleware uses this to reject a certificate-requesting [`Peer`] when
+/// it has no matching blocking authorizer or middleware certificate gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CertificateAdmissionConfiguration {
+    /// Whether the configured request has a non-empty trusted-certifier set and
+    /// therefore makes certificate validation mandatory for new sessions.
+    pub certificates_required: bool,
+    /// Whether a blocking application authorizer is installed.
+    pub authorizer_configured: bool,
+}
+
 /// Terminal decision returned by a certificate authorizer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertificateAuthorizationDecision {
@@ -919,6 +932,29 @@ impl<W: WalletInterface + 'static> Peer<W> {
             .certificate_authorizer
             .write()
             .expect("certificate authorizer lock poisoned") = Some(authorizer);
+    }
+
+    /// Return a read-only snapshot of certificate-admission configuration.
+    ///
+    /// The snapshot does not freeze later configuration changes. Consumers
+    /// that share a mutable `Peer` across a security boundary should recheck it
+    /// before processing each request.
+    pub fn certificate_admission_configuration(&self) -> CertificateAdmissionConfiguration {
+        let certificates_required = self
+            .certificates_to_request
+            .read()
+            .expect("certificates_to_request lock poisoned")
+            .as_ref()
+            .is_some_and(|requested| !requested.certifiers.is_empty());
+        let authorizer_configured = self
+            .certificate_authorizer
+            .read()
+            .expect("certificate authorizer lock poisoned")
+            .is_some();
+        CertificateAdmissionConfiguration {
+            certificates_required,
+            authorizer_configured,
+        }
     }
 
     /// Remove a previously registered certificate-received listener.
@@ -6198,6 +6234,43 @@ mod tests {
         let mut payload = vec![request_id_byte; 32];
         payload.extend_from_slice(body);
         payload
+    }
+
+    #[tokio::test]
+    async fn certificate_admission_configuration_reports_request_and_authorizer() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let (transport, _remote) = create_mock_transport_pair();
+        let peer = Peer::new(wallet, transport);
+        assert_eq!(
+            peer.certificate_admission_configuration(),
+            CertificateAdmissionConfiguration {
+                certificates_required: false,
+                authorizer_configured: false,
+            }
+        );
+
+        peer.set_certificates_to_request(RequestedCertificateSet {
+            certifiers: vec![wallet_identity(&peer.wallet).await],
+            types: indexmap::IndexMap::new(),
+        });
+        assert_eq!(
+            peer.certificate_admission_configuration(),
+            CertificateAdmissionConfiguration {
+                certificates_required: true,
+                authorizer_configured: false,
+            }
+        );
+
+        peer.set_certificate_authorizer(Arc::new(|_| {
+            Box::pin(async { CertificateAuthorizationDecision::Accept })
+        }));
+        assert_eq!(
+            peer.certificate_admission_configuration(),
+            CertificateAdmissionConfiguration {
+                certificates_required: true,
+                authorizer_configured: true,
+            }
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
