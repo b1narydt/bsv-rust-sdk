@@ -1027,6 +1027,26 @@ impl<W: WalletInterface + 'static> Peer<W> {
         self.certificate_admission_configuration_locked(&state)
     }
 
+    /// Seal certificate admission only if it still equals `expected`.
+    ///
+    /// A mismatch returns without sealing or otherwise mutating the peer. This
+    /// lets adapters validate a candidate snapshot before atomically committing
+    /// it, while preventing a setter race between validation and sealing.
+    pub fn seal_certificate_admission_configuration_if_unchanged(
+        &self,
+        expected: CertificateAdmissionConfiguration,
+    ) -> Result<CertificateAdmissionConfiguration, AuthError> {
+        let mut state = self
+            .certificate_admission_state
+            .lock()
+            .expect("certificate admission state lock poisoned");
+        if self.certificate_admission_configuration_locked(&state) != expected {
+            return Err(AuthError::CertificateAdmissionConfigurationChanged);
+        }
+        state.sealed = true;
+        Ok(self.certificate_admission_configuration_locked(&state))
+    }
+
     /// Atomically install and seal the complete certificate-admission policy.
     ///
     /// This is intended for adapters that must configure an already shared
@@ -6429,6 +6449,32 @@ mod tests {
             Err(AuthError::CertificateAdmissionConfigurationSealed)
         ));
         assert_eq!(peer.certificate_admission_configuration(), sealed);
+    }
+
+    #[tokio::test]
+    async fn conditional_certificate_admission_seal_is_atomic_and_side_effect_free_on_mismatch() {
+        let wallet = TestWallet::new(PrivateKey::from_random().unwrap());
+        let (transport, _remote) = create_mock_transport_pair();
+        let peer = Peer::new(wallet, transport);
+        let stale = peer.certificate_admission_configuration();
+
+        peer.set_certificates_to_request(RequestedCertificateSet {
+            certifiers: vec![wallet_identity(&peer.wallet).await],
+            types: indexmap::IndexMap::new(),
+        });
+        assert!(matches!(
+            peer.seal_certificate_admission_configuration_if_unchanged(stale),
+            Err(AuthError::CertificateAdmissionConfigurationChanged)
+        ));
+        let current = peer.certificate_admission_configuration();
+        assert_eq!(current.generation, stale.generation + 1);
+        assert!(!current.sealed, "mismatched seal must leave Peer mutable");
+
+        let sealed = peer
+            .seal_certificate_admission_configuration_if_unchanged(current)
+            .expect("unchanged snapshot seals atomically");
+        assert!(sealed.sealed);
+        assert_eq!(sealed.generation, current.generation);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

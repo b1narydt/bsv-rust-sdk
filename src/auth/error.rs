@@ -54,6 +54,10 @@ pub enum AuthError {
     #[error("certificate admission configuration is sealed")]
     CertificateAdmissionConfigurationSealed,
 
+    /// Certificate admission changed before an expected snapshot could be sealed.
+    #[error("certificate admission configuration changed before it could be sealed")]
+    CertificateAdmissionConfigurationChanged,
+
     /// Transport-level error.
     #[error("transport error: {0}")]
     TransportError(String),
