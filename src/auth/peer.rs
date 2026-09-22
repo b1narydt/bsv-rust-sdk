@@ -2677,6 +2677,19 @@ impl<W: WalletInterface + 'static> Peer<W> {
         &self,
         msg: AuthMessage,
     ) -> Result<GeneralMessageVerification, AuthError> {
+        if msg.version != AUTH_VERSION || msg.message_type != MessageType::General {
+            return Err(AuthError::InvalidMessage(
+                "HTTP verification requires a current-version general message".to_string(),
+            ));
+        }
+        if msg.initial_nonce.is_some()
+            || msg.certificates.is_some()
+            || msg.requested_certificates.is_some()
+        {
+            return Err(AuthError::InvalidMessage(
+                "HTTP general message contains certificate or handshake fields".to_string(),
+            ));
+        }
         let your_nonce = msg.your_nonce.as_deref().ok_or_else(|| {
             AuthError::InvalidMessage("missing yourNonce in general message".to_string())
         })?;
@@ -6523,6 +6536,17 @@ mod tests {
         malformed.nonce = None;
         let malformed = peer_b.verify_general_message_for_http(malformed).await;
         assert!(matches!(malformed, Err(AuthError::InvalidMessage(_))));
+
+        // Message type is not part of the payload signature. The HTTP-specific
+        // verifier must still reject a correctly signed envelope relabeled as
+        // another protocol message rather than minting a refusal capability.
+        let mut relabeled = peer_a
+            .create_general_message(&identity_b, http_request_payload(206, b"relabeled"))
+            .await
+            .unwrap();
+        relabeled.message_type = MessageType::CertificateResponse;
+        let relabeled = peer_b.verify_general_message_for_http(relabeled).await;
+        assert!(matches!(relabeled, Err(AuthError::InvalidMessage(_))));
 
         assert!(matches!(
             peer_b
