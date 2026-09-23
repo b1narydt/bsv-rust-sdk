@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified sender of that exact response frame, rather than the cached
   handshake identity. This matches the TypeScript SDK and keeps response
   pinning bound to the signed message that produced the response. (#41)
+- Bound contact-cache refresh to eight concurrent wallet decryptions while
+  preserving wallet output-order replacement and best-effort failure skipping.
+  Direct contact lookup remains sequential so its first-success selection stays
+  deterministic. (#49)
 
 ## [0.8.1] - 2026-09-15
 
