@@ -535,7 +535,8 @@ fn now_ms() -> u64 {
 /// Manages sessions, handles authentication handshakes, certificate requests
 /// and responses, and sends/receives general messages over a Transport. The
 /// transport receiver is owned by a background routing task started by
-/// [`Peer::new`]; callers never need to pump receive progress.
+/// [`Peer::new`] or [`Peer::with_session_manager`]; callers never need to pump
+/// receive progress.
 ///
 /// Generic over `W: WalletInterface` for cryptographic operations.
 /// Feature-gated behind `network` since it depends on tokio and Transport.
@@ -645,14 +646,38 @@ impl<W: WalletInterface> Deref for Peer<W> {
 }
 
 impl<W: WalletInterface + 'static> Peer<W> {
-    /// Create a new Peer with the given wallet and transport, immediately
-    /// starting its background receive task.
+    /// Create a new Peer with the given wallet and transport, using the default
+    /// session idle TTL and replay-cache capacity.
+    ///
+    /// Use [`Peer::with_session_manager`] when the host needs a different
+    /// session policy.
     ///
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime because the peer-owned
     /// receive task must be spawned during construction.
     pub fn new(wallet: W, transport: Arc<dyn Transport>) -> Self {
+        Self::with_session_manager(wallet, transport, SessionManager::new())
+    }
+
+    /// Create a new Peer with an explicitly configured session manager,
+    /// immediately starting its background receive task.
+    ///
+    /// This lets long-lived servers select a session idle TTL and replay-cache
+    /// capacity with [`SessionManager::with_config`] while keeping
+    /// [`Peer::new`] backward-compatible. The supplied manager becomes this
+    /// peer's private session store; all existing sessions and configuration in
+    /// it are preserved.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime because the peer-owned
+    /// receive task must be spawned during construction.
+    pub fn with_session_manager(
+        wallet: W,
+        transport: Arc<dyn Transport>,
+        session_manager: SessionManager,
+    ) -> Self {
         // General-message observer capacity is 1024 (vs 32 for the
         // lower-traffic certificate-request observer), comfortably above one
         // session worker's 64-frame queue while allowing bursts from many
@@ -669,7 +694,7 @@ impl<W: WalletInterface + 'static> Peer<W> {
         let inner = Arc::new(PeerInner {
             wallet,
             transport,
-            session_manager: Arc::new(RwLock::new(SessionManager::new())),
+            session_manager: Arc::new(RwLock::new(session_manager)),
             certificates_to_request: StdRwLock::new(None),
             certificate_admission_state: StdMutex::new(CertificateAdmissionState::default()),
             general_message_tx: general_tx,
@@ -3383,6 +3408,65 @@ mod tests {
         is_send(peer.wait_for_certificate_validation(session));
         is_send(peer.send_message("peer", Vec::new()));
         is_send(peer.create_general_message("peer", Vec::new()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn peer_constructors_select_the_requested_session_idle_ttl() {
+        use crate::auth::session_manager::{DEFAULT_SEEN_NONCE_CAP, DEFAULT_SESSION_IDLE_TTL_MS};
+
+        const SERVER_SESSION_IDLE_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+        const LAST_USED_MS: u64 = 1_000;
+        const SESSION_NONCE: &str = "configured-session";
+
+        let (default_transport, configured_transport) = create_mock_transport_pair();
+        let default_peer = Peer::new(
+            TestWallet::new(PrivateKey::from_random().unwrap()),
+            default_transport,
+        );
+        let mut configured_sessions =
+            SessionManager::with_config(SERVER_SESSION_IDLE_TTL_MS, DEFAULT_SEEN_NONCE_CAP);
+        configured_sessions.add_session(PeerSession {
+            session_nonce: SESSION_NONCE.to_string(),
+            peer_identity_key: "configured-peer".to_string(),
+            peer_nonce: "remote-session".to_string(),
+            is_authenticated: true,
+            requested_certificates: None,
+            certificates_required: false,
+            certificates_validated: true,
+        });
+        configured_sessions.touch(SESSION_NONCE, LAST_USED_MS);
+        let configured_peer = Peer::with_session_manager(
+            TestWallet::new(PrivateKey::from_random().unwrap()),
+            configured_transport,
+            configured_sessions,
+        );
+
+        assert_eq!(
+            default_peer.session_manager.read().await.idle_ttl_ms(),
+            DEFAULT_SESSION_IDLE_TTL_MS,
+            "Peer::new must retain the backward-compatible default TTL"
+        );
+        let configured_sessions = configured_peer.session_manager.read().await;
+        assert_eq!(
+            configured_sessions.idle_ttl_ms(),
+            SERVER_SESSION_IDLE_TTL_MS,
+            "Peer::with_session_manager must retain the host's configured TTL"
+        );
+        assert!(
+            configured_sessions
+                .get_active_session(
+                    SESSION_NONCE,
+                    LAST_USED_MS + DEFAULT_SESSION_IDLE_TTL_MS + 1
+                )
+                .is_some(),
+            "a host-selected 24-hour TTL must not expire at the old 15-minute boundary"
+        );
+        assert!(
+            configured_sessions
+                .get_active_session(SESSION_NONCE, LAST_USED_MS + SERVER_SESSION_IDLE_TTL_MS + 1)
+                .is_none(),
+            "the injected session manager must still enforce its configured TTL"
+        );
     }
 
     // -----------------------------------------------------------------------

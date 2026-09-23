@@ -101,7 +101,7 @@ impl SessionManager {
 
     /// Create a new empty SessionManager with an explicit idle TTL and
     /// per-session replay seen-set cap. Used by tests and by callers that want
-    /// a tighter reaping policy.
+    /// a different reaping policy.
     pub fn with_config(idle_ttl_ms: u64, seen_nonce_cap: usize) -> Self {
         SessionManager {
             nonce_to_session: HashMap::new(),
