@@ -8,6 +8,12 @@ use crate::script::op::Op;
 use crate::script::script_chunk::ScriptChunk;
 
 /// A Bitcoin script represented as a sequence of parsed chunks.
+///
+/// [`PartialEq`] compares the parsed chunks and deliberately ignores the
+/// original serialized bytes retained by [`Script::from_binary`] and
+/// [`Script::from_hex`]. Two scripts can therefore compare equal even when
+/// [`Script::to_binary`] returns different bytes. Use [`Script::bytes_eq`] when
+/// exact serialized-byte equality is required.
 #[derive(Debug, Clone)]
 pub struct Script {
     chunks: Vec<ScriptChunk>,
@@ -20,8 +26,13 @@ pub struct Script {
     raw_bytes: Option<Vec<u8>>,
 }
 
-// Script equality has historically meant parsed-chunk equality.  Raw bytes
-// are a serialization cache, not part of the semantic chunk representation.
+/// Compares scripts by their parsed chunks.
+///
+/// The retained original serialization is a lossless round-trip cache, not
+/// part of the semantic chunk representation. Consequently, `a == b` does not
+/// guarantee that `a.to_binary() == b.to_binary()` for permissively parsed
+/// malformed or non-canonical encodings. Use [`Script::bytes_eq`] for an exact
+/// comparison of the bytes each script currently serializes to.
 impl PartialEq for Script {
     fn eq(&self, other: &Self) -> bool {
         self.chunks == other.chunks
@@ -166,6 +177,28 @@ impl Script {
             }
         }
         out
+    }
+
+    /// Returns whether both scripts serialize to exactly the same bytes.
+    ///
+    /// Unlike [`PartialEq`], this includes any original byte encoding retained
+    /// by [`Script::from_binary`] or [`Script::from_hex`]. It is therefore the
+    /// appropriate comparison when scripts must be interchangeable on the
+    /// wire, including length prefixes and malformed or non-canonical input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bsv::script::Script;
+    ///
+    /// let over_declared = Script::from_binary(&[0x4c, 0x05, 0xaa, 0xbb, 0xcc]);
+    /// let exact = Script::from_binary(&[0x4c, 0x03, 0xaa, 0xbb, 0xcc]);
+    ///
+    /// assert_eq!(over_declared, exact); // Same parsed chunks.
+    /// assert!(!over_declared.bytes_eq(&exact)); // Different wire bytes.
+    /// ```
+    pub fn bytes_eq(&self, other: &Self) -> bool {
+        self.to_binary() == other.to_binary()
     }
 
     /// Serialize then hex-encode.
@@ -522,6 +555,25 @@ mod tests {
             let script = Script::from_binary(&bytes);
             assert_eq!(script.to_binary(), bytes);
         }
+    }
+
+    #[test]
+    fn test_equality_compares_chunks_not_original_serialization() {
+        let over_declared = Script::from_binary(&[0x4c, 0x05, 0xaa, 0xbb, 0xcc]);
+        let exact = Script::from_binary(&[0x4c, 0x03, 0xaa, 0xbb, 0xcc]);
+
+        assert_eq!(over_declared, exact);
+        assert_ne!(over_declared.to_binary(), exact.to_binary());
+    }
+
+    #[test]
+    fn test_bytes_eq_compares_exact_serialization() {
+        let over_declared = Script::from_binary(&[0x4c, 0x05, 0xaa, 0xbb, 0xcc]);
+        let same_bytes = Script::from_hex("4c05aabbcc").unwrap();
+        let exact = Script::from_binary(&[0x4c, 0x03, 0xaa, 0xbb, 0xcc]);
+
+        assert!(over_declared.bytes_eq(&same_bytes));
+        assert!(!over_declared.bytes_eq(&exact));
     }
 
     #[test]
