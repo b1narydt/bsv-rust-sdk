@@ -14,14 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing 15-minute/default-capacity behavior. A configured zero replay
   capacity is normalized to one so configuration cannot disable replay checks.
 
-## [0.8.1] - 2026-09-15
-
 ### Fixed
 
 - `AuthFetchResponse::server_identity_key` now comes from the cryptographically
   verified sender of that exact response frame, rather than the cached
   handshake identity. This matches the TypeScript SDK and keeps response
   pinning bound to the signed message that produced the response. (#41)
+
+## [0.8.1] - 2026-09-15
+
+### Fixed
+
 - Certificate authentication accepts a signed core with an empty verifier keyring
   only when the verifier's exact requested type maps to an empty field list.
   It retains subject, issuer, type and core-signature checks, rejects unexpected
