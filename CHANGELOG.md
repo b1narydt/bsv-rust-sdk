@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a custom session idle TTL and replay-cache capacity. `Peer::new` retains
   the existing 15-minute/default-capacity behavior. A configured zero replay
   capacity is normalized to one so configuration cannot disable replay checks.
+- `Script::bytes_eq` provides an explicit serialized-byte comparison while
+  preserving `PartialEq`'s historical parsed-chunk semantics. Public rustdoc
+  now calls out that semantically equal scripts can retain different wire
+  encodings. (#42)
 
 ### Fixed
 
