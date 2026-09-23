@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Peer::with_session_manager` lets hosts supply a `SessionManager` configured
   with a custom session idle TTL and replay-cache capacity. `Peer::new` retains
-  the existing 15-minute/default-capacity behavior.
+  the existing 15-minute/default-capacity behavior. A configured zero replay
+  capacity is normalized to one so configuration cannot disable replay checks.
 
 ## [0.8.1] - 2026-09-15
 

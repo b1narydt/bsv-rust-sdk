@@ -87,7 +87,8 @@ pub struct SessionManager {
     session_meta: HashMap<String, SessionMeta>,
     /// Idle TTL in ms (see [`DEFAULT_SESSION_IDLE_TTL_MS`]).
     idle_ttl_ms: u64,
-    /// Per-session remembered-nonce cap (see [`DEFAULT_SEEN_NONCE_CAP`]).
+    /// Per-session remembered-nonce cap (see [`DEFAULT_SEEN_NONCE_CAP`]). This
+    /// is always at least one so configuration cannot disable replay checks.
     seen_nonce_cap: usize,
     /// Monotonic activity counter. Internal only; it never reaches the wire.
     activity_sequence: u64,
@@ -101,14 +102,16 @@ impl SessionManager {
 
     /// Create a new empty SessionManager with an explicit idle TTL and
     /// per-session replay seen-set cap. Used by tests and by callers that want
-    /// a different reaping policy.
+    /// a different reaping policy. A zero cap is normalized to one: accepting
+    /// zero verbatim would evict every nonce immediately and disable replay
+    /// protection.
     pub fn with_config(idle_ttl_ms: u64, seen_nonce_cap: usize) -> Self {
         SessionManager {
             nonce_to_session: HashMap::new(),
             identity_to_nonces: HashMap::new(),
             session_meta: HashMap::new(),
             idle_ttl_ms,
-            seen_nonce_cap,
+            seen_nonce_cap: seen_nonce_cap.max(1),
             activity_sequence: 0,
         }
     }
@@ -752,6 +755,20 @@ mod tests {
         );
         // The oldest (m0, m1) fell out of the window (FIFO eviction).
         assert_eq!(mgr.mark_message_seen("sess1", "m0", 1_000), MarkSeen::Fresh);
+    }
+
+    #[test]
+    fn test_zero_seen_nonce_cap_cannot_disable_replay_protection() {
+        let mut mgr = SessionManager::with_config(DEFAULT_SESSION_IDLE_TTL_MS, 0);
+        mgr.add_session(make_session("sess1", "id_key_A", true));
+
+        assert_eq!(mgr.mark_message_seen("sess1", "m1", 1_000), MarkSeen::Fresh);
+        assert_eq!(mgr.seen_nonce_count("sess1"), 1);
+        assert_eq!(
+            mgr.mark_message_seen("sess1", "m1", 1_001),
+            MarkSeen::Replay,
+            "a zero configured cap must not make a signed replay fresh"
+        );
     }
 
     /// A freshly-added session with no recorded activity is never treated as
