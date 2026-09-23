@@ -24,4 +24,8 @@ pub use clients::{
     PAYMENT_VERSION,
 };
 #[cfg(feature = "network")]
-pub use peer::{BackgroundError, Peer};
+pub use peer::{
+    BackgroundError, CertificateAdmissionConfiguration, CertificateAuthorizationContext,
+    CertificateAuthorizationDecision, CertificateAuthorizationFuture, CertificateAuthorizer,
+    CertificateRefusalKind, GeneralMessageVerification, Peer, VerifiedCertificateRefusal,
+};
