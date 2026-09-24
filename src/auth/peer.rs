@@ -2761,12 +2761,22 @@ impl<W: WalletInterface + 'static> Peer<W> {
             }
         }
 
-        if !certs.is_empty() {
-            let authorizer = self
-                .certificate_authorizer
-                .read()
-                .expect("certificate authorizer lock poisoned")
-                .clone();
+        let authorizer = self
+            .certificate_authorizer
+            .read()
+            .expect("certificate authorizer lock poisoned")
+            .clone();
+        // A configured authorizer owns every proof batch on a session that
+        // still requires certificates, the empty batch included: a peer that
+        // holds no certificate answers the request with `[]`, and whether that
+        // peer is admitted is the application's decision (certificate-less
+        // admission against a record the application holds). Without an
+        // authorizer an empty batch changes nothing, as in TS: the gate stays
+        // pending and only a later non-empty response can close it.
+        let empty_batch_for_authorizer = certs.is_empty()
+            && authorizer.is_some()
+            && Self::certificate_validation_is_pending(&session);
+        if !certs.is_empty() || empty_batch_for_authorizer {
             if authorizer.is_some() {
                 // A policy decision is authority, so unlike the legacy
                 // observer-only path it must be bound to the identity that the
@@ -8559,6 +8569,166 @@ mod tests {
             .await
             .unwrap();
         assert!(validated.certificates_validated);
+    }
+
+    /// A session that still requires certificates hands an empty batch to a
+    /// configured authorizer; `Accept` completes the exchange with no
+    /// certificate, and the batch still reaches the legacy listeners as `[]`.
+    #[tokio::test]
+    async fn empty_certificate_response_is_decided_by_a_configured_authorizer() {
+        let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let identity_b = wallet_identity(&peer_b.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
+            .await
+            .expect("receiver session")
+            .session_nonce;
+        let mut waiting_session = peer_b.session_by_identifier(&session_nonce).await.unwrap();
+        waiting_session.certificates_required = true;
+        waiting_session.certificates_validated = false;
+        peer_b
+            .session_manager
+            .write()
+            .await
+            .update_session(&session_nonce, waiting_session.clone());
+        let contexts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = contexts.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |context| {
+            seen.lock().unwrap().push((
+                context.peer_identity_key.clone(),
+                context.certificates.len(),
+            ));
+            Box::pin(async { CertificateAuthorizationDecision::Accept })
+        }));
+        let certificate_events = record_certificate_events(&peer_b);
+        let response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a.clone(),
+            &identity_b,
+            session_nonce.clone(),
+            Some(Vec::new()),
+            None,
+            None,
+        )
+        .await;
+
+        bounded(peer_b.dispatch_message(response))
+            .await
+            .expect("an accepted empty batch completes the exchange");
+
+        assert_eq!(
+            *contexts.lock().unwrap(),
+            vec![(identity_a.clone(), 0)],
+            "the authorizer sees the session identity and an empty batch"
+        );
+        let (sender, received) = certificate_events.lock().unwrap()[0].clone();
+        assert_eq!(sender, identity_a);
+        assert!(received.is_empty());
+        let validated = peer_b.session_by_identifier(&session_nonce).await.unwrap();
+        assert!(validated.certificates_validated);
+        peer_b
+            .wait_for_certificate_validation_with_timeout(
+                &waiting_session,
+                Duration::from_millis(20),
+            )
+            .await
+            .expect("the gate is closed after the accepted empty batch");
+    }
+
+    /// `Reject` on an empty batch is as terminal as on a non-empty one: the
+    /// session stays unvalidated and a second empty response does not consult
+    /// policy again.
+    #[tokio::test]
+    async fn empty_certificate_response_rejected_by_the_authorizer_stays_pending() {
+        let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let identity_b = wallet_identity(&peer_b.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
+            .await
+            .expect("receiver session")
+            .session_nonce;
+        {
+            let mut sessions = peer_b.session_manager.write().await;
+            let session = sessions
+                .get_session_mut(&session_nonce)
+                .expect("receiver session");
+            session.certificates_required = true;
+            session.certificates_validated = false;
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authorizer_calls = calls.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |_| {
+            authorizer_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                CertificateAuthorizationDecision::Reject("no delegation record".to_string())
+            })
+        }));
+
+        for _attempt in 0..2 {
+            let response = signed_certificate_response(
+                &peer_a.wallet,
+                identity_a.clone(),
+                &identity_b,
+                session_nonce.clone(),
+                Some(Vec::new()),
+                None,
+                None,
+            )
+            .await;
+            let result = bounded(peer_b.dispatch_message(response)).await;
+            assert!(
+                matches!(&result, Err(AuthError::CertificateValidation(message)) if message.contains("no delegation record")),
+                "unexpected outcome: {result:?}"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !peer_b
+                .session_by_identifier(&session_nonce)
+                .await
+                .unwrap()
+                .certificates_validated
+        );
+        assert_eq!(
+            peer_b.certificate_refusal_kind(&session_nonce),
+            CertificateRefusalKind::Rejected("no delegation record".to_string())
+        );
+    }
+
+    /// An empty batch on a session that no longer requires certificates is
+    /// not re-authorized, even with an authorizer configured.
+    #[tokio::test]
+    async fn empty_certificate_response_on_a_validated_session_does_not_consult_policy() {
+        let (peer_a, peer_b, _identity_b) = authenticated_pair().await;
+        let identity_a = wallet_identity(&peer_a.wallet).await;
+        let identity_b = wallet_identity(&peer_b.wallet).await;
+        let session_nonce = peer_b
+            .session_by_identifier(&identity_a)
+            .await
+            .expect("receiver session")
+            .session_nonce;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authorizer_calls = calls.clone();
+        peer_b.set_certificate_authorizer(Arc::new(move |_| {
+            authorizer_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { CertificateAuthorizationDecision::Accept })
+        }));
+        let response = signed_certificate_response(
+            &peer_a.wallet,
+            identity_a,
+            &identity_b,
+            session_nonce,
+            Some(Vec::new()),
+            None,
+            None,
+        )
+        .await;
+        bounded(peer_b.dispatch_message(response))
+            .await
+            .expect("an empty response on an open session is a no-op");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
