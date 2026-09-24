@@ -908,14 +908,17 @@ impl<W: WalletInterface + Clone + 'static> AuthFetch<W> {
                             let verifiable =
                                 get_verifiable_certificates(&wallet, &requested, &verifier_pubkey)
                                     .await?;
-                            // TS AuthFetch suppresses an empty listener-mode
-                            // response; its finally block still releases the
-                            // pending queue after the grace window below.
-                            if !verifiable.is_empty() {
-                                peer_arc
-                                    .send_certificate_response(&verifier_key, verifiable)
-                                    .await?;
-                            }
+                            // Sent even when empty, as the TS Peer's own
+                            // auto-response path does (TS AuthFetch's listener
+                            // suppresses it): a client holding no certificate
+                            // answers the request with `[]` and the server's
+                            // authorizer decides — certificate-less admission
+                            // against a record the server holds. The finally
+                            // block still releases the pending queue after the
+                            // grace window below.
+                            peer_arc
+                                .send_certificate_response(&verifier_key, verifiable)
+                                .await?;
                             Ok(())
                         }
                         .await;
@@ -2211,7 +2214,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ensure_peer_listener_suppresses_empty_certificate_response() {
+    async fn ensure_peer_listener_sends_an_empty_certificate_response() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2292,12 +2295,16 @@ mod tests {
             .iter()
             .filter_map(|request| serde_json::from_slice::<AuthMessage>(&request.body).ok())
             .collect::<Vec<_>>();
-        assert!(
-            messages
-                .iter()
-                .all(|message| message.message_type != MessageType::CertificateResponse),
-            "TS AuthFetch listener suppresses standalone empty certificateResponse messages"
+        let responses: Vec<_> = messages
+            .iter()
+            .filter(|message| message.message_type == MessageType::CertificateResponse)
+            .collect();
+        assert_eq!(
+            responses.len(),
+            1,
+            "the listener answers a certificate request it cannot satisfy with `[]`"
         );
+        assert_eq!(responses[0].certificates.as_deref(), Some(&[][..]));
     }
 
     // -----------------------------------------------------------------------
