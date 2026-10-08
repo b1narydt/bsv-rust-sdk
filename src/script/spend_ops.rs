@@ -815,14 +815,10 @@ impl Spend {
 
             // -- All NOPs (NOP11..NOP77 etc) ------------------------------------
             _ => {
-                // Any remaining opcode that is a NOP variant is a no-op.
-                // Check if it's in the NOP range (0xba..=0xf8) or other known NOP.
-                let byte = chunk.op_byte;
-                if (0xba..=0xf8).contains(&byte) {
-                    // NOP variant -- no operation
-                } else {
-                    return Err(ScriptError::InvalidOpcode(byte));
-                }
+                // Every other opcode is invalid when executed: OP_NOP1, OP_NOP9 and OP_NOP10 (and OP_NOP2/3 as
+                // CHECKLOCKTIMEVERIFY / CHECKSEQUENCEVERIFY) are the only upgrade-NOP slots of node v1.2.0, and every
+                // value above 0xb9 is FIRST_UNDEFINED_OP_VALUE (ts-sdk Spend, go-sdk). An unexecuted branch skips them.
+                return Err(ScriptError::InvalidOpcode(chunk.op_byte));
             }
         }
 
