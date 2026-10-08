@@ -917,7 +917,7 @@ impl Spend {
         };
 
         // Compute sighash
-        let sub_script = self.get_subscript();
+        let sub_script = self.get_subscript(true);
         let preimage = self.sighash_preimage(&sub_script, transaction_signature.scope());
         let sighash = crate::primitives::hash::hash256(&preimage);
 
@@ -977,7 +977,7 @@ impl Spend {
         }
 
         // Verify m signatures against n pubkeys in order
-        let sub_script = self.get_subscript();
+        let sub_script = self.get_subscript(false);
         let mut pk_idx = 0;
         let mut sig_idx = 0;
         let mut success = true;
@@ -1039,20 +1039,37 @@ impl Spend {
     ///
     /// Returns the locking script from the last OP_CODESEPARATOR position
     /// (or the full locking script if no CODESEPARATOR was encountered).
-    fn get_subscript(&self) -> crate::script::script::Script {
+    ///
+    /// The subscript is taken from the script being executed (the unlocking
+    /// script while it runs, else the locking script). With `cross_boundary`
+    /// (OP_CHECKSIG / OP_CHECKSIGVERIFY), a subscript taken while the unlocking
+    /// script runs continues into the full locking script, as ts-sdk
+    /// `Spend` and go-sdk `thread.subScript` (after Chronicle) do; OP_PUSH_TX
+    /// style contracts sign over that combined subscript.
+    fn get_subscript(&self, cross_boundary: bool) -> crate::script::script::Script {
         use crate::script::script::Script;
+        use crate::script::spend::ScriptContext;
 
-        let chunks = self.locking_script.chunks();
+        let in_unlocking = matches!(self.context, ScriptContext::Unlocking);
+        let chunks = if in_unlocking {
+            self.unlocking_script.chunks()
+        } else {
+            self.locking_script.chunks()
+        };
         let start = match self.last_code_separator {
             Some(pos) => pos + 1,
             None => 0,
         };
 
-        if start >= chunks.len() {
-            return Script::new();
+        let mut out = if start >= chunks.len() {
+            Vec::new()
+        } else {
+            chunks[start..].to_vec()
+        };
+        if cross_boundary && in_unlocking {
+            out.extend(self.locking_script.chunks().iter().cloned());
         }
-
-        Script::from_chunks(chunks[start..].to_vec())
+        Script::from_chunks(out)
     }
 
     /// Compute the BIP143/forkid sighash preimage.
