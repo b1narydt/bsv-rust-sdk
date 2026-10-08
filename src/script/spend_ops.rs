@@ -350,7 +350,13 @@ impl Spend {
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
                 // A negative or oversized size is refused (ts-sdk: "not currently possible to push ...").
                 let size_val = match size.to_number() {
-                    Some(v) if !size.is_neg() && v <= 0x7fff_ffff && (v as usize) <= self.memory_limit => v as usize,
+                    Some(v)
+                        if !size.is_neg()
+                            && v <= 0x7fff_ffff
+                            && (v as usize) <= self.memory_limit =>
+                    {
+                        v as usize
+                    }
                     _ => {
                         return Err(ScriptError::InvalidStackOperation(
                             "OP_NUM2BIN size is negative or larger than can be pushed".to_string(),
@@ -640,7 +646,8 @@ impl Spend {
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
                 if n.is_neg() {
                     return Err(ScriptError::InvalidStackOperation(
-                        "OP_LSHIFT requires the top item on the stack not to be negative.".to_string(),
+                        "OP_LSHIFT requires the top item on the stack not to be negative."
+                            .to_string(),
                     ));
                 }
                 // A count past every bit shifts everything out (zeros of the input's width, as ts-sdk).
@@ -660,7 +667,8 @@ impl Spend {
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
                 if n.is_neg() {
                     return Err(ScriptError::InvalidStackOperation(
-                        "OP_RSHIFT requires the top item on the stack not to be negative.".to_string(),
+                        "OP_RSHIFT requires the top item on the stack not to be negative."
+                            .to_string(),
                     ));
                 }
                 // A count past every bit shifts everything out (zeros of the input's width, as ts-sdk).
@@ -789,7 +797,9 @@ impl Spend {
                 let shift = Self::shift_count(&n, "OP_LSHIFTNUM")?;
                 // A non-zero value shifted past the memory limit cannot be held: refuse it before allocating it
                 // (ts-sdk's BigInt fails the same way; the stack's memory limit would refuse the result anyway).
-                if !a.is_zero() && a.bit_length().saturating_add(shift) > self.memory_limit.saturating_mul(8) {
+                if !a.is_zero()
+                    && a.bit_length().saturating_add(shift) > self.memory_limit.saturating_mul(8)
+                {
                     return Err(ScriptError::MemoryLimitExceeded);
                 }
                 let mut result = a;
@@ -856,7 +866,9 @@ impl Spend {
         let scope = buf[buf.len() - 1] as u32;
         let base = scope & 0x1f;
         if !(1..=3).contains(&base) {
-            return Err(ScriptError::InvalidScript("The signature hash type is invalid.".to_string()));
+            return Err(ScriptError::InvalidScript(
+                "The signature hash type is invalid.".to_string(),
+            ));
         }
         if scope & 0x20 != 0 && !self.is_relaxed() {
             return Err(ScriptError::InvalidScript(
@@ -864,7 +876,9 @@ impl Spend {
             ));
         }
         if !self.is_relaxed() && !sig.has_low_s() {
-            return Err(ScriptError::InvalidScript("The signature must have a low S value.".to_string()));
+            return Err(ScriptError::InvalidScript(
+                "The signature must have a low S value.".to_string(),
+            ));
         }
         Ok(())
     }
@@ -879,8 +893,12 @@ impl Spend {
             return err("The public key is too short, it must be at least 33 bytes.");
         }
         match buf[0] {
-            0x04 if buf.len() != 65 => return err("The non-compressed public key must be 65 bytes."),
-            0x02 | 0x03 if buf.len() != 33 => return err("The compressed public key must be 33 bytes."),
+            0x04 if buf.len() != 65 => {
+                return err("The non-compressed public key must be 65 bytes.")
+            }
+            0x02 | 0x03 if buf.len() != 33 => {
+                return err("The compressed public key must be 33 bytes.")
+            }
             0x02..=0x04 => {}
             _ => return err("The public key is in an unknown format."),
         }
@@ -1044,11 +1062,19 @@ impl Spend {
         let n_bytes = self.pop_stack()?;
         let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
             .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-        let n_val = n.to_number().unwrap_or(0) as usize;
-
-        if n_val > 20 {
-            return Err(ScriptError::InvalidScript(
-                "too many public keys".to_string(),
+        // The whole number is range-checked (a count wider than an i64 is out of range, not 0). As in ts-sdk Spend,
+        // the limit is INT_MAX, and the stack must hold the keys before anything is allocated for them.
+        let n_val = match n.to_number() {
+            Some(v) if !n.is_neg() && v <= 0x7fff_ffff => v as usize,
+            _ => {
+                return Err(ScriptError::InvalidScript(
+                    "OP_CHECKMULTISIG requires a key count between 0 and 2147483647.".to_string(),
+                ))
+            }
+        };
+        if self.stack.len() < n_val {
+            return Err(ScriptError::InvalidStackOperation(
+                "OP_CHECKMULTISIG stack too small for nKeys and keys.".to_string(),
             ));
         }
 
@@ -1062,7 +1088,10 @@ impl Spend {
         let m_bytes = self.pop_stack()?;
         let m = BigNumber::from_script_num(&m_bytes, !self.is_relaxed(), None)
             .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-        let m_val = m.to_number().unwrap_or(0) as usize;
+        let m_val = match m.to_number() {
+            Some(v) if !m.is_neg() && v <= n_val as i64 => v as usize,
+            _ => usize::MAX,
+        };
 
         if m_val > n_val {
             return Err(ScriptError::InvalidScript(
@@ -1418,7 +1447,10 @@ fn is_checksig_format(buf: &[u8]) -> bool {
         return false;
     }
     let s_val = s_marker + 2;
-    if s_val >= buf.len() || buf[s_val] & 0x80 != 0 || (s_len > 1 && buf[s_val] == 0 && buf.get(s_val + 1).is_some_and(|b| b & 0x80 == 0)) {
+    if s_val >= buf.len()
+        || buf[s_val] & 0x80 != 0
+        || (s_len > 1 && buf[s_val] == 0 && buf.get(s_val + 1).is_some_and(|b| b & 0x80 == 0))
+    {
         return false;
     }
     r_len + s_len + 7 == buf.len()

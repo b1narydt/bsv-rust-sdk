@@ -1139,7 +1139,10 @@ mod tests {
         // 0xe0 is above OP_NOP10: invalid when executed, skipped in an unexecuted branch
         let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
         spend.locking_script = LockingScript::from_binary(&[0xe0, 0x51]);
-        assert!(matches!(spend.validate(), Err(ScriptError::InvalidOpcode(0xe0))));
+        assert!(matches!(
+            spend.validate(),
+            Err(ScriptError::InvalidOpcode(0xe0))
+        ));
         let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
         spend.locking_script = LockingScript::from_binary(&[0x00, 0x63, 0xe0, 0x68, 0x51]);
         assert!(spend.validate().unwrap());
@@ -1159,6 +1162,27 @@ mod tests {
         assert!(spend.validate().unwrap());
         let mut spend = make_relaxed_spend("87", "OP_2DIV 83 OP_EQUAL");
         assert!(spend.validate().unwrap());
+    }
+
+    #[test]
+    fn test_checkmultisig_counts_use_the_whole_number() {
+        // 21 keys and no signatures: valid (the key limit is INT_MAX, not 20)
+        let mut lock = vec![0x00, 0x00];
+        lock.extend([0x00; 21]);
+        lock.extend([0x01, 0x15, 0xae]);
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&lock);
+        assert!(spend.validate().unwrap());
+        // 2^64 keys is out of range, not 0 keys
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script =
+            LockingScript::from_binary(&[0x00, 0x00, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xae]);
+        assert!(spend.validate().is_err());
+        // 2^64 signatures against 1 key is out of range, not 0 signatures
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script =
+            LockingScript::from_binary(&[0x00, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x00, 0x51, 0xae]);
+        assert!(spend.validate().is_err());
     }
 
     // =================================================================
