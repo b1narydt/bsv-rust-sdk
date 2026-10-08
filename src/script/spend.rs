@@ -135,6 +135,16 @@ impl Spend {
             return Err(ScriptError::PushOnlyViolation);
         }
 
+        // An OP_IF opened in the unlocking script must be closed there (ts-sdk Spend); the alt stack does not
+        // carry over into the locking script.
+        if !self.if_stack.is_empty() {
+            return Err(ScriptError::InvalidScript(
+                "Every OP_IF, OP_NOTIF, or OP_ELSE must be terminated with OP_ENDIF prior to the end of the unlocking script.".to_string(),
+            ));
+        }
+        self.alt_stack.clear();
+        self.alt_stack_mem = 0;
+
         // Phase 2: Execute locking script
         self.context = ScriptContext::Locking;
         self.program_counter = 0;
@@ -197,6 +207,18 @@ impl Spend {
         let chunk = chunks[self.program_counter].clone();
         let op = chunk.op;
 
+        // A push that runs past the end of its script is malformed, executed or not (ts-sdk Spend).
+        if Self::push_is_truncated(&chunk) {
+            let ctx = match self.context {
+                ScriptContext::Unlocking => "UnlockingScript",
+                ScriptContext::Locking => "LockingScript",
+            };
+            return Err(ScriptError::InvalidScript(format!(
+                "Malformed push data in {ctx} at pc={}.",
+                self.program_counter
+            )));
+        }
+
         // Script execution is suspended when either (a) we're in a FALSE
         // branch of an open IF, or (b) an OP_RETURN inside an open IF set
         // the `returning_from_conditional` flag. In both cases, only the
@@ -240,6 +262,14 @@ impl Spend {
             return Ok(false);
         }
 
+        // A data push that is not minimally encoded fails when executed under the version-1 policy (ts-sdk Spend).
+        if !self.is_relaxed() && chunk.op_byte <= 0x4e && !Self::is_minimal_push(&chunk) {
+            return Err(ScriptError::InvalidScript(format!(
+                "This data is not minimally-encoded. (PC: {})",
+                self.program_counter
+            )));
+        }
+
         // Guard against runaway scripts
         self.ops_count += 1;
         if self.ops_count > MAX_OPS {
@@ -253,6 +283,33 @@ impl Spend {
         self.program_counter += 1;
 
         Ok(false)
+    }
+
+    /// ts-sdk isChunkMinimalPushHelper.
+    fn is_minimal_push(chunk: &crate::script::script_chunk::ScriptChunk) -> bool {
+        let data = match &chunk.data {
+            None => return true,
+            Some(d) => d,
+        };
+        let op = chunk.op_byte;
+        match data.len() {
+            0 => op == 0x00,
+            1 if (1..=16).contains(&data[0]) => op == 0x50 + data[0],
+            1 if data[0] == 0x81 => op == 0x4f,
+            n if n <= 75 => op as usize == n,
+            n if n <= 255 => op == 0x4c,
+            n if n <= 65535 => op == 0x4d,
+            _ => true,
+        }
+    }
+
+    /// Whether a parsed push chunk carries fewer bytes than its opcode declares (the script ended inside it).
+    /// The parser records the declared length in `declared_len` for PUSHDATA1/2/4.
+    fn push_is_truncated(chunk: &crate::script::script_chunk::ScriptChunk) -> bool {
+        match chunk.declared_len {
+            Some(n) => chunk.data.as_ref().map_or(0, |d| d.len()) != n,
+            None => false,
+        }
     }
 
     /// Whether the interpreter is in relaxed mode.
@@ -1011,8 +1068,11 @@ mod tests {
 
     #[test]
     fn test_op_checksig_empty_sig_fails() {
-        // Empty signature should push false
-        let mut spend = make_relaxed_spend("0 01", "OP_CHECKSIG");
+        // Empty signature should push false (with a well-formed public key: strict key encoding applies)
+        let mut spend = make_relaxed_spend(
+            "0 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "OP_CHECKSIG",
+        );
         spend.validate().unwrap();
         // Empty sig -> pushes false
         assert_eq!(spend.stack, vec![Vec::<u8>::new()]);
@@ -1075,17 +1135,54 @@ mod tests {
     }
 
     #[test]
-    fn test_op_disabled_2mul() {
-        let mut spend = make_spend("OP_1", "OP_2MUL");
-        let result = spend.validate();
-        assert!(matches!(result, Err(ScriptError::DisabledOpcode(_))));
+    fn test_undefined_opcode_is_invalid_when_executed() {
+        // 0xe0 is above OP_NOP10: invalid when executed, skipped in an unexecuted branch
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&[0xe0, 0x51]);
+        assert!(matches!(
+            spend.validate(),
+            Err(ScriptError::InvalidOpcode(0xe0))
+        ));
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&[0x00, 0x63, 0xe0, 0x68, 0x51]);
+        assert!(spend.validate().unwrap());
     }
 
     #[test]
-    fn test_op_disabled_2div() {
-        let mut spend = make_spend("OP_1", "OP_2DIV");
-        let result = spend.validate();
-        assert!(matches!(result, Err(ScriptError::DisabledOpcode(_))));
+    fn test_op_2mul() {
+        // 3 * 2 == 6
+        let mut spend = make_relaxed_spend("OP_3", "OP_2MUL OP_6 OP_EQUAL");
+        assert!(spend.validate().unwrap());
+    }
+
+    #[test]
+    fn test_op_2div() {
+        // 7 / 2 == 3, and -7 / 2 == -3 (truncated toward zero)
+        let mut spend = make_relaxed_spend("OP_7", "OP_2DIV OP_3 OP_EQUAL");
+        assert!(spend.validate().unwrap());
+        let mut spend = make_relaxed_spend("87", "OP_2DIV 83 OP_EQUAL");
+        assert!(spend.validate().unwrap());
+    }
+
+    #[test]
+    fn test_checkmultisig_counts_use_the_whole_number() {
+        // 21 keys and no signatures: valid (the key limit is INT_MAX, not 20)
+        let mut lock = vec![0x00, 0x00];
+        lock.extend([0x00; 21]);
+        lock.extend([0x01, 0x15, 0xae]);
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&lock);
+        assert!(spend.validate().unwrap());
+        // 2^64 keys is out of range, not 0 keys
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script =
+            LockingScript::from_binary(&[0x00, 0x00, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xae]);
+        assert!(spend.validate().is_err());
+        // 2^64 signatures against 1 key is out of range, not 0 signatures
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script =
+            LockingScript::from_binary(&[0x00, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x00, 0x51, 0xae]);
+        assert!(spend.validate().is_err());
     }
 
     // =================================================================

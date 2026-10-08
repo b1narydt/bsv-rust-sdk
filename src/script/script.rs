@@ -412,17 +412,19 @@ impl Script {
                 let push_len = op_byte as usize;
                 let end = (pos + push_len).min(length);
                 let data = bytes[pos..end].to_vec();
-                chunks.push(ScriptChunk::new_raw(op_byte, Some(data)));
+                chunks.push(ScriptChunk::new_parsed_push(op_byte, data, push_len));
                 pos = end;
             } else if op_byte == Op::OpPushData1.to_byte() {
-                let push_len = if pos < length { bytes[pos] as usize } else { 0 };
+                let has_len = pos < length;
+                let push_len = if has_len { bytes[pos] as usize } else { 0 };
                 // A bare OP_PUSHDATA1 is malformed but must remain safe to
                 // parse.  Match the PUSHDATA2/4 branches by clamping the
                 // length-byte advance to the available input.
                 pos = (pos + 1).min(length);
                 let end = (pos + push_len).min(length);
                 let data = bytes[pos..end].to_vec();
-                chunks.push(ScriptChunk::new_raw(op_byte, Some(data)));
+                let declared = if has_len { push_len } else { usize::MAX };
+                chunks.push(ScriptChunk::new_parsed_push(op_byte, data, declared));
                 pos = end;
             } else if op_byte == Op::OpPushData2.to_byte() {
                 let b0 = if pos < length { bytes[pos] as usize } else { 0 };
@@ -432,10 +434,12 @@ impl Script {
                     0
                 };
                 let push_len = b0 | (b1 << 8);
+                let has_len = pos + 1 < length;
                 pos = (pos + 2).min(length);
                 let end = (pos + push_len).min(length);
                 let data = bytes[pos..end].to_vec();
-                chunks.push(ScriptChunk::new_raw(op_byte, Some(data)));
+                let declared = if has_len { push_len } else { usize::MAX };
+                chunks.push(ScriptChunk::new_parsed_push(op_byte, data, declared));
                 pos = end;
             } else if op_byte == Op::OpPushData4.to_byte() {
                 let b0 = if pos < length { bytes[pos] as usize } else { 0 };
@@ -455,10 +459,12 @@ impl Script {
                     0
                 };
                 let push_len = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                let has_len = pos + 3 < length;
                 pos = (pos + 4).min(length);
                 let end = (pos + push_len).min(length);
                 let data = bytes[pos..end].to_vec();
-                chunks.push(ScriptChunk::new_raw(op_byte, Some(data)));
+                let declared = if has_len { push_len } else { usize::MAX };
+                chunks.push(ScriptChunk::new_parsed_push(op_byte, data, declared));
                 pos = end;
             } else {
                 // Regular opcode with no data
