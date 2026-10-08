@@ -5,7 +5,7 @@
 use crate::script::op::Op;
 
 /// A single parsed element of a script.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ScriptChunk {
     /// The opcode. For direct pushes (0x01..=0x4b) this is the raw byte
     /// cast via `Op::from`, which gives `OpInvalidOpcode`. The parser
@@ -16,7 +16,19 @@ pub struct ScriptChunk {
     pub op_byte: u8,
     /// The pushed data, if any.
     pub data: Option<Vec<u8>>,
+    /// For a push read by the parser, the length its opcode declared (`usize::MAX` when the length bytes
+    /// themselves were missing); a shorter `data` means the script ended inside the push. `None` for chunks
+    /// built in code. Not part of equality.
+    pub declared_len: Option<usize>,
 }
+
+impl PartialEq for ScriptChunk {
+    fn eq(&self, other: &Self) -> bool {
+        self.op == other.op && self.op_byte == other.op_byte && self.data == other.data
+    }
+}
+
+impl Eq for ScriptChunk {}
 
 impl ScriptChunk {
     /// Create a new chunk with just an opcode (no data).
@@ -25,6 +37,7 @@ impl ScriptChunk {
             op,
             op_byte: op.to_byte(),
             data: None,
+            declared_len: None,
         }
     }
 
@@ -34,6 +47,17 @@ impl ScriptChunk {
             op: Op::from(op_byte),
             op_byte,
             data,
+            declared_len: None,
+        }
+    }
+
+    /// A push chunk as the parser read it, with the length its opcode declared.
+    pub fn new_parsed_push(op_byte: u8, data: Vec<u8>, declared_len: usize) -> Self {
+        ScriptChunk {
+            op: Op::from(op_byte),
+            op_byte,
+            data: Some(data),
+            declared_len: Some(declared_len),
         }
     }
 

@@ -135,6 +135,16 @@ impl Spend {
             return Err(ScriptError::PushOnlyViolation);
         }
 
+        // An OP_IF opened in the unlocking script must be closed there (ts-sdk Spend); the alt stack does not
+        // carry over into the locking script.
+        if !self.if_stack.is_empty() {
+            return Err(ScriptError::InvalidScript(
+                "Every OP_IF, OP_NOTIF, or OP_ELSE must be terminated with OP_ENDIF prior to the end of the unlocking script.".to_string(),
+            ));
+        }
+        self.alt_stack.clear();
+        self.alt_stack_mem = 0;
+
         // Phase 2: Execute locking script
         self.context = ScriptContext::Locking;
         self.program_counter = 0;
@@ -197,6 +207,18 @@ impl Spend {
         let chunk = chunks[self.program_counter].clone();
         let op = chunk.op;
 
+        // A push that runs past the end of its script is malformed, executed or not (ts-sdk Spend).
+        if Self::push_is_truncated(&chunk) {
+            let ctx = match self.context {
+                ScriptContext::Unlocking => "UnlockingScript",
+                ScriptContext::Locking => "LockingScript",
+            };
+            return Err(ScriptError::InvalidScript(format!(
+                "Malformed push data in {ctx} at pc={}.",
+                self.program_counter
+            )));
+        }
+
         // Script execution is suspended when either (a) we're in a FALSE
         // branch of an open IF, or (b) an OP_RETURN inside an open IF set
         // the `returning_from_conditional` flag. In both cases, only the
@@ -253,6 +275,15 @@ impl Spend {
         self.program_counter += 1;
 
         Ok(false)
+    }
+
+    /// Whether a parsed push chunk carries fewer bytes than its opcode declares (the script ended inside it).
+    /// The parser records the declared length in `declared_len` for PUSHDATA1/2/4.
+    fn push_is_truncated(chunk: &crate::script::script_chunk::ScriptChunk) -> bool {
+        match chunk.declared_len {
+            Some(n) => chunk.data.as_ref().map_or(0, |d| d.len()) != n,
+            None => false,
+        }
     }
 
     /// Whether the interpreter is in relaxed mode.

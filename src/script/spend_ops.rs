@@ -719,51 +719,42 @@ impl Spend {
 
             // -- Chronicle 2026 Opcodes -----------------------------------------
             Op::OpSubstr => {
-                // stack: data, begin, length -> substring
-                let len_bytes = self.pop_stack()?;
-                let begin_bytes = self.pop_stack()?;
+                // ts-sdk Spend: stack data, offset, length -> data[offset .. offset + length]
+                let len = self.splice_operand()?;
+                let offset = self.splice_operand()?;
                 let data = self.pop_stack()?;
-                let begin = BigNumber::from_script_num(&begin_bytes, !self.is_relaxed(), None)
-                    .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let len = BigNumber::from_script_num(&len_bytes, !self.is_relaxed(), None)
-                    .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let begin_val = begin.to_number().unwrap_or(0) as usize;
-                let len_val = len.to_number().unwrap_or(0) as usize;
-                if begin_val + len_val > data.len() {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "OP_SUBSTR: range out of bounds".to_string(),
-                    ));
+                let size = data.len() as i64;
+                if offset < 0 || offset >= size || len < 0 || len > size - offset {
+                    return Err(ScriptError::InvalidStackOperation(format!(
+                        "OP_SUBSTR offset ({offset}) must be in range [0, {size}) and length ({len}) must be in range [0, {}]",
+                        size - offset
+                    )));
                 }
-                let result = data[begin_val..begin_val + len_val].to_vec();
-                self.push_stack(result)?;
+                self.push_stack(data[offset as usize..(offset + len) as usize].to_vec())?;
             }
 
             Op::OpLeft => {
-                let n_bytes = self.pop_stack()?;
+                let len = self.splice_operand()?;
                 let data = self.pop_stack()?;
-                let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
-                    .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let n_val = n.to_number().unwrap_or(0) as usize;
-                if n_val > data.len() {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "OP_LEFT: position out of range".to_string(),
-                    ));
+                let size = data.len() as i64;
+                if len < 0 || len > size {
+                    return Err(ScriptError::InvalidStackOperation(format!(
+                        "OP_LEFT length ({len}) must be in range [0, {size}]"
+                    )));
                 }
-                self.push_stack(data[..n_val].to_vec())?;
+                self.push_stack(data[..len as usize].to_vec())?;
             }
 
             Op::OpRight => {
-                let n_bytes = self.pop_stack()?;
+                let len = self.splice_operand()?;
                 let data = self.pop_stack()?;
-                let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
-                    .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let n_val = n.to_number().unwrap_or(0) as usize;
-                if n_val > data.len() {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "OP_RIGHT: position out of range".to_string(),
-                    ));
+                let size = data.len() as i64;
+                if len < 0 || len > size {
+                    return Err(ScriptError::InvalidStackOperation(format!(
+                        "OP_RIGHT length ({len}) must be in range [0, {size}]"
+                    )));
                 }
-                self.push_stack(data[data.len() - n_val..].to_vec())?;
+                self.push_stack(data[(size - len) as usize..].to_vec())?;
             }
 
             Op::OpLShiftNum => {
@@ -773,14 +764,16 @@ impl Spend {
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let shift = n.to_number().unwrap_or(0);
-                if shift < 0 {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "negative shift".to_string(),
-                    ));
+                let shift = Self::shift_count(&n, "OP_LSHIFTNUM")?;
+                // A non-zero value shifted past the memory limit cannot be held: refuse it before allocating it
+                // (ts-sdk's BigInt fails the same way; the stack's memory limit would refuse the result anyway).
+                if !a.is_zero() && a.bit_length().saturating_add(shift) > self.memory_limit.saturating_mul(8) {
+                    return Err(ScriptError::MemoryLimitExceeded);
                 }
                 let mut result = a;
-                result.iushln(shift as usize);
+                if !result.is_zero() {
+                    result.iushln(shift);
+                }
                 self.push_stack(result.to_script_num())?;
             }
 
@@ -791,14 +784,13 @@ impl Spend {
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let shift = n.to_number().unwrap_or(0);
-                if shift < 0 {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "negative shift".to_string(),
-                    ));
-                }
+                let shift = Self::shift_count(&n, "OP_RSHIFTNUM")?;
                 let mut result = a;
-                result.iushrn(shift as usize);
+                if shift >= result.bit_length() {
+                    result = BigNumber::from_number(0);
+                } else {
+                    result.iushrn(shift);
+                }
                 self.push_stack(result.to_script_num())?;
             }
 
@@ -826,6 +818,38 @@ impl Spend {
     }
 
     // -- Arithmetic helpers ---------------------------------------------------
+
+    /// A splice operand (OP_SUBSTR / OP_LEFT / OP_RIGHT), as ts-sdk `Spend` reads it: a script number (minimally
+    /// encoded when not relaxed); more than 8 bytes reads the first 8 as a two's-complement i64; clamped to the
+    /// 32-bit range.
+    fn splice_operand(&mut self) -> Result<i64, ScriptError> {
+        let b = self.pop_stack()?;
+        let n = BigNumber::from_script_num(&b, !self.is_relaxed(), None)
+            .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
+        let v: i64 = if b.len() > 8 {
+            let mut a = [0u8; 8];
+            a.copy_from_slice(&b[..8]);
+            i64::from_le_bytes(a)
+        } else {
+            n.to_number().unwrap_or(0)
+        };
+        Ok(v.clamp(-0x8000_0000, 0x7fff_ffff))
+    }
+
+    /// The bit count of OP_LSHIFTNUM / OP_RSHIFTNUM, as ts-sdk `Spend` checks it: not negative, at most INT_MAX.
+    fn shift_count(n: &BigNumber, op: &str) -> Result<usize, ScriptError> {
+        if n.is_neg() {
+            return Err(ScriptError::InvalidStackOperation(format!(
+                "{op} bits to shift must not be negative."
+            )));
+        }
+        match n.to_number() {
+            Some(s) if s <= 0x7fff_ffff => Ok(s as usize),
+            _ => Err(ScriptError::InvalidStackOperation(format!(
+                "{op} shift count exceeds INT_MAX."
+            ))),
+        }
+    }
 
     /// Pop one value, apply unary function, push result.
     fn unary_arith_op<F>(&mut self, f: F) -> Result<(), ScriptError>
