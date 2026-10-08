@@ -802,13 +802,15 @@ impl Spend {
                 self.push_stack(result.to_script_num())?;
             }
 
-            // -- Disabled Opcodes -----------------------------------------------
+            // -- OP_2MUL / OP_2DIV (re-enabled by Chronicle) ----------------------
+            // ts-sdk `Spend` (with no explicit verify flags) executes both: the top number times 2, and the top
+            // number divided by 2 (truncated toward zero).
             Op::Op2Mul => {
-                return Err(ScriptError::DisabledOpcode("OP_2MUL".to_string()));
+                self.unary_arith_op(|a| a.mul(&BigNumber::from_number(2)))?;
             }
 
             Op::Op2Div => {
-                return Err(ScriptError::DisabledOpcode("OP_2DIV".to_string()));
+                self.unary_arith_op(|a| a.div(&BigNumber::from_number(2)).expect("division by 2"))?;
             }
 
             // -- All NOPs (NOP11..NOP77 etc) ------------------------------------

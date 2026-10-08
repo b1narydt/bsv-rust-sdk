@@ -1075,17 +1075,19 @@ mod tests {
     }
 
     #[test]
-    fn test_op_disabled_2mul() {
-        let mut spend = make_spend("OP_1", "OP_2MUL");
-        let result = spend.validate();
-        assert!(matches!(result, Err(ScriptError::DisabledOpcode(_))));
+    fn test_op_2mul() {
+        // 3 * 2 == 6
+        let mut spend = make_relaxed_spend("OP_3", "OP_2MUL OP_6 OP_EQUAL");
+        assert!(spend.validate().unwrap());
     }
 
     #[test]
-    fn test_op_disabled_2div() {
-        let mut spend = make_spend("OP_1", "OP_2DIV");
-        let result = spend.validate();
-        assert!(matches!(result, Err(ScriptError::DisabledOpcode(_))));
+    fn test_op_2div() {
+        // 7 / 2 == 3, and -7 / 2 == -3 (truncated toward zero)
+        let mut spend = make_relaxed_spend("OP_7", "OP_2DIV OP_3 OP_EQUAL");
+        assert!(spend.validate().unwrap());
+        let mut spend = make_relaxed_spend("87", "OP_2DIV 83 OP_EQUAL");
+        assert!(spend.validate().unwrap());
     }
 
     // =================================================================
