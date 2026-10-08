@@ -262,6 +262,14 @@ impl Spend {
             return Ok(false);
         }
 
+        // A data push that is not minimally encoded fails when executed under the version-1 policy (ts-sdk Spend).
+        if !self.is_relaxed() && chunk.op_byte <= 0x4e && !Self::is_minimal_push(&chunk) {
+            return Err(ScriptError::InvalidScript(format!(
+                "This data is not minimally-encoded. (PC: {})",
+                self.program_counter
+            )));
+        }
+
         // Guard against runaway scripts
         self.ops_count += 1;
         if self.ops_count > MAX_OPS {
@@ -275,6 +283,24 @@ impl Spend {
         self.program_counter += 1;
 
         Ok(false)
+    }
+
+    /// ts-sdk isChunkMinimalPushHelper.
+    fn is_minimal_push(chunk: &crate::script::script_chunk::ScriptChunk) -> bool {
+        let data = match &chunk.data {
+            None => return true,
+            Some(d) => d,
+        };
+        let op = chunk.op_byte;
+        match data.len() {
+            0 => op == 0x00,
+            1 if (1..=16).contains(&data[0]) => op == 0x50 + data[0],
+            1 if data[0] == 0x81 => op == 0x4f,
+            n if n <= 75 => op as usize == n,
+            n if n <= 255 => op == 0x4c,
+            n if n <= 65535 => op == 0x4d,
+            _ => true,
+        }
     }
 
     /// Whether a parsed push chunk carries fewer bytes than its opcode declares (the script ended inside it).
@@ -1042,8 +1068,11 @@ mod tests {
 
     #[test]
     fn test_op_checksig_empty_sig_fails() {
-        // Empty signature should push false
-        let mut spend = make_relaxed_spend("0 01", "OP_CHECKSIG");
+        // Empty signature should push false (with a well-formed public key: strict key encoding applies)
+        let mut spend = make_relaxed_spend(
+            "0 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "OP_CHECKSIG",
+        );
         spend.validate().unwrap();
         // Empty sig -> pushes false
         assert_eq!(spend.stack, vec![Vec::<u8>::new()]);

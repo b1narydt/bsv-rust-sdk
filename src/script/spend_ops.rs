@@ -153,9 +153,8 @@ impl Spend {
             }
 
             Op::OpVer => {
-                // Push transactionVersion as script number
-                let ver = BigNumber::from_number(self.transaction_version as i64);
-                self.push_stack(ver.to_script_num())?;
+                // Node v1.2.0 (and ts-sdk Spend): the tx version as 4 little-endian bytes, not a script number
+                self.push_stack(self.transaction_version.to_le_bytes().to_vec())?;
             }
 
             Op::OpReserved | Op::OpReserved1 | Op::OpReserved2 => {
@@ -261,12 +260,14 @@ impl Spend {
                 let n_bytes = self.pop_stack()?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let n_val = n.to_number().unwrap_or(0) as isize;
-                if n_val < 0 {
-                    return Err(ScriptError::InvalidStackOperation(
-                        "negative pick".to_string(),
-                    ));
-                }
+                let n_val = match Self::stack_index(&n, self.stack.len()) {
+                    Some(i) => i as isize,
+                    None => {
+                        return Err(ScriptError::InvalidStackOperation(
+                            "OP_PICK requires the top stack element to be 0 or a positive number less than the current size of the stack.".to_string(),
+                        ))
+                    }
+                };
                 let item = self.stack_top(n_val)?.clone();
                 self.push_stack(item)?;
             }
@@ -275,11 +276,11 @@ impl Spend {
                 let n_bytes = self.pop_stack()?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let n_val = n.to_number().unwrap_or(0) as usize;
                 let len = self.stack.len();
-                if n_val >= len {
-                    return Err(ScriptError::StackUnderflow);
-                }
+                let n_val = match Self::stack_index(&n, len) {
+                    Some(i) => i,
+                    None => return Err(ScriptError::StackUnderflow),
+                };
                 let idx = len - 1 - n_val;
                 let item = self.stack.remove(idx);
                 // Memory unchanged (moved, not added/removed)
@@ -327,8 +328,11 @@ impl Spend {
                 let n_bytes = self.pop_stack()?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let pos = n.to_number().unwrap_or(0) as usize;
                 let data = self.pop_stack()?;
+                let pos = match n.to_number() {
+                    Some(p) if !n.is_neg() && (p as u64) <= data.len() as u64 => p as usize,
+                    _ => usize::MAX,
+                };
                 if pos > data.len() {
                     return Err(ScriptError::InvalidStackOperation(
                         "split position out of range".to_string(),
@@ -344,7 +348,15 @@ impl Spend {
                 let size_bytes = self.pop_stack()?;
                 let size = BigNumber::from_script_num(&size_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let size_val = size.to_number().unwrap_or(0) as usize;
+                // A negative or oversized size is refused (ts-sdk: "not currently possible to push ...").
+                let size_val = match size.to_number() {
+                    Some(v) if !size.is_neg() && v <= 0x7fff_ffff && (v as usize) <= self.memory_limit => v as usize,
+                    _ => {
+                        return Err(ScriptError::InvalidStackOperation(
+                            "OP_NUM2BIN size is negative or larger than can be pushed".to_string(),
+                        ))
+                    }
+                };
                 let num_bytes = self.pop_stack()?;
                 let num = BigNumber::from_script_num(&num_bytes, false, None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
@@ -626,13 +638,18 @@ impl Spend {
                 let data = self.pop_stack()?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let shift = n.to_number().unwrap_or(0);
-                if shift < 0 {
+                if n.is_neg() {
                     return Err(ScriptError::InvalidStackOperation(
-                        "negative shift".to_string(),
+                        "OP_LSHIFT requires the top item on the stack not to be negative.".to_string(),
                     ));
                 }
-                let result = byte_lshift(&data, shift as usize);
+                // A count past every bit shifts everything out (zeros of the input's width, as ts-sdk).
+                let shift = n.to_number().map_or(usize::MAX, |v| v as usize);
+                let result = if shift >= data.len().saturating_mul(8) {
+                    vec![0u8; data.len()]
+                } else {
+                    byte_lshift(&data, shift)
+                };
                 self.push_stack(result)?;
             }
 
@@ -641,13 +658,18 @@ impl Spend {
                 let data = self.pop_stack()?;
                 let n = BigNumber::from_script_num(&n_bytes, !self.is_relaxed(), None)
                     .map_err(|e| ScriptError::InvalidScript(e.to_string()))?;
-                let shift = n.to_number().unwrap_or(0);
-                if shift < 0 {
+                if n.is_neg() {
                     return Err(ScriptError::InvalidStackOperation(
-                        "negative shift".to_string(),
+                        "OP_RSHIFT requires the top item on the stack not to be negative.".to_string(),
                     ));
                 }
-                let result = byte_rshift(&data, shift as usize);
+                // A count past every bit shifts everything out (zeros of the input's width, as ts-sdk).
+                let shift = n.to_number().map_or(usize::MAX, |v| v as usize);
+                let result = if shift >= data.len().saturating_mul(8) {
+                    vec![0u8; data.len()]
+                } else {
+                    byte_rshift(&data, shift)
+                };
                 self.push_stack(result)?;
             }
 
@@ -819,6 +841,66 @@ impl Spend {
 
     // -- Arithmetic helpers ---------------------------------------------------
 
+    /// ts-sdk `Spend` #checkSignatureEncoding without explicit flags: an empty signature passes; otherwise strict
+    /// DER, a defined hash type, the Chronicle bit only after Chronicle, and low S when not relaxed.
+    pub(crate) fn check_signature_encoding(&self, buf: &[u8]) -> Result<(), ScriptError> {
+        use crate::primitives::transaction_signature::TransactionSignature;
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let bad = || ScriptError::InvalidScript("The signature format is invalid.".to_string());
+        if !is_checksig_format(buf) {
+            return Err(bad());
+        }
+        let sig = TransactionSignature::from_checksig_format(buf, false).map_err(|_| bad())?;
+        let scope = buf[buf.len() - 1] as u32;
+        let base = scope & 0x1f;
+        if !(1..=3).contains(&base) {
+            return Err(ScriptError::InvalidScript("The signature hash type is invalid.".to_string()));
+        }
+        if scope & 0x20 != 0 && !self.is_relaxed() {
+            return Err(ScriptError::InvalidScript(
+                "The signature hash type is invalid before Chronicle.".to_string(),
+            ));
+        }
+        if !self.is_relaxed() && !sig.has_low_s() {
+            return Err(ScriptError::InvalidScript("The signature must have a low S value.".to_string()));
+        }
+        Ok(())
+    }
+
+    /// ts-sdk `Spend` #checkPublicKeyEncoding (strict encoding, on without explicit flags).
+    pub(crate) fn check_public_key_encoding(&self, buf: &[u8]) -> Result<(), ScriptError> {
+        let err = |m: &str| Err(ScriptError::InvalidScript(m.to_string()));
+        if buf.is_empty() {
+            return err("Public key is empty.");
+        }
+        if buf.len() < 33 {
+            return err("The public key is too short, it must be at least 33 bytes.");
+        }
+        match buf[0] {
+            0x04 if buf.len() != 65 => return err("The non-compressed public key must be 65 bytes."),
+            0x02 | 0x03 if buf.len() != 33 => return err("The compressed public key must be 33 bytes."),
+            0x02..=0x04 => {}
+            _ => return err("The public key is in an unknown format."),
+        }
+        if crate::primitives::point::Point::from_der(buf).is_err() {
+            return err("The public key is in an unknown format.");
+        }
+        Ok(())
+    }
+
+    /// `n` as an index into a stack of `len` items (0 = top): None when negative or past the bottom.
+    fn stack_index(n: &BigNumber, len: usize) -> Option<usize> {
+        if n.is_neg() {
+            return None;
+        }
+        match n.to_number() {
+            Some(v) if (v as u64) < len as u64 => Some(v as usize),
+            _ => None,
+        }
+    }
+
     /// A splice operand (OP_SUBSTR / OP_LEFT / OP_RIGHT), as ts-sdk `Spend` reads it: a script number (minimally
     /// encoded when not relaxed); more than 8 bytes reads the first 8 as a two's-complement i64; clamped to the
     /// 32-bit range.
@@ -906,6 +988,8 @@ impl Spend {
 
         let pubkey_bytes = self.pop_stack()?;
         let sig_bytes = self.pop_stack()?;
+        self.check_signature_encoding(&sig_bytes)?;
+        self.check_public_key_encoding(&pubkey_bytes)?;
 
         if sig_bytes.is_empty() {
             // Empty signature always fails
@@ -1011,6 +1095,8 @@ impl Spend {
                 sig_idx += 1;
                 continue;
             }
+            self.check_signature_encoding(sig_bytes)?;
+            self.check_public_key_encoding(&pubkeys[pk_idx])?;
 
             let transaction_signature =
                 match TransactionSignature::from_checksig_format(sig_bytes, false) {
@@ -1312,4 +1398,28 @@ fn write_varint(buf: &mut Vec<u8>, val: u64) {
         buf.push(0xff);
         buf.extend_from_slice(&val.to_le_bytes());
     }
+}
+
+/// ts-sdk isChecksigFormatHelper: the strict DER shape of a checksig-format signature (DER + hash type).
+fn is_checksig_format(buf: &[u8]) -> bool {
+    if buf.len() < 9 || buf.len() > 73 || buf[0] != 0x30 || buf[1] as usize != buf.len() - 3 {
+        return false;
+    }
+    let r_len = buf[3] as usize;
+    if buf[2] != 0x02 || r_len == 0 || 5 + r_len >= buf.len() {
+        return false;
+    }
+    let s_marker = 4 + r_len;
+    let s_len = buf[s_marker + 1] as usize;
+    if buf[s_marker] != 0x02 || s_len == 0 {
+        return false;
+    }
+    if buf[4] & 0x80 != 0 || (r_len > 1 && buf[4] == 0 && buf[5] & 0x80 == 0) {
+        return false;
+    }
+    let s_val = s_marker + 2;
+    if s_val >= buf.len() || buf[s_val] & 0x80 != 0 || (s_len > 1 && buf[s_val] == 0 && buf.get(s_val + 1).is_some_and(|b| b & 0x80 == 0)) {
+        return false;
+    }
+    r_len + s_len + 7 == buf.len()
 }
