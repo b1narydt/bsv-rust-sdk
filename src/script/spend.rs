@@ -1075,6 +1075,17 @@ mod tests {
     }
 
     #[test]
+    fn test_undefined_opcode_is_invalid_when_executed() {
+        // 0xe0 is above OP_NOP10: invalid when executed, skipped in an unexecuted branch
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&[0xe0, 0x51]);
+        assert!(matches!(spend.validate(), Err(ScriptError::InvalidOpcode(0xe0))));
+        let mut spend = make_relaxed_spend("OP_1", "OP_DROP OP_TRUE");
+        spend.locking_script = LockingScript::from_binary(&[0x00, 0x63, 0xe0, 0x68, 0x51]);
+        assert!(spend.validate().unwrap());
+    }
+
+    #[test]
     fn test_op_2mul() {
         // 3 * 2 == 6
         let mut spend = make_relaxed_spend("OP_3", "OP_2MUL OP_6 OP_EQUAL");
